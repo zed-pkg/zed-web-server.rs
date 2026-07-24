@@ -368,7 +368,10 @@ mod tests {
         );
         assert_eq!(headers["x-content-type-options"], "nosniff");
         assert_eq!(headers["x-frame-options"], "DENY");
-        assert_eq!(headers["referrer-policy"], "strict-origin-when-cross-origin");
+        assert_eq!(
+            headers["referrer-policy"],
+            "strict-origin-when-cross-origin"
+        );
     }
 
     #[test]
