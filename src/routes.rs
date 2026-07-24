@@ -321,14 +321,19 @@ async fn package_page(
             }
         }
     };
-    Html(
+    let body = Html(
         layout(
             &format!("{org_slug}/{name} - zed-pkg"),
             state.db.is_some(),
             content,
         )
         .into_string(),
-    )
+    );
+    if found {
+        body.into_response()
+    } else {
+        (StatusCode::NOT_FOUND, body).into_response()
+    }
 }
 
 async fn org_page(
