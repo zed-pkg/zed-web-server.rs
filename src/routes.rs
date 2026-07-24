@@ -184,6 +184,12 @@ async fn search_partial(
     Html(package_rows(&results, "no matches").into_string())
 }
 
+/// Only http(s) URLs are worth turning into hyperlinks; anything else
+/// (`javascript:`, `data:`, ssh remotes, ...) is rendered as plain text.
+fn is_linkable_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
 async fn package_page(
     State(state): State<Arc<WebState>>,
     Path((org_slug, name)): Path<(String, String)>,
