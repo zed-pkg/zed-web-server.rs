@@ -339,46 +339,67 @@ async fn package_page(
 async fn org_page(
     State(state): State<Arc<WebState>>,
     Path(org_slug): Path<String>,
-) -> Html<String> {
+) -> Response {
     let mut packages: Vec<PackageRow> = Vec::new();
+    // Offline mode keeps the old 200-with-empty-body behaviour; with a DB a
+    // missing org is a 404 and a DbErr a 500.
+    let mut found = state.db.is_none();
+
     if let Some(db) = &state.db {
-        if let Ok(Some(org_row)) = org::Entity::find()
+        let org_row = match org::Entity::find()
             .filter(org::Column::Slug.eq(&org_slug))
             .one(db)
             .await
         {
-            if let Ok(rows) = package::Entity::find()
-                .filter(package::Column::OrgId.eq(org_row.id))
-                .order_by_desc(package::Column::CreatedAt)
-                .all(db)
-                .await
-            {
-                packages = rows
-                    .into_iter()
-                    .map(|pkg| PackageRow {
-                        org: org_slug.clone(),
-                        name: pkg.name,
-                        description: pkg.description,
-                        latest: None,
-                    })
-                    .collect();
+            Ok(Some(org_row)) => Some(org_row),
+            Ok(None) => None,
+            Err(error) => {
+                tracing::error!(%error, org = %org_slug, "org_page: org lookup failed");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
+
+        if let Some(org_row) = org_row {
+            match org_packages_query(org_row.id).all(db).await {
+                Ok(rows) => {
+                    found = true;
+                    packages = rows
+                        .into_iter()
+                        .map(|pkg| PackageRow {
+                            org: org_slug.clone(),
+                            name: pkg.name,
+                            description: pkg.description,
+                            latest: None,
+                        })
+                        .collect();
+                }
+                Err(error) => {
+                    tracing::error!(%error, org = %org_slug, "org_page: package lookup failed");
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
             }
         }
     }
+
     let content = html! {
         section {
             h1 class="mono" { (org_slug) }
             (package_rows(&packages, "org not found or empty"))
         }
     };
-    Html(
+    let body = Html(
         layout(
             &format!("{org_slug} - zed-pkg"),
             state.db.is_some(),
             content,
         )
         .into_string(),
-    )
+    );
+    if found {
+        body.into_response()
+    } else {
+        (StatusCode::NOT_FOUND, body).into_response()
+    }
 }
 
 #[cfg(test)]
