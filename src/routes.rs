@@ -213,49 +213,91 @@ fn is_linkable_url(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://")
 }
 
+/// Bounded query for the packages that belong to an org, newest first. Capped
+/// at `PAGE_LIMIT` so a single org can't force an unbounded table scan.
+fn org_packages_query(org_id: sea_orm::prelude::Uuid) -> Select<package::Entity> {
+    package::Entity::find()
+        .filter(package::Column::OrgId.eq(org_id))
+        .order_by_desc(package::Column::CreatedAt)
+        .limit(PAGE_LIMIT)
+}
+
+/// Bounded query for a package's versions, newest first. Capped at `PAGE_LIMIT`;
+/// the semver sort then runs over just this page rather than the whole table.
+fn package_versions_query(package_id: sea_orm::prelude::Uuid) -> Select<version::Entity> {
+    version::Entity::find()
+        .filter(version::Column::PackageId.eq(package_id))
+        .order_by_desc(version::Column::PublishedAt)
+        .limit(PAGE_LIMIT)
+}
+
 async fn package_page(
     State(state): State<Arc<WebState>>,
     Path((org_slug, name)): Path<(String, String)>,
-) -> Html<String> {
+) -> Response {
     let mut description = None;
     let mut repo = None;
     let mut versions: Vec<VersionRow> = Vec::new();
+    // Offline mode renders the page as before (200 with an empty body); with a
+    // DB, a genuinely-missing org/package yields a 404 and a DbErr a 500.
+    let mut found = state.db.is_none();
 
     if let Some(db) = &state.db {
-        if let Ok(Some(org_row)) = org::Entity::find()
+        let org_row = match org::Entity::find()
             .filter(org::Column::Slug.eq(&org_slug))
             .one(db)
             .await
         {
-            if let Ok(Some(pkg)) = package::Entity::find()
+            Ok(Some(org_row)) => Some(org_row),
+            Ok(None) => None,
+            Err(error) => {
+                tracing::error!(%error, org = %org_slug, "package_page: org lookup failed");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
+
+        if let Some(org_row) = org_row {
+            let pkg = match package::Entity::find()
                 .filter(package::Column::OrgId.eq(org_row.id))
                 .filter(package::Column::Name.eq(&name))
                 .one(db)
                 .await
             {
+                Ok(Some(pkg)) => Some(pkg),
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::error!(%error, org = %org_slug, package = %name, "package_page: package lookup failed");
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+            };
+
+            if let Some(pkg) = pkg {
+                found = true;
                 description = pkg.description.clone();
                 repo = Some((pkg.vcs.clone(), pkg.repo_url.clone()));
-                if let Ok(rows) = version::Entity::find()
-                    .filter(version::Column::PackageId.eq(pkg.id))
-                    .all(db)
-                    .await
-                {
-                    versions = rows
-                        .into_iter()
-                        .map(|v| VersionRow {
-                            version: v.version,
-                            published_at: v.published_at.format("%Y-%m-%d").to_string(),
-                            size: v.size,
-                            sha256: v.sha256,
-                            vcs_tag: v.vcs_tag,
-                            yanked: v.yanked,
-                        })
-                        .collect();
-                    versions.sort_by(|a, b| {
-                        let pa = semver::Version::parse(&a.version).ok();
-                        let pb = semver::Version::parse(&b.version).ok();
-                        pb.cmp(&pa)
-                    });
+                match package_versions_query(pkg.id).all(db).await {
+                    Ok(rows) => {
+                        versions = rows
+                            .into_iter()
+                            .map(|v| VersionRow {
+                                version: v.version,
+                                published_at: v.published_at.format("%Y-%m-%d").to_string(),
+                                size: v.size,
+                                sha256: v.sha256,
+                                vcs_tag: v.vcs_tag,
+                                yanked: v.yanked,
+                            })
+                            .collect();
+                        versions.sort_by(|a, b| {
+                            let pa = semver::Version::parse(&a.version).ok();
+                            let pb = semver::Version::parse(&b.version).ok();
+                            pb.cmp(&pa)
+                        });
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, org = %org_slug, package = %name, "package_page: version lookup failed");
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    }
                 }
             }
         }
