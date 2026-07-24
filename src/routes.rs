@@ -349,6 +349,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn responses_carry_security_headers() {
+        let app = router(offline_state());
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let headers = response.headers();
+        assert_eq!(
+            headers["content-security-policy"],
+            "default-src 'self'; script-src 'self'; style-src 'self'; \
+             img-src 'self' data:; frame-ancestors 'none'"
+        );
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+        assert_eq!(headers["x-frame-options"], "DENY");
+        assert_eq!(headers["referrer-policy"], "strict-origin-when-cross-origin");
+    }
+
+    #[test]
+    fn escape_like_makes_wildcards_literal() {
+        assert_eq!(escape_like("http"), "http");
+        assert_eq!(escape_like("100%"), "100\\%");
+        assert_eq!(escape_like("a_b"), "a\\_b");
+        assert_eq!(escape_like("c:\\dir"), "c:\\\\dir");
+        assert_eq!(escape_like("%_\\"), "\\%\\_\\\\");
+    }
+
+    #[test]
+    fn only_http_urls_are_linkable() {
+        assert!(is_linkable_url("https://github.com/acme/http-kit"));
+        assert!(is_linkable_url("http://internal.example"));
+        assert!(!is_linkable_url("javascript:alert(1)"));
+        assert!(!is_linkable_url("git@github.com:acme/http-kit.git"));
+        assert!(!is_linkable_url("ssh://git@github.com/acme/http-kit"));
+    }
+
+    #[tokio::test]
     async fn healthz_reports_db_false_when_offline() {
         let app = router(offline_state());
         let response = app
