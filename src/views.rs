@@ -1,0 +1,201 @@
+//! Maud templates: typed HTML in Rust, brand palette black/orange/baby-blue.
+
+use maud::{DOCTYPE, Markup, html};
+
+pub fn layout(title: &str, db_online: bool, content: Markup) -> Markup {
+    html! {
+        (DOCTYPE)
+        html lang="en" {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                title { (title) }
+                link rel="stylesheet" href="/static/styles.css";
+                link rel="icon" type="image/svg+xml" href="/static/favicon.svg";
+                script src="/static/htmx.min.js" {}
+            }
+            body {
+                nav {
+                    div class="wrap nav-inner" {
+                        a class="brand" href="/" {
+                            span class="brand-z" { "zed" } span class="brand-pkg" { "-pkg" }
+                            span class="brand-tag" { "registry" }
+                        }
+                        div class="nav-links" {
+                            a href="/search" { "Search" }
+                            a href="https://zpkg.tech" { "zpkg.tech" }
+                            a href="https://github.com/zed-pkg" { "GitHub" }
+                        }
+                    }
+                }
+                @if !db_online {
+                    div class="banner offline" {
+                        "registry offline: no database connection; showing empty state"
+                    }
+                }
+                main class="wrap" { (content) }
+                footer {
+                    div class="wrap" {
+                        "(c) 2026 zed-pkg contributors - MIT - MASH stack (Maud, Axum, SeaORM, HTMX)"
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn search_box(query: &str) -> Markup {
+    html! {
+        input
+            id="q"
+            class="search"
+            type="search"
+            name="q"
+            value=(query)
+            placeholder="search packages, e.g. http"
+            hx-get="/partials/search"
+            hx-trigger="input changed delay:300ms, search"
+            hx-target="#results"
+            autofocus;
+        div id="results" {}
+    }
+}
+
+pub struct PackageRow {
+    pub org: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub latest: Option<String>,
+}
+
+pub fn package_rows(rows: &[PackageRow], empty_message: &str) -> Markup {
+    html! {
+        @if rows.is_empty() {
+            p class="muted" { (empty_message) }
+        } @else {
+            ul class="pkg-list" {
+                @for row in rows {
+                    li {
+                        a class="pkg-name" href={ "/p/" (row.org) "/" (row.name) } {
+                            (row.org) "/" (row.name)
+                        }
+                        @if let Some(latest) = &row.latest {
+                            span class="pkg-version" { "v" (latest) }
+                        }
+                        @if let Some(description) = &row.description {
+                            span class="pkg-desc" { (description) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub struct VersionRow {
+    pub version: String,
+    pub published_at: String,
+    pub size: i64,
+    pub sha256: String,
+    pub vcs_tag: String,
+    pub yanked: bool,
+}
+
+pub fn install_snippet(org: &str, name: &str) -> Markup {
+    html! {
+        pre class="snippet" { "zed add " (org) "/" (name) }
+    }
+}
+
+pub fn version_table(rows: &[VersionRow]) -> Markup {
+    html! {
+        table class="versions" {
+            thead {
+                tr {
+                    th { "version" }
+                    th { "published" }
+                    th { "size" }
+                    th { "sha256" }
+                    th { "provenance" }
+                }
+            }
+            tbody {
+                @for row in rows {
+                    tr class=@if row.yanked { "yanked" } @else { "" } {
+                        td class="mono" { (row.version) @if row.yanked { " (yanked)" } }
+                        td { (row.published_at) }
+                        td { (human_size(row.size)) }
+                        td class="mono blue" { (short_sha(&row.sha256)) }
+                        td class="mono blue" { "tag " (row.vcs_tag) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn human_size(bytes: i64) -> String {
+    let bytes = bytes.max(0) as f64;
+    if bytes < 1024.0 {
+        return format!("{bytes:.0} B");
+    }
+    let kib = bytes / 1024.0;
+    if kib < 1024.0 {
+        return format!("{kib:.1} KiB");
+    }
+    let mib = kib / 1024.0;
+    if mib < 1024.0 {
+        return format!("{mib:.1} MiB");
+    }
+    format!("{:.1} GiB", mib / 1024.0)
+}
+
+pub fn short_sha(sha256: &str) -> String {
+    sha256.chars().take(12).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layout_renders_nav_and_offline_banner() {
+        let page = layout("t", false, html! { p { "hello" } }).into_string();
+        assert!(page.contains("zed"));
+        assert!(page.contains("registry offline"));
+        assert!(page.contains("hello"));
+
+        let online = layout("t", true, html! {}).into_string();
+        assert!(!online.contains("registry offline"));
+    }
+
+    #[test]
+    fn search_box_is_wired_for_htmx() {
+        let markup = search_box("http").into_string();
+        assert!(markup.contains(r#"hx-get="/partials/search""#));
+        assert!(markup.contains(r##"hx-target="#results""##));
+        assert!(markup.contains(r#"value="http""#));
+    }
+
+    #[test]
+    fn sizes_humanize() {
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(4096), "4.0 KiB");
+        assert_eq!(human_size(3 * 1024 * 1024), "3.0 MiB");
+    }
+
+    #[test]
+    fn version_table_shows_provenance() {
+        let rows = vec![VersionRow {
+            version: "1.2.0".into(),
+            published_at: "2026-07-23".into(),
+            size: 4096,
+            sha256: "9f3ac2deadbeef00".into(),
+            vcs_tag: "v1.2.0".into(),
+            yanked: false,
+        }];
+        let markup = version_table(&rows).into_string();
+        assert!(markup.contains("tag v1.2.0"));
+        assert!(markup.contains("9f3ac2deadbe"));
+    }
+}

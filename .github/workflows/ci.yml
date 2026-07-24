@@ -1,0 +1,25 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: zed-web-server.rs
+      - uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          path: zed-interfaces
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zed-web-server.rs
+      - run: cargo fmt --check
+        working-directory: zed-web-server.rs
+      - run: cargo test
+        working-directory: zed-web-server.rs

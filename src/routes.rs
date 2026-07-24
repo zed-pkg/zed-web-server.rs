@@ -1,0 +1,320 @@
+use std::sync::Arc;
+
+use axum::Router;
+use axum::extract::{Path, Query, State};
+use axum::response::Html;
+use axum::routing::get;
+use maud::html;
+use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+use serde::Deserialize;
+
+use crate::entities::{org, package, version};
+use crate::state::WebState;
+use crate::views::{
+    self, PackageRow, VersionRow, install_snippet, layout, package_rows, search_box, version_table,
+};
+
+pub fn router(state: Arc<WebState>) -> Router {
+    Router::new()
+        .route("/", get(home))
+        .route("/healthz", get(healthz))
+        .route("/search", get(search_page))
+        .route("/partials/search", get(search_partial))
+        .route("/p/{org}/{name}", get(package_page))
+        .route("/orgs/{org}", get(org_page))
+        .nest_service("/static", tower_http::services::ServeDir::new("static"))
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .with_state(state)
+}
+
+async fn healthz(State(state): State<Arc<WebState>>) -> axum::Json<serde_json::Value> {
+    let db = match &state.db {
+        Some(db) => db.ping().await.is_ok(),
+        None => false,
+    };
+    axum::Json(serde_json::json!({ "ok": true, "db": db, "registry": state.registry_url }))
+}
+
+async fn recent_packages(state: &WebState, limit: u64) -> Vec<PackageRow> {
+    let Some(db) = &state.db else {
+        return Vec::new();
+    };
+    let Ok(rows) = package::Entity::find()
+        .find_also_related(org::Entity)
+        .order_by_desc(package::Column::CreatedAt)
+        .limit(limit)
+        .all(db)
+        .await
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(rows.len());
+    for (pkg, org_row) in rows {
+        let Some(org_row) = org_row else { continue };
+        let latest = version::Entity::find()
+            .filter(version::Column::PackageId.eq(pkg.id))
+            .filter(version::Column::Yanked.eq(false))
+            .order_by_desc(version::Column::PublishedAt)
+            .one(db)
+            .await
+            .ok()
+            .flatten()
+            .map(|v| v.version);
+        out.push(PackageRow {
+            org: org_row.slug,
+            name: pkg.name,
+            description: pkg.description,
+            latest,
+        });
+    }
+    out
+}
+
+async fn home(State(state): State<Arc<WebState>>) -> Html<String> {
+    let recent = recent_packages(&state, 20).await;
+    let content = html! {
+        section class="hero" {
+            h1 { "Install " span class="orange" { "packages" } ", not repositories." }
+            p class="muted" {
+                "The zed-pkg registry: lean, tag-verified artifacts backed by the VCS "
+                "hosts you already use. One store per machine, symlinks per project."
+            }
+            (install_snippet("acme", "http-kit"))
+        }
+        section {
+            h2 { "Recently published" }
+            (package_rows(&recent, "nothing published yet; `zed publish` something"))
+        }
+    };
+    Html(layout("zed-pkg registry", state.db.is_some(), content).into_string())
+}
+
+#[derive(Deserialize)]
+struct SearchParams {
+    #[serde(default)]
+    q: String,
+}
+
+async fn find_packages(state: &WebState, query: &str) -> Vec<PackageRow> {
+    let Some(db) = &state.db else {
+        return Vec::new();
+    };
+    let Ok(rows) = package::Entity::find()
+        .filter(
+            Condition::any()
+                .add(package::Column::Name.contains(query))
+                .add(package::Column::Description.contains(query)),
+        )
+        .find_also_related(org::Entity)
+        .limit(50)
+        .all(db)
+        .await
+    else {
+        return Vec::new();
+    };
+    rows.into_iter()
+        .filter_map(|(pkg, org_row)| {
+            org_row.map(|org_row| PackageRow {
+                org: org_row.slug,
+                name: pkg.name,
+                description: pkg.description,
+                latest: None,
+            })
+        })
+        .collect()
+}
+
+async fn search_page(
+    State(state): State<Arc<WebState>>,
+    Query(params): Query<SearchParams>,
+) -> Html<String> {
+    let results = find_packages(&state, &params.q).await;
+    let content = html! {
+        section {
+            h1 { "Search" }
+            (search_box(&params.q))
+            div id="initial-results" { (package_rows(&results, "type to search")) }
+        }
+    };
+    Html(layout("search - zed-pkg", state.db.is_some(), content).into_string())
+}
+
+async fn search_partial(
+    State(state): State<Arc<WebState>>,
+    Query(params): Query<SearchParams>,
+) -> Html<String> {
+    let results = find_packages(&state, &params.q).await;
+    Html(package_rows(&results, "no matches").into_string())
+}
+
+async fn package_page(
+    State(state): State<Arc<WebState>>,
+    Path((org_slug, name)): Path<(String, String)>,
+) -> Html<String> {
+    let mut description = None;
+    let mut repo = None;
+    let mut versions: Vec<VersionRow> = Vec::new();
+
+    if let Some(db) = &state.db {
+        if let Ok(Some(org_row)) = org::Entity::find()
+            .filter(org::Column::Slug.eq(&org_slug))
+            .one(db)
+            .await
+        {
+            if let Ok(Some(pkg)) = package::Entity::find()
+                .filter(package::Column::OrgId.eq(org_row.id))
+                .filter(package::Column::Name.eq(&name))
+                .one(db)
+                .await
+            {
+                description = pkg.description.clone();
+                repo = Some((pkg.vcs.clone(), pkg.repo_url.clone()));
+                if let Ok(rows) = version::Entity::find()
+                    .filter(version::Column::PackageId.eq(pkg.id))
+                    .all(db)
+                    .await
+                {
+                    versions = rows
+                        .into_iter()
+                        .map(|v| VersionRow {
+                            version: v.version,
+                            published_at: v.published_at.format("%Y-%m-%d").to_string(),
+                            size: v.size,
+                            sha256: v.sha256,
+                            vcs_tag: v.vcs_tag,
+                            yanked: v.yanked,
+                        })
+                        .collect();
+                    versions.sort_by(|a, b| {
+                        let pa = semver::Version::parse(&a.version).ok();
+                        let pb = semver::Version::parse(&b.version).ok();
+                        pb.cmp(&pa)
+                    });
+                }
+            }
+        }
+    }
+
+    let content = html! {
+        section {
+            h1 class="mono" { (org_slug) "/" (name) }
+            @if let Some(description) = &description { p class="muted" { (description) } }
+            @if let Some((vcs, url)) = &repo {
+                p class="muted" { "backed by " span class="blue mono" { (vcs) } " at " a href=(url) { (url) } }
+            }
+            (install_snippet(&org_slug, &name))
+            @if versions.is_empty() {
+                p class="muted" { "no published versions found" }
+            } @else {
+                (version_table(&versions))
+            }
+        }
+    };
+    Html(
+        layout(
+            &format!("{org_slug}/{name} - zed-pkg"),
+            state.db.is_some(),
+            content,
+        )
+        .into_string(),
+    )
+}
+
+async fn org_page(
+    State(state): State<Arc<WebState>>,
+    Path(org_slug): Path<String>,
+) -> Html<String> {
+    let mut packages: Vec<PackageRow> = Vec::new();
+    if let Some(db) = &state.db {
+        if let Ok(Some(org_row)) = org::Entity::find()
+            .filter(org::Column::Slug.eq(&org_slug))
+            .one(db)
+            .await
+        {
+            if let Ok(rows) = package::Entity::find()
+                .filter(package::Column::OrgId.eq(org_row.id))
+                .order_by_desc(package::Column::CreatedAt)
+                .all(db)
+                .await
+            {
+                packages = rows
+                    .into_iter()
+                    .map(|pkg| PackageRow {
+                        org: org_slug.clone(),
+                        name: pkg.name,
+                        description: pkg.description,
+                        latest: None,
+                    })
+                    .collect();
+            }
+        }
+    }
+    let content = html! {
+        section {
+            h1 class="mono" { (org_slug) }
+            (package_rows(&packages, "org not found or empty"))
+        }
+    };
+    Html(
+        layout(
+            &format!("{org_slug} - zed-pkg"),
+            state.db.is_some(),
+            content,
+        )
+        .into_string(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tower::util::ServiceExt;
+
+    fn offline_state() -> Arc<WebState> {
+        Arc::new(WebState {
+            db: None,
+            registry_url: "https://registry.zpkg.tech".into(),
+        })
+    }
+
+    async fn body_of(response: axum::response::Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    #[tokio::test]
+    async fn home_renders_offline_mode() {
+        let app = router(offline_state());
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = body_of(response).await;
+        assert!(body.contains("registry offline"));
+        assert!(body.contains("not repositories"));
+    }
+
+    #[tokio::test]
+    async fn healthz_reports_db_false_when_offline() {
+        let app = router(offline_state());
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/healthz")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body_of(response).await;
+        assert!(body.contains("\"db\":false"));
+    }
+}
