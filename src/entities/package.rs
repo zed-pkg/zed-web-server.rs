@@ -10,6 +10,8 @@ pub struct Model {
     pub description: Option<String>,
     pub vcs: String,
     pub repo_url: String,
+    #[sea_orm(default_value = "semver")]
+    pub version_scheme: String,
     pub created_at: DateTimeUtc,
 }
 
