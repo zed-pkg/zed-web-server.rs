@@ -2,17 +2,30 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::{Path, Query, State};
+use axum::http::{HeaderValue, header};
 use axum::response::Html;
 use axum::routing::get;
 use maud::html;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use serde::Deserialize;
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::entities::{org, package, version};
 use crate::state::WebState;
 use crate::views::{
-    self, PackageRow, VersionRow, install_snippet, layout, package_rows, search_box, version_table,
+    PackageRow, VersionRow, install_snippet, layout, package_rows, search_box, version_table,
 };
+
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
+     img-src 'self' data:; frame-ancestors 'none'";
+
+/// Layer that sets a static security header on every response.
+fn security_header(
+    name: header::HeaderName,
+    value: &'static str,
+) -> SetResponseHeaderLayer<HeaderValue> {
+    SetResponseHeaderLayer::overriding(name, HeaderValue::from_static(value))
+}
 
 pub fn router(state: Arc<WebState>) -> Router {
     Router::new()
@@ -24,6 +37,16 @@ pub fn router(state: Arc<WebState>) -> Router {
         .route("/orgs/{org}", get(org_page))
         .nest_service("/static", tower_http::services::ServeDir::new("static"))
         .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(security_header(
+            header::CONTENT_SECURITY_POLICY,
+            CONTENT_SECURITY_POLICY,
+        ))
+        .layer(security_header(header::X_CONTENT_TYPE_OPTIONS, "nosniff"))
+        .layer(security_header(header::X_FRAME_OPTIONS, "DENY"))
+        .layer(security_header(
+            header::REFERRER_POLICY,
+            "strict-origin-when-cross-origin",
+        ))
         .with_state(state)
 }
 
@@ -95,15 +118,29 @@ struct SearchParams {
     q: String,
 }
 
+/// Escape `\`, `%`, and `_` so user input matches literally inside a SQL
+/// LIKE pattern (SeaORM's `contains` wraps the value in `%...%` unescaped).
+fn escape_like(query: &str) -> String {
+    let mut escaped = String::with_capacity(query.len());
+    for ch in query.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
 async fn find_packages(state: &WebState, query: &str) -> Vec<PackageRow> {
     let Some(db) = &state.db else {
         return Vec::new();
     };
+    let pattern = escape_like(query);
     let Ok(rows) = package::Entity::find()
         .filter(
             Condition::any()
-                .add(package::Column::Name.contains(query))
-                .add(package::Column::Description.contains(query)),
+                .add(package::Column::Name.contains(&pattern))
+                .add(package::Column::Description.contains(&pattern)),
         )
         .find_also_related(org::Entity)
         .limit(50)
@@ -145,6 +182,12 @@ async fn search_partial(
 ) -> Html<String> {
     let results = find_packages(&state, &params.q).await;
     Html(package_rows(&results, "no matches").into_string())
+}
+
+/// Only http(s) URLs are worth turning into hyperlinks; anything else
+/// (`javascript:`, `data:`, ssh remotes, ...) is rendered as plain text.
+fn is_linkable_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
 }
 
 async fn package_page(
@@ -200,7 +243,10 @@ async fn package_page(
             h1 class="mono" { (org_slug) "/" (name) }
             @if let Some(description) = &description { p class="muted" { (description) } }
             @if let Some((vcs, url)) = &repo {
-                p class="muted" { "backed by " span class="blue mono" { (vcs) } " at " a href=(url) { (url) } }
+                p class="muted" {
+                    "backed by " span class="blue mono" { (vcs) } " at "
+                    @if is_linkable_url(url) { a href=(url) { (url) } } @else { (url) }
+                }
             }
             (install_snippet(&org_slug, &name))
             @if versions.is_empty() {
@@ -300,6 +346,50 @@ mod tests {
         let body = body_of(response).await;
         assert!(body.contains("registry offline"));
         assert!(body.contains("not repositories"));
+    }
+
+    #[tokio::test]
+    async fn responses_carry_security_headers() {
+        let app = router(offline_state());
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let headers = response.headers();
+        assert_eq!(
+            headers["content-security-policy"],
+            "default-src 'self'; script-src 'self'; style-src 'self'; \
+             img-src 'self' data:; frame-ancestors 'none'"
+        );
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+        assert_eq!(headers["x-frame-options"], "DENY");
+        assert_eq!(
+            headers["referrer-policy"],
+            "strict-origin-when-cross-origin"
+        );
+    }
+
+    #[test]
+    fn escape_like_makes_wildcards_literal() {
+        assert_eq!(escape_like("http"), "http");
+        assert_eq!(escape_like("100%"), "100\\%");
+        assert_eq!(escape_like("a_b"), "a\\_b");
+        assert_eq!(escape_like("c:\\dir"), "c:\\\\dir");
+        assert_eq!(escape_like("%_\\"), "\\%\\_\\\\");
+    }
+
+    #[test]
+    fn only_http_urls_are_linkable() {
+        assert!(is_linkable_url("https://github.com/acme/http-kit"));
+        assert!(is_linkable_url("http://internal.example"));
+        assert!(!is_linkable_url("javascript:alert(1)"));
+        assert!(!is_linkable_url("git@github.com:acme/http-kit.git"));
+        assert!(!is_linkable_url("ssh://git@github.com/acme/http-kit"));
     }
 
     #[tokio::test]

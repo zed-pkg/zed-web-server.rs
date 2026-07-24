@@ -4,9 +4,10 @@ mod state;
 mod views;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
-use sea_orm::Database;
+use sea_orm::{ConnectOptions, Database};
 use tracing_subscriber::EnvFilter;
 
 use crate::state::WebState;
@@ -23,13 +24,25 @@ async fn main() -> Result<()> {
         .init();
 
     let db = match std::env::var("DATABASE_URL") {
-        Ok(url) => match Database::connect(&url).await {
-            Ok(db) => Some(db),
-            Err(error) => {
-                tracing::warn!(%error, "DATABASE_URL unreachable; serving in offline mode");
-                None
+        Ok(url) => {
+            let max_connections = std::env::var("DB_MAX_CONNECTIONS")
+                .ok()
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(10);
+            let mut options = ConnectOptions::new(url);
+            options
+                .max_connections(max_connections)
+                .connect_timeout(Duration::from_secs(5))
+                .acquire_timeout(Duration::from_secs(8))
+                .sqlx_logging(false);
+            match Database::connect(options).await {
+                Ok(db) => Some(db),
+                Err(error) => {
+                    tracing::warn!(%error, "DATABASE_URL unreachable; serving in offline mode");
+                    None
+                }
             }
-        },
+        }
         Err(_) => {
             tracing::warn!("DATABASE_URL not set; serving in offline mode");
             None
