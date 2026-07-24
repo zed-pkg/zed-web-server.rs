@@ -1,8 +1,18 @@
+# Fast Rust CI (zed-docs issue #8): rust-cache + sccache cross-run compile
+# caching, mold as the linker, and cargo-nextest for parallel tests. The
+# toolchain is pinned via rust-toolchain.toml so the cache key stays stable.
 name: ci
 on:
   push:
     branches: [main]
   pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  SCCACHE_GHA_ENABLED: "true"
+  # A GitHub cache-service outage must degrade to uncached compiles, not fail
+  # the build (sccache is an optimization, never a dependency).
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
 
 jobs:
   test:
@@ -16,10 +26,33 @@ jobs:
           repository: zed-pkg/zed-interfaces
           path: zed-interfaces
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install mold (fast linker)
+        uses: rui314/setup-mold@v1
+        with:
+          make-default: true
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+      # The GHA cache service has real outages; sccache is an optimization,
+      # never a dependency. Only wire it in when its backend responds.
+      - name: Enable sccache when the cache backend is healthy
+        shell: bash
+        run: |
+          if sccache --show-stats >/dev/null 2>&1; then
+            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          else
+            echo "cache service unavailable; building without sccache"
+          fi
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: zed-web-server.rs
-      - run: cargo fmt --check
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+      - name: Format
+        run: cargo fmt --check
         working-directory: zed-web-server.rs
-      - run: cargo test
+      - name: Test (nextest)
+        run: cargo nextest run
+        working-directory: zed-web-server.rs
+      - name: Doctests
+        run: cargo test --doc
         working-directory: zed-web-server.rs

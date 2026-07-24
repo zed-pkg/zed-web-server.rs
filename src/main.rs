@@ -7,7 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use sea_orm::{ConnectOptions, Database};
+use sea_orm::SqlxPostgresConnector;
+use sea_orm::sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use tracing_subscriber::EnvFilter;
 
 use crate::state::WebState;
