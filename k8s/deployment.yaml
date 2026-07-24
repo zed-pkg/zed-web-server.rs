@@ -1,0 +1,74 @@
+# dd-zed-web-server — the zed-pkg registry web UI (Maud/axum/htmx, read-only).
+#
+# Layer-2 (app-owned) manifest: namespace-scoped ONLY. The `zed` Namespace, its
+# ResourceQuota/LimitRange and the default-deny NetworkPolicy are Layer-1, owned by
+# ORESoftware/k8s-cluster (remote/argocd/projects/zed.tenant.yaml). Do NOT add a
+# Namespace/ClusterRole/CRD here — the `zed` AppProject enforces
+# clusterResourceWhitelist: [] and the sync will fail.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dd-zed-web-server
+  namespace: zed
+  labels:
+    app: dd-zed-web-server
+    app.kubernetes.io/name: dd-zed-web-server
+    app.kubernetes.io/part-of: zed
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dd-zed-web-server
+  template:
+    metadata:
+      labels:
+        app: dd-zed-web-server
+        app.kubernetes.io/name: dd-zed-web-server
+        app.kubernetes.io/part-of: zed
+    spec:
+      # Read-only UI over the same Postgres; never calls the k8s API.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: zed-web-server
+          image: ghcr.io/zed-pkg/zed-web-server:main
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+          env:
+            - { name: BIND_ADDR, value: "0.0.0.0:8081" }
+            - { name: PUBLIC_REGISTRY_URL, value: "https://registry.zpkg.tech" }
+            - { name: RUST_LOG, value: "info" }
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: dd-zed-web-secrets, key: ZED_WEB_DATABASE_URL }
+          # The UI degrades gracefully without the DB (offline banner), so
+          # /healthz stays 200 through a DB blip — neither probe flaps on it.
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+          lifecycle:
+            preStop:
+              exec: { command: ["sleep", "5"] }
+      volumes:
+        - name: tmp
+          emptyDir: {}
