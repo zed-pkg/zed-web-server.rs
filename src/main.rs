@@ -4,9 +4,10 @@ mod state;
 mod views;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
-use sea_orm::Database;
+use sea_orm::{ConnectOptions, Database};
 use tracing_subscriber::EnvFilter;
 
 use crate::state::WebState;
