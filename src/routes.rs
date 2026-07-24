@@ -53,9 +53,10 @@ pub fn router(state: Arc<WebState>) -> Router {
         // connection.
         .layer(tower_http::catch_panic::CatchPanicLayer::new())
         // Cap the wall-clock time any single request may occupy a worker.
-        .layer(tower_http::timeout::TimeoutLayer::new(Duration::from_secs(
-            10,
-        )))
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(10),
+        ))
         .layer(security_header(
             header::CONTENT_SECURITY_POLICY,
             CONTENT_SECURITY_POLICY,
