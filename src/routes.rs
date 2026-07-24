@@ -8,7 +8,6 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use maud::html;
-use sea_orm::sea_query::Query as SeaQuery;
 use sea_orm::{
     ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect, Select,
 };
