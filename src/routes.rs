@@ -243,7 +243,10 @@ async fn package_page(
             h1 class="mono" { (org_slug) "/" (name) }
             @if let Some(description) = &description { p class="muted" { (description) } }
             @if let Some((vcs, url)) = &repo {
-                p class="muted" { "backed by " span class="blue mono" { (vcs) } " at " a href=(url) { (url) } }
+                p class="muted" {
+                    "backed by " span class="blue mono" { (vcs) } " at "
+                    @if is_linkable_url(url) { a href=(url) { (url) } } @else { (url) }
+                }
             }
             (install_snippet(&org_slug, &name))
             @if versions.is_empty() {
