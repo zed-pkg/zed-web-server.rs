@@ -49,9 +49,20 @@ pub fn router(state: Arc<WebState>) -> Router {
         .route("/orgs/{org}", get(org_page))
         .nest_service("/static", tower_http::services::ServeDir::new("static"))
         .layer(tower_http::trace::TraceLayer::new_for_http())
+        // Turn a panic in a handler into a graceful 500 instead of dropping the
+        // connection.
+        .layer(tower_http::catch_panic::CatchPanicLayer::new())
+        // Cap the wall-clock time any single request may occupy a worker.
+        .layer(tower_http::timeout::TimeoutLayer::new(Duration::from_secs(
+            10,
+        )))
         .layer(security_header(
             header::CONTENT_SECURITY_POLICY,
             CONTENT_SECURITY_POLICY,
+        ))
+        .layer(security_header(
+            header::STRICT_TRANSPORT_SECURITY,
+            STRICT_TRANSPORT_SECURITY,
         ))
         .layer(security_header(header::X_CONTENT_TYPE_OPTIONS, "nosniff"))
         .layer(security_header(header::X_FRAME_OPTIONS, "DENY"))
