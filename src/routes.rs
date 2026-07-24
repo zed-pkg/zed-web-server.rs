@@ -1,12 +1,17 @@
 use std::sync::Arc;
 
+use std::time::Duration;
+
 use axum::Router;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderValue, header};
-use axum::response::Html;
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use maud::html;
-use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+use sea_orm::sea_query::Query as SeaQuery;
+use sea_orm::{
+    ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect, Select,
+};
 use serde::Deserialize;
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -16,8 +21,16 @@ use crate::views::{
     PackageRow, VersionRow, install_snippet, layout, package_rows, search_box, version_table,
 };
 
+/// Upper bound on rows fetched for an org's package listing and a package's
+/// version listing. Mirrors the caps on the search (50) and recent (20) paths
+/// so a single org/package can't force an unbounded scan.
+const PAGE_LIMIT: u64 = 100;
+
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
-     img-src 'self' data:; frame-ancestors 'none'";
+     img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; \
+     object-src 'none'";
+
+const STRICT_TRANSPORT_SECURITY: &str = "max-age=63072000; includeSubDomains";
 
 /// Layer that sets a static security header on every response.
 fn security_header(
