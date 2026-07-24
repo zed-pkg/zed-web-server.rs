@@ -39,6 +39,5 @@ jobs:
       - name: Test (nextest)
         run: cargo nextest run
         working-directory: zed-web-server.rs
-      - name: Doctests
-        run: cargo test --doc
-        working-directory: zed-web-server.rs
+      # No doctest step: this crate is bin-only (no library target), and
+      # `cargo test --doc` errors rather than no-ops on bin-only packages.
