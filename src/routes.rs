@@ -118,15 +118,29 @@ struct SearchParams {
     q: String,
 }
 
+/// Escape `\`, `%`, and `_` so user input matches literally inside a SQL
+/// LIKE pattern (SeaORM's `contains` wraps the value in `%...%` unescaped).
+fn escape_like(query: &str) -> String {
+    let mut escaped = String::with_capacity(query.len());
+    for ch in query.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
 async fn find_packages(state: &WebState, query: &str) -> Vec<PackageRow> {
     let Some(db) = &state.db else {
         return Vec::new();
     };
+    let pattern = escape_like(query);
     let Ok(rows) = package::Entity::find()
         .filter(
             Condition::any()
-                .add(package::Column::Name.contains(query))
-                .add(package::Column::Description.contains(query)),
+                .add(package::Column::Name.contains(&pattern))
+                .add(package::Column::Description.contains(&pattern)),
         )
         .find_also_related(org::Entity)
         .limit(50)
