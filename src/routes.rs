@@ -2,17 +2,30 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::{Path, Query, State};
+use axum::http::{HeaderValue, header};
 use axum::response::Html;
 use axum::routing::get;
 use maud::html;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use serde::Deserialize;
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::entities::{org, package, version};
 use crate::state::WebState;
 use crate::views::{
-    self, PackageRow, VersionRow, install_snippet, layout, package_rows, search_box, version_table,
+    PackageRow, VersionRow, install_snippet, layout, package_rows, search_box, version_table,
 };
+
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
+     img-src 'self' data:; frame-ancestors 'none'";
+
+/// Layer that sets a static security header on every response.
+fn security_header(
+    name: header::HeaderName,
+    value: &'static str,
+) -> SetResponseHeaderLayer<HeaderValue> {
+    SetResponseHeaderLayer::overriding(name, HeaderValue::from_static(value))
+}
 
 pub fn router(state: Arc<WebState>) -> Router {
     Router::new()
@@ -24,6 +37,16 @@ pub fn router(state: Arc<WebState>) -> Router {
         .route("/orgs/{org}", get(org_page))
         .nest_service("/static", tower_http::services::ServeDir::new("static"))
         .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(security_header(
+            header::CONTENT_SECURITY_POLICY,
+            CONTENT_SECURITY_POLICY,
+        ))
+        .layer(security_header(header::X_CONTENT_TYPE_OPTIONS, "nosniff"))
+        .layer(security_header(header::X_FRAME_OPTIONS, "DENY"))
+        .layer(security_header(
+            header::REFERRER_POLICY,
+            "strict-origin-when-cross-origin",
+        ))
         .with_state(state)
 }
 
