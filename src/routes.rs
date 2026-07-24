@@ -455,7 +455,12 @@ mod tests {
         assert_eq!(
             headers["content-security-policy"],
             "default-src 'self'; script-src 'self'; style-src 'self'; \
-             img-src 'self' data:; frame-ancestors 'none'"
+             img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; \
+             object-src 'none'"
+        );
+        assert_eq!(
+            headers["strict-transport-security"],
+            "max-age=63072000; includeSubDomains"
         );
         assert_eq!(headers["x-content-type-options"], "nosniff");
         assert_eq!(headers["x-frame-options"], "DENY");
@@ -463,6 +468,50 @@ mod tests {
             headers["referrer-policy"],
             "strict-origin-when-cross-origin"
         );
+    }
+
+    #[test]
+    fn org_and_version_queries_are_bounded() {
+        use sea_orm::{DatabaseBackend, QueryTrait};
+
+        let id = sea_orm::prelude::Uuid::nil();
+        let org_sql = org_packages_query(id)
+            .build(DatabaseBackend::Postgres)
+            .sql;
+        assert!(org_sql.contains("LIMIT"), "org query missing LIMIT: {org_sql}");
+        let version_sql = package_versions_query(id)
+            .build(DatabaseBackend::Postgres)
+            .sql;
+        assert!(
+            version_sql.contains("LIMIT"),
+            "version query missing LIMIT: {version_sql}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_org_returns_404() {
+        use sea_orm::{DatabaseBackend, MockDatabase};
+
+        // Org lookup returns zero rows -> genuinely-missing org -> 404
+        // (as opposed to offline mode, which renders 200).
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([Vec::<org::Model>::new()])
+            .into_connection();
+        let state = Arc::new(WebState {
+            db: Some(db),
+            registry_url: "https://registry.zpkg.tech".into(),
+        });
+        let app = router(state);
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/orgs/does-not-exist")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 
     #[test]
