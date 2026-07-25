@@ -91,38 +91,7 @@ async fn main() -> Result<()> {
         .init();
 
     let db = match std::env::var("DATABASE_URL") {
-        Ok(url) => {
-            let max_connections = std::env::var("DB_MAX_CONNECTIONS")
-                .ok()
-                .and_then(|value| value.parse::<u32>().ok())
-                .unwrap_or(10);
-            // The HTTP layer times out at 10s, but a dropped axum future does
-            // not cancel the statement on the Postgres side — enforce a
-            // server-side statement_timeout just below the HTTP cap so
-            // abandoned queries can't pile up on the database.
-            let statement_timeout_ms = std::env::var("DB_STATEMENT_TIMEOUT_MS")
-                .ok()
-                .and_then(|value| value.parse::<u32>().ok())
-                .unwrap_or(8_000);
-            let connected = async {
-                let connect = url
-                    .parse::<PgConnectOptions>()?
-                    .options([("statement_timeout", statement_timeout_ms.to_string())]);
-                let pool = PgPoolOptions::new()
-                    .max_connections(max_connections)
-                    .acquire_timeout(Duration::from_secs(8))
-                    .connect_with(connect)
-                    .await?;
-                Ok::<_, anyhow::Error>(SqlxPostgresConnector::from_sqlx_postgres_pool(pool))
-            };
-            match connected.await {
-                Ok(db) => Some(db),
-                Err(error) => {
-                    tracing::warn!(%error, "DATABASE_URL unreachable; serving in offline mode");
-                    None
-                }
-            }
-        }
+        Ok(url) => connect_with_retry(&url).await,
         Err(_) => {
             tracing::warn!("DATABASE_URL not set; serving in offline mode");
             None
