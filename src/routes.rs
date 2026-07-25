@@ -8,9 +8,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use maud::html;
-use sea_orm::{
-    ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect, Select,
-};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect, Select};
 use serde::Deserialize;
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -337,10 +335,7 @@ async fn package_page(
     }
 }
 
-async fn org_page(
-    State(state): State<Arc<WebState>>,
-    Path(org_slug): Path<String>,
-) -> Response {
+async fn org_page(State(state): State<Arc<WebState>>, Path(org_slug): Path<String>) -> Response {
     let mut packages: Vec<PackageRow> = Vec::new();
     // Offline mode keeps the old 200-with-empty-body behaviour; with a DB a
     // missing org is a 404 and a DbErr a 500.
@@ -476,10 +471,11 @@ mod tests {
         use sea_orm::{DatabaseBackend, QueryTrait};
 
         let id = sea_orm::prelude::Uuid::nil();
-        let org_sql = org_packages_query(id)
-            .build(DatabaseBackend::Postgres)
-            .sql;
-        assert!(org_sql.contains("LIMIT"), "org query missing LIMIT: {org_sql}");
+        let org_sql = org_packages_query(id).build(DatabaseBackend::Postgres).sql;
+        assert!(
+            org_sql.contains("LIMIT"),
+            "org query missing LIMIT: {org_sql}"
+        );
         let version_sql = package_versions_query(id)
             .build(DatabaseBackend::Postgres)
             .sql;
