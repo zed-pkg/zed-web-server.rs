@@ -4,14 +4,80 @@ mod state;
 mod views;
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use sea_orm::SqlxPostgresConnector;
 use sea_orm::sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sea_orm::{DatabaseConnection, SqlxPostgresConnector};
 use tracing_subscriber::EnvFilter;
 
 use crate::state::WebState;
+
+/// Open a single Postgres pool. `connect_with` establishes and verifies one
+/// connection, so this fails fast when Postgres is not yet reachable.
+async fn try_connect(
+    url: &str,
+    max_connections: u32,
+    statement_timeout_ms: u32,
+) -> Result<DatabaseConnection> {
+    let connect = url
+        .parse::<PgConnectOptions>()?
+        .options([("statement_timeout", statement_timeout_ms.to_string())]);
+    let pool = PgPoolOptions::new()
+        .max_connections(max_connections)
+        .acquire_timeout(Duration::from_secs(8))
+        .connect_with(connect)
+        .await?;
+    Ok(SqlxPostgresConnector::from_sqlx_postgres_pool(pool))
+}
+
+/// Connect to Postgres, retrying until it is reachable or a bounded deadline
+/// passes. A read-only web pod usually starts alongside its database; without a
+/// retry it loses that startup race, falls back to offline mode, and — because
+/// it never crashes — stays offline forever (k8s never restarts it). We only
+/// need to cover the initial race: once the pool exists, sqlx transparently
+/// re-establishes dropped connections across later database restarts.
+async fn connect_with_retry(url: &str) -> Option<DatabaseConnection> {
+    let max_connections = std::env::var("DB_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(10);
+    // The HTTP layer times out at 10s, but a dropped axum future does not cancel
+    // the statement on Postgres — enforce a server-side statement_timeout just
+    // below the HTTP cap so abandoned queries can't pile up on the database.
+    let statement_timeout_ms = std::env::var("DB_STATEMENT_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(8_000);
+    let max_wait = Duration::from_secs(
+        std::env::var("DB_CONNECT_MAX_WAIT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(30),
+    );
+    let started = Instant::now();
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        match try_connect(url, max_connections, statement_timeout_ms).await {
+            Ok(db) => {
+                if attempt > 1 {
+                    tracing::info!(attempt, "connected to Postgres after retry");
+                }
+                return Some(db);
+            }
+            Err(error) if started.elapsed() >= max_wait => {
+                tracing::warn!(%error, attempts = attempt, elapsed_s = started.elapsed().as_secs(),
+                    "Postgres unreachable within DB_CONNECT_MAX_WAIT_SECS; serving in offline mode");
+                return None;
+            }
+            Err(error) => {
+                tracing::warn!(%error, attempt, "Postgres not ready yet; retrying in 2s");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
+}
 
 /// MASH: Maud templates, Axum routing, SeaORM reads (never bare SQLx),
 /// HTMX for live search. The API server owns the schema; this binary is a
@@ -25,38 +91,7 @@ async fn main() -> Result<()> {
         .init();
 
     let db = match std::env::var("DATABASE_URL") {
-        Ok(url) => {
-            let max_connections = std::env::var("DB_MAX_CONNECTIONS")
-                .ok()
-                .and_then(|value| value.parse::<u32>().ok())
-                .unwrap_or(10);
-            // The HTTP layer times out at 10s, but a dropped axum future does
-            // not cancel the statement on the Postgres side — enforce a
-            // server-side statement_timeout just below the HTTP cap so
-            // abandoned queries can't pile up on the database.
-            let statement_timeout_ms = std::env::var("DB_STATEMENT_TIMEOUT_MS")
-                .ok()
-                .and_then(|value| value.parse::<u32>().ok())
-                .unwrap_or(8_000);
-            let connected = async {
-                let connect = url
-                    .parse::<PgConnectOptions>()?
-                    .options([("statement_timeout", statement_timeout_ms.to_string())]);
-                let pool = PgPoolOptions::new()
-                    .max_connections(max_connections)
-                    .acquire_timeout(Duration::from_secs(8))
-                    .connect_with(connect)
-                    .await?;
-                Ok::<_, anyhow::Error>(SqlxPostgresConnector::from_sqlx_postgres_pool(pool))
-            };
-            match connected.await {
-                Ok(db) => Some(db),
-                Err(error) => {
-                    tracing::warn!(%error, "DATABASE_URL unreachable; serving in offline mode");
-                    None
-                }
-            }
-        }
+        Ok(url) => connect_with_retry(&url).await,
         Err(_) => {
             tracing::warn!("DATABASE_URL not set; serving in offline mode");
             None
