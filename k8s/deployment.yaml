@@ -35,8 +35,12 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: zed-web-server
+          # `main` is a MUTABLE tag: with IfNotPresent a node holding an older
+          # cached `main` never re-pulls, so replicas can serve different
+          # builds. `Always` converges every pod start on the current image;
+          # pinning by digest in the GitOps overlay is the durable fix.
           image: ghcr.io/zed-pkg/zed-web-server:main
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 8081
