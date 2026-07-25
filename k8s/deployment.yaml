@@ -28,6 +28,8 @@ spec:
     spec:
       # Read-only UI over the same Postgres; never calls the k8s API.
       automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: benefactor-ghcr
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
