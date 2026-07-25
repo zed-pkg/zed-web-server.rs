@@ -13,6 +13,18 @@ metadata:
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # This server is entirely anonymous (every route is a GET), so per-IP
+    # limiting at the controller — which sees the real client address — is the
+    # only rate limiting available. Sized for a human browsing plus htmx
+    # live-search typing, which fires a request per keystroke burst.
+    nginx.ingress.kubernetes.io/limit-rps: "30"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+    nginx.ingress.kubernetes.io/limit-connections: "30"
+    # Above the app's own 10s request timeout, so the app's response wins.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "20"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "20"
+    # Read-only UI: no request body of consequence.
+    nginx.ingress.kubernetes.io/proxy-body-size: "64k"
 spec:
   ingressClassName: nginx
   tls:
