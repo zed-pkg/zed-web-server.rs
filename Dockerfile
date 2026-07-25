@@ -2,12 +2,13 @@
 # of the ../zed-interfaces path dependency:
 #
 #   docker build -f zed-web-server.rs/Dockerfile -t ghcr.io/zed-pkg/zed-web-server:dev .
-# rust >= 1.85 for the crate's `edition = "2024"`. RUSTUP_TOOLCHAIN pins the
-# Docker build to the base image's toolchain and overrides the repo's
-# rust-toolchain.toml (channel = "stable"), so the build never downloads a
-# floating stable toolchain — reproducible, no build-time CDN dependency.
-FROM rust:1.90-slim AS build
-ENV RUSTUP_TOOLCHAIN=1.90.0
+# Toolchain must satisfy `edition = "2024"` (>= 1.85) and the shared workspace
+# deps' MSRV, so the base is pinned to 1.97.1. RUSTUP_TOOLCHAIN (the base image's
+# exact version) overrides the repo's rust-toolchain.toml (channel = "stable"),
+# so the build uses the installed toolchain and never downloads one at build
+# time — reproducible, no build-time CDN dependency.
+FROM rust:1.97-slim AS build
+ENV RUSTUP_TOOLCHAIN=1.97.1
 WORKDIR /work
 COPY zed-interfaces ./zed-interfaces
 COPY zed-web-server.rs ./zed-web-server.rs
