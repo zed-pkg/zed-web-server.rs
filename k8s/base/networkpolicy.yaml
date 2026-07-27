@@ -23,6 +23,13 @@ spec:
               kubernetes.io/metadata.name: observability
       ports:
         - { protocol: TCP, port: 8081 }
+    # Namespace-local health and integration probes must carry this tenant label.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: zed
+      ports:
+        - { protocol: TCP, port: 8081 }
   egress:
     - to:
         - namespaceSelector: {}
