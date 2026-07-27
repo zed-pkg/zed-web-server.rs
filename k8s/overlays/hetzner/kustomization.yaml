@@ -1,0 +1,51 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../..
+
+patches:
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: dd-zed-web-server
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: dd-zed-web-server
+      spec:
+        template:
+          spec:
+            containers:
+              - name: zed-web-server
+                env:
+                  - name: PUBLIC_REGISTRY_URL
+                    value: https://registry.hetzner.zpkg.tech
+  - target:
+      group: networking.k8s.io
+      version: v1
+      kind: Ingress
+      name: dd-zed-web-server
+    patch: |-
+      - op: replace
+        path: /spec/tls/0/hosts
+        value:
+          - hetzner.zpkg.tech
+      - op: replace
+        path: /spec/tls/0/secretName
+        value: zed-web-server-hetzner-tls
+      - op: replace
+        path: /spec/rules
+        value:
+          - host: hetzner.zpkg.tech
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: dd-zed-web-server
+                      port:
+                        number: 8081
