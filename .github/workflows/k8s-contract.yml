@@ -18,17 +18,27 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Render AWS and Hetzner overlays
+
+      - name: Render AWS overlay
+        run: kubectl kustomize k8s/overlays/aws > /tmp/aws.yaml
+
+      - name: Render Hetzner overlay
+        run: kubectl kustomize k8s/overlays/hetzner > /tmp/hetzner.yaml
+
+      - name: Verify workload contract
         shell: bash
         run: |
           set -euo pipefail
-          kubectl kustomize k8s/overlays/aws > /tmp/aws.yaml
-          kubectl kustomize k8s/overlays/hetzner > /tmp/hetzner.yaml
-          grep -q 'registry.aws.zpkg.tech' /tmp/aws.yaml
-          grep -q 'host: aws.zpkg.tech' /tmp/aws.yaml
-          grep -q 'registry.hetzner.zpkg.tech' /tmp/hetzner.yaml
-          grep -q 'host: hetzner.zpkg.tech' /tmp/hetzner.yaml
           for rendered in /tmp/aws.yaml /tmp/hetzner.yaml; do
             grep -q 'replicas: 2' "$rendered"
             grep -q 'image: ghcr.io/zed-pkg/zed-web-server:main' "$rendered"
           done
+
+      - name: Verify cloud-local API and web hosts
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'registry.aws.zpkg.tech' /tmp/aws.yaml
+          grep -q 'host: aws.zpkg.tech' /tmp/aws.yaml
+          grep -q 'registry.hetzner.zpkg.tech' /tmp/hetzner.yaml
+          grep -q 'host: hetzner.zpkg.tech' /tmp/hetzner.yaml
