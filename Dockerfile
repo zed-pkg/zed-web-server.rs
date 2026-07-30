@@ -2,13 +2,12 @@
 # of the ../zed-interfaces path dependency:
 #
 #   docker build -f zed-web-server.rs/Dockerfile -t ghcr.io/zed-pkg/zed-web-server:dev .
-# Toolchain must satisfy `edition = "2024"` (>= 1.85) and the shared workspace
-# deps' MSRV, so the base is pinned to 1.97.1. RUSTUP_TOOLCHAIN (the base image's
-# exact version) overrides the repo's rust-toolchain.toml (channel = "stable"),
-# so the build uses the installed toolchain and never downloads one at build
-# time — reproducible, no build-time CDN dependency.
-# -bookworm (not the default trixie) so the build glibc matches the
-# debian:12-slim (bookworm) runtime stage below.
+#
+# The toolchain must satisfy `edition = "2024"` (>= 1.85) and the shared
+# workspace dependencies' MSRV, so the base is pinned to 1.97.1.
+# RUSTUP_TOOLCHAIN overrides the repo's floating rust-toolchain.toml channel so
+# the build uses the toolchain already present in the image.
+# `-bookworm` keeps the build glibc compatible with the Debian 12 runtime stage.
 FROM rust:1.97-slim-bookworm AS build
 ENV RUSTUP_TOOLCHAIN=1.97.1
 WORKDIR /work
@@ -18,6 +17,14 @@ WORKDIR /work/zed-web-server.rs
 RUN cargo build --release --locked
 
 FROM debian:12-slim
+ARG ZED_WEB_REVISION=unknown
+ARG ZED_INTERFACES_REVISION=unknown
+LABEL org.opencontainers.image.title="Zed registry web" \
+      org.opencontainers.image.description="Read-only Zed package registry web interface" \
+      org.opencontainers.image.source="https://github.com/zed-pkg/zed-web-server.rs" \
+      org.opencontainers.image.revision="$ZED_WEB_REVISION" \
+      org.opencontainers.image.licenses="MIT" \
+      io.zpkg.interfaces.revision="$ZED_INTERFACES_REVISION"
 RUN useradd --system --uid 10001 zed \
     && apt-get update \
     && apt-get install -y --no-install-recommends curl \
