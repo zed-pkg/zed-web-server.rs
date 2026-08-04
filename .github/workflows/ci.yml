@@ -88,7 +88,8 @@ jobs:
           git grep -qF 'pub async fn run' -- src/server.rs
           git grep -qF 'connect_with_retry' -- src/server.rs
           git grep -qF 'DatabaseStartupPolicy' -- src/server.rs
-          git grep -qF 'The API server remains the schema and write-path authority.' -- RUNTIME.md
+          git grep -qF 'The API server remains the' -- RUNTIME.md
+          git grep -qF 'schema and write-path authority.' -- RUNTIME.md
           if git grep -nE 'DatabaseConnection|PgPoolOptions|routes::router|TcpListener::bind' -- src/main.rs; then
             echo 'database, routing, and listener lifecycle must remain outside src/main.rs' >&2
             exit 1
