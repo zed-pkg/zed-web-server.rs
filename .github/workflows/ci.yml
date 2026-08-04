@@ -6,9 +6,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,7 +21,8 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -34,7 +40,13 @@ jobs:
           set -euo pipefail
           test "$(git -C zed-web-server.rs rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git -C zed-interfaces rev-parse HEAD)" = "$ZED_INTERFACES_SHA"
+      - name: Validate workflow syntax
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: zed-web-server.rs/.github/workflows/ci.yml
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          components: rustfmt, clippy
       - name: Install mold (fast linker)
         uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
         with:
@@ -45,8 +57,40 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@a6e08638ce5ee7b285b1e051c006e3be64fcff91 # nextest
       - name: Format
-        run: cargo fmt --check
         working-directory: zed-web-server.rs
-      - name: Test (nextest)
-        run: cargo nextest run
+        run: cargo fmt --all -- --check
+      - name: Check all targets
         working-directory: zed-web-server.rs
+        run: cargo check --locked --all-targets
+      - name: Strict Clippy
+        working-directory: zed-web-server.rs
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Test with nextest
+        working-directory: zed-web-server.rs
+        run: cargo nextest run --locked
+      - name: Documentation
+        working-directory: zed-web-server.rs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --no-deps
+      - name: Release build
+        working-directory: zed-web-server.rs
+        run: cargo build --locked --release
+      - name: Enforce process-runtime boundaries
+        working-directory: zed-web-server.rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f src/lib.rs
+          test -f src/server.rs
+          test -f RUNTIME.md
+          test "$(wc -l < src/main.rs)" -le 6
+          git grep -qF 'pub async fn run' -- src/server.rs
+          git grep -qF 'connect_with_retry' -- src/server.rs
+          git grep -qF 'DatabaseStartupPolicy' -- src/server.rs
+          git grep -qF 'The API server remains the schema and write-path authority.' -- RUNTIME.md
+          if git grep -nE 'DatabaseConnection|PgPoolOptions|routes::router|TcpListener::bind' -- src/main.rs; then
+            echo 'database, routing, and listener lifecycle must remain outside src/main.rs' >&2
+            exit 1
+          fi
+          git diff --check
