@@ -3069,10 +3069,12 @@ dependencies = [
 name = "zed-interfaces"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "schemars",
  "semver",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "toml",
 ]
