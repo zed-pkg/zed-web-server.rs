@@ -23,6 +23,13 @@ spec:
               kubernetes.io/metadata.name: observability
       ports:
         - { protocol: TCP, port: 8081 }
+    # Namespace-local health and integration probes must carry this tenant label.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: zed
+      ports:
+        - { protocol: TCP, port: 8081 }
   egress:
     - to:
         - namespaceSelector: {}
@@ -32,6 +39,14 @@ spec:
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
+    # TEMPORARY bootstrap metadata database, namespace-local and selected
+    # explicitly. Remove with the in-memory Postgres profile.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: zed-postgres
+      ports:
+        - { protocol: TCP, port: 5432 }
     # Postgres (Supabase direct 5432 / pooler 6543) over egress, per the
     # cluster contract. 443 covers TLS-fronted poolers.
     - to:
