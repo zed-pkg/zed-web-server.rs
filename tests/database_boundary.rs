@@ -12,16 +12,21 @@ fn read(relative: &str) -> String {
 }
 
 #[test]
-fn package_and_docs_pin_the_read_only_shared_library_contract() {
+fn package_and_docs_pin_the_canonical_read_only_orm_core() {
     let zpkg = read(".zpkg.toml");
-    assert!(zpkg.contains("\"zed-pkg/zed-lib\" = \"^0.1.0\""));
+    assert!(zpkg.contains("\"zed-pkg/zed-orm-core\" = \"^0.1.0\""));
     assert!(zpkg.contains("dir = \".vendor/.zed\""));
+    assert!(
+        !zpkg.contains("\"zed-pkg/zed-lib\""),
+        "the general library must not become a second ORM package owner"
+    );
 
     let boundary = read("docs/database-boundary.md");
     for contract in [
-        "DbRole::ReadOnly",
-        "assert_read_only",
-        "queries::read",
+        "zed-orm-core",
+        "read-only",
+        "opaque context",
+        "named policy-aware read functions",
         "default_transaction_read_only=on",
         "zed_pkg__web_ro",
         "sole request-serving writer",
