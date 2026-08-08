@@ -12,6 +12,8 @@ schema and write-path authority.
 - `src/state.rs` owns the read-only application state.
 - `src/entities.rs` owns SeaORM entity mappings used for registry reads.
 - `src/views.rs` owns Maud rendering.
+- `src/proxy.rs` owns the `/shared-auth` reverse-proxy handler (gateway to the
+  shared-auth service; enabled by `SHARED_AUTH_URL`, otherwise 503).
 
 The process runtime must not absorb route handlers, entity definitions, HTML
 rendering, registry write behavior, migrations, or schema ownership.
