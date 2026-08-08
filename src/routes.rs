@@ -64,8 +64,11 @@ pub fn router(state: Arc<WebState>) -> Router {
             "strict-origin-when-cross-origin",
         ));
 
+    // The bare prefix needs both spellings: `{*rest}` requires a non-empty
+    // capture, so `/shared-auth/` matches neither of the other two routes.
     let shared_auth = Router::new()
         .route("/shared-auth", any(proxy::forward))
+        .route("/shared-auth/", any(proxy::forward))
         .route("/shared-auth/{*rest}", any(proxy::forward));
 
     site.merge(shared_auth)
