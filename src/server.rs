@@ -60,6 +60,14 @@ fn parse_u64_or(value: Option<&str>, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+/// `SHARED_AUTH_URL` enables the /shared-auth gateway path. Trailing slashes
+/// are trimmed so joining with the stripped request path cannot double a `/`;
+/// unset or empty leaves the gateway disabled (those routes answer 503).
+fn shared_auth_url(value: Option<&str>) -> Option<String> {
+    let trimmed = value?.trim_end_matches('/');
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 /// Open and verify one Postgres pool under the reviewed startup policy.
 async fn try_connect(url: &str, policy: DatabaseStartupPolicy) -> Result<DatabaseConnection> {
     let connect = url
