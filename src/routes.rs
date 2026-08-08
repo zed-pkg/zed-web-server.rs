@@ -508,6 +508,8 @@ mod tests {
         let state = Arc::new(WebState {
             db: Some(db),
             registry_url: "https://registry.zpkg.net".into(),
+            shared_auth_url: None,
+            http: crate::proxy::client(),
         });
         let app = router(state);
         let response = app
