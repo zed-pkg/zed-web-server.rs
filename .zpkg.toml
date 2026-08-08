@@ -1,0 +1,15 @@
+[package]
+org = "zed-pkg"
+name = "zed-web-server"
+version = "0.1.0"
+description = "Zed registry MASH web UI with database-enforced read-only access to the shared registry schema"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/zed-pkg/zed-web-server.rs"
+
+[dependencies]
+"zed-pkg/zed-lib" = "^0.1.0"
+
+[install]
+dir = ".vendor/.zed"
