@@ -32,6 +32,18 @@ The UI preserves its existing fail-open startup behavior:
 The server-side statement timeout remains below the HTTP timeout so abandoned
 queries cannot accumulate after a request future is dropped.
 
+## shared-auth gateway
+
+`SHARED_AUTH_URL` (unset or empty = disabled; trailing slashes trimmed) makes
+the process the first-party gateway for the shared-auth service: `/shared-auth`
+and everything under it is forwarded with the prefix stripped, method, query,
+body, and multi-value headers preserved, hop-by-hop headers dropped, and
+X-Forwarded-For/Proto/Host supplied. Redirects and response bodies pass through
+untouched (the upstream owns its links and its security headers, so the site's
+static CSP/HSTS layers do not apply to this subtree). Upstream connection
+failures map to 502; the disabled state answers 503. The global 10-second
+request timeout bounds proxied requests as well.
+
 ## Regression gate
 
 CI requires a four-line executable, a library/runtime boundary, frozen Cargo
