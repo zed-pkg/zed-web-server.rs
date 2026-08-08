@@ -39,7 +39,9 @@ fn security_header(
 }
 
 pub fn router(state: Arc<WebState>) -> Router {
-    Router::new()
+    // Static security headers apply to the site only: the proxied auth pages
+    // set their own (the upstream CSP must win, not be overridden here).
+    let site = Router::new()
         .route("/", get(home))
         .route("/healthz", get(healthz))
         .route("/search", get(search_page))
@@ -47,15 +49,6 @@ pub fn router(state: Arc<WebState>) -> Router {
         .route("/p/{org}/{name}", get(package_page))
         .route("/orgs/{org}", get(org_page))
         .nest_service("/static", tower_http::services::ServeDir::new("static"))
-        .layer(tower_http::trace::TraceLayer::new_for_http())
-        // Turn a panic in a handler into a graceful 500 instead of dropping the
-        // connection.
-        .layer(tower_http::catch_panic::CatchPanicLayer::new())
-        // Cap the wall-clock time any single request may occupy a worker.
-        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(10),
-        ))
         .layer(security_header(
             header::CONTENT_SECURITY_POLICY,
             CONTENT_SECURITY_POLICY,
@@ -69,6 +62,21 @@ pub fn router(state: Arc<WebState>) -> Router {
         .layer(security_header(
             header::REFERRER_POLICY,
             "strict-origin-when-cross-origin",
+        ));
+
+    let shared_auth = Router::new()
+        .route("/shared-auth", any(proxy::forward))
+        .route("/shared-auth/{*rest}", any(proxy::forward));
+
+    site.merge(shared_auth)
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        // Turn a panic in a handler into a graceful 500 instead of dropping the
+        // connection.
+        .layer(tower_http::catch_panic::CatchPanicLayer::new())
+        // Cap the wall-clock time any single request may occupy a worker.
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(10),
         ))
         .with_state(state)
 }
