@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use sea_orm::sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sea_orm::{DatabaseConnection, SqlxPostgresConnector};
 use tracing_subscriber::EnvFilter;
@@ -60,16 +60,46 @@ fn parse_u64_or(value: Option<&str>, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+/// Postgres startup settings applied to every connection in the web pool.
+///
+/// `default_transaction_read_only=on` is a second line of defense behind the
+/// database role's SELECT-only grants. Keeping it in the startup packet means
+/// every transaction begins read-only, including transactions opened by ORM
+/// helpers that do not issue an explicit `BEGIN READ ONLY`.
+fn database_startup_options(
+    policy: DatabaseStartupPolicy,
+) -> [(&'static str, String); 2] {
+    [
+        (
+            "statement_timeout",
+            policy.statement_timeout_ms.to_string(),
+        ),
+        ("default_transaction_read_only", "on".to_string()),
+    ]
+}
+
 /// Open and verify one Postgres pool under the reviewed startup policy.
 async fn try_connect(url: &str, policy: DatabaseStartupPolicy) -> Result<DatabaseConnection> {
     let connect = url
         .parse::<PgConnectOptions>()?
-        .options([("statement_timeout", policy.statement_timeout_ms.to_string())]);
+        .options(database_startup_options(policy));
     let pool = PgPoolOptions::new()
         .max_connections(policy.max_connections)
         .acquire_timeout(Duration::from_secs(8))
         .connect_with(connect)
         .await?;
+
+    let read_only: String = sea_orm::sqlx::query_scalar(
+        "SELECT current_setting('default_transaction_read_only')",
+    )
+    .fetch_one(&pool)
+    .await?;
+    if read_only != "on" {
+        bail!(
+            "web database connection is not read-only: default_transaction_read_only={read_only:?}"
+        );
+    }
+
     Ok(SqlxPostgresConnector::from_sqlx_postgres_pool(pool))
 }
 
@@ -77,7 +107,8 @@ async fn try_connect(url: &str, policy: DatabaseStartupPolicy) -> Result<Databas
 ///
 /// A read-only web pod normally starts alongside its database. If the deadline
 /// expires, the existing fail-open behavior is preserved and the UI serves in
-/// registry-offline mode.
+/// registry-offline mode. Read-only verification failure follows the same path:
+/// availability may degrade, but the process never widens itself into a writer.
 async fn connect_with_retry(
     url: &str,
     policy: DatabaseStartupPolicy,
@@ -89,7 +120,7 @@ async fn connect_with_retry(
         match try_connect(url, policy).await {
             Ok(database) => {
                 if attempt > 1 {
-                    tracing::info!(attempt, "connected to Postgres after retry");
+                    tracing::info!(attempt, "connected to read-only Postgres after retry");
                 }
                 return Some(database);
             }
@@ -98,12 +129,16 @@ async fn connect_with_retry(
                     %error,
                     attempts = attempt,
                     elapsed_s = started.elapsed().as_secs(),
-                    "Postgres unreachable within DB_CONNECT_MAX_WAIT_SECS; serving in offline mode"
+                    "read-only Postgres unavailable or misconfigured within DB_CONNECT_MAX_WAIT_SECS; serving in offline mode"
                 );
                 return None;
             }
             Err(error) => {
-                tracing::warn!(%error, attempt, "Postgres not ready yet; retrying in 2s");
+                tracing::warn!(
+                    %error,
+                    attempt,
+                    "read-only Postgres not ready or not read-only; retrying in 2s"
+                );
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
         }
@@ -184,6 +219,20 @@ mod tests {
                 max_wait: Duration::from_secs(30),
             }
         );
+    }
+
+    #[test]
+    fn every_pool_connection_starts_read_only() {
+        let options = database_startup_options(DatabaseStartupPolicy::from_values(
+            None,
+            Some("7123"),
+            None,
+        ));
+        assert!(options.contains(&("statement_timeout", "7123".to_string())));
+        assert!(options.contains(&(
+            "default_transaction_read_only",
+            "on".to_string()
+        )));
     }
 
     #[test]
