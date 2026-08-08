@@ -266,13 +266,14 @@ mod tests {
     async fn passes_multiple_set_cookie_headers_through() {
         let upstream = spawn_upstream().await;
         let response = send(app(Some(upstream)), get_request("/shared-auth/cookies")).await;
-        let cookies: Vec<_> = response.headers().get_all(header::SET_COOKIE).iter().collect();
+        let cookies: Vec<_> = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .collect();
         assert_eq!(
             cookies,
-            [
-                "session=abc; Path=/; HttpOnly",
-                "csrf=xyz; Path=/",
-            ]
+            ["session=abc; Path=/; HttpOnly", "csrf=xyz; Path=/",]
         );
     }
 
