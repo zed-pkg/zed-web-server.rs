@@ -5,6 +5,7 @@
 //! without coupling it to executable glue.
 
 mod entities;
+mod proxy;
 mod routes;
 pub mod server;
 mod state;
