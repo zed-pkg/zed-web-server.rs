@@ -134,3 +134,194 @@ pub async fn forward(State(state): State<Arc<WebState>>, req: Request) -> Respon
     *response.headers_mut() = headers;
     response
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::Router;
+    use axum::routing::{any, get};
+    use tower::util::ServiceExt;
+
+    /// Stub upstream: echoes the request line it saw, plus fixed endpoints for
+    /// header-passthrough cases.
+    fn stub() -> Router {
+        async fn echo(req: Request) -> String {
+            let method = req.method().clone();
+            let uri = req.uri().clone();
+            let body = axum::body::to_bytes(req.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            format!("{method} {uri} body={}", String::from_utf8_lossy(&body))
+        }
+        async fn cookies() -> Response {
+            let mut response = Response::new(Body::empty());
+            response.headers_mut().append(
+                header::SET_COOKIE,
+                HeaderValue::from_static("session=abc; Path=/; HttpOnly"),
+            );
+            response.headers_mut().append(
+                header::SET_COOKIE,
+                HeaderValue::from_static("csrf=xyz; Path=/"),
+            );
+            response
+        }
+        async fn csp() -> Response {
+            let mut response = Response::new(Body::from("auth page"));
+            response.headers_mut().insert(
+                header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static("default-src 'none'"),
+            );
+            response
+        }
+        async fn redirect() -> Response {
+            let mut response = Response::new(Body::empty());
+            *response.status_mut() = StatusCode::FOUND;
+            response.headers_mut().insert(
+                header::LOCATION,
+                HeaderValue::from_static("https://example.com/next?x=1"),
+            );
+            response
+        }
+        Router::new()
+            .route("/cookies", get(cookies))
+            .route("/csp", get(csp))
+            .route("/redirect", get(redirect))
+            .fallback(any(echo))
+    }
+
+    async fn spawn_upstream() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, stub()).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    fn app(shared_auth_url: Option<String>) -> Router {
+        crate::routes::router(Arc::new(WebState {
+            db: None,
+            registry_url: "https://registry.zpkg.net".into(),
+            shared_auth_url,
+            http: client(),
+        }))
+    }
+
+    async fn send(app: Router, request: axum::http::Request<Body>) -> Response {
+        app.oneshot(request).await.unwrap()
+    }
+
+    async fn body_of(response: Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    fn get_request(uri: &str) -> axum::http::Request<Body> {
+        axum::http::Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn strips_prefix_at_the_root() {
+        let upstream = spawn_upstream().await;
+        for uri in ["/shared-auth", "/shared-auth/"] {
+            let response = send(app(Some(upstream.clone())), get_request(uri)).await;
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            assert_eq!(body_of(response).await, "GET / body=", "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn strips_prefix_on_nested_paths_and_preserves_the_query() {
+        let upstream = spawn_upstream().await;
+        let response = send(
+            app(Some(upstream)),
+            get_request("/shared-auth/auth/exchange?code=abc&state=x%2Fy"),
+        )
+        .await;
+        assert_eq!(
+            body_of(response).await,
+            "GET /auth/exchange?code=abc&state=x%2Fy body="
+        );
+    }
+
+    #[tokio::test]
+    async fn forwards_the_post_body() {
+        let upstream = spawn_upstream().await;
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/shared-auth/auth/exchange")
+            .body(Body::from("grant_type=code&code=abc"))
+            .unwrap();
+        let response = send(app(Some(upstream)), request).await;
+        assert_eq!(
+            body_of(response).await,
+            "POST /auth/exchange body=grant_type=code&code=abc"
+        );
+    }
+
+    #[tokio::test]
+    async fn passes_multiple_set_cookie_headers_through() {
+        let upstream = spawn_upstream().await;
+        let response = send(app(Some(upstream)), get_request("/shared-auth/cookies")).await;
+        let cookies: Vec<_> = response.headers().get_all(header::SET_COOKIE).iter().collect();
+        assert_eq!(
+            cookies,
+            [
+                "session=abc; Path=/; HttpOnly",
+                "csrf=xyz; Path=/",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn upstream_security_headers_win_over_the_site_csp() {
+        let upstream = spawn_upstream().await;
+        let response = send(app(Some(upstream)), get_request("/shared-auth/csp")).await;
+        assert_eq!(
+            response.headers()[header::CONTENT_SECURITY_POLICY],
+            "default-src 'none'"
+        );
+    }
+
+    #[tokio::test]
+    async fn redirects_pass_through_with_location_untouched() {
+        let upstream = spawn_upstream().await;
+        let response = send(app(Some(upstream)), get_request("/shared-auth/redirect")).await;
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response.headers()[header::LOCATION],
+            "https://example.com/next?x=1"
+        );
+    }
+
+    #[tokio::test]
+    async fn unconfigured_upstream_yields_503() {
+        let response = send(app(None), get_request("/shared-auth/auth/exchange")).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            body_of(response).await,
+            "{\"error\":\"shared-auth upstream not configured\"}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unreachable_upstream_yields_502() {
+        // Bind then drop so the port is known-closed.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let response = send(
+            app(Some(format!("http://{addr}"))),
+            get_request("/shared-auth/auth/exchange"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            body_of(response).await,
+            "{\"error\":\"shared-auth upstream unreachable\"}"
+        );
+    }
+}
