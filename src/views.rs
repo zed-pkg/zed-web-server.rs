@@ -23,7 +23,7 @@ pub fn layout(title: &str, db_online: bool, content: Markup) -> Markup {
                         }
                         div class="nav-links" {
                             a href="/search" { "Search" }
-                            a href="https://zpkg.net" { "zpkg.net" }
+                            a href="https://zpkg.tech" { "zpkg.tech" }
                             a href="https://github.com/zed-pkg" { "GitHub" }
                         }
                     }

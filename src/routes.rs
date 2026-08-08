@@ -406,7 +406,7 @@ mod tests {
     fn offline_state() -> Arc<WebState> {
         Arc::new(WebState {
             db: None,
-            registry_url: "https://registry.zpkg.net".into(),
+            registry_url: "https://registry.zpkg.tech".into(),
         })
     }
 
@@ -496,7 +496,7 @@ mod tests {
             .into_connection();
         let state = Arc::new(WebState {
             db: Some(db),
-            registry_url: "https://registry.zpkg.net".into(),
+            registry_url: "https://registry.zpkg.tech".into(),
         });
         let app = router(state);
         let response = app

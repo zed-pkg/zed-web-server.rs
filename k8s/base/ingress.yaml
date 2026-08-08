@@ -22,10 +22,20 @@ metadata:
 spec:
   ingressClassName: nginx
   tls:
-    - hosts: [web.zpkg.net]
+    - hosts: [www.zpkg.tech, zpkg.tech]
       secretName: zed-web-server-tls
   rules:
-    - host: web.zpkg.net
+    - host: www.zpkg.tech
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dd-zed-web-server
+                port:
+                  number: 8081
+    - host: zpkg.tech
       http:
         paths:
           - path: /

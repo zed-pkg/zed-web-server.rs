@@ -22,7 +22,7 @@ patches:
               - name: zed-web-server
                 env:
                   - name: PUBLIC_REGISTRY_URL
-                    value: https://registry.hetzner.zpkg.net
+                    value: https://registry.hetzner.zpkg.tech
   - target:
       group: networking.k8s.io
       version: v1
@@ -32,14 +32,14 @@ patches:
       - op: replace
         path: /spec/tls/0/hosts
         value:
-          - web.hetzner.zpkg.net
+          - hetzner.zpkg.tech
       - op: replace
         path: /spec/tls/0/secretName
         value: zed-web-server-hetzner-tls
       - op: replace
         path: /spec/rules
         value:
-          - host: web.hetzner.zpkg.net
+          - host: hetzner.zpkg.tech
             http:
               paths:
                 - path: /

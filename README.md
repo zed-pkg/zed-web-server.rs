@@ -1,6 +1,6 @@
 # zed-web-server
 
-The human-facing [zed-pkg](https://zpkg.net) registry UI, built on the MASH
+The human-facing [zed-pkg](https://zpkg.tech) registry UI, built on the MASH
 stack: **M**aud typed HTML templates, **A**xum, **S**eaORM (never bare SQLx),
 and **H**TMX for live search. Dark theme in the brand palette (black,
 orange `#FF7A1A`, baby blue `#8FD3F4`).
@@ -27,7 +27,7 @@ work with zero infrastructure and asserted by the test suite.
 | --- | --- |
 | `BIND_ADDR` | `0.0.0.0:8081` |
 | `DATABASE_URL` | unset (offline mode) |
-| `PUBLIC_REGISTRY_URL` | `https://registry.zpkg.net` |
+| `PUBLIC_REGISTRY_URL` | `https://registry.zpkg.tech` |
 | `RUST_LOG` | `info` |
 
 ## Run it

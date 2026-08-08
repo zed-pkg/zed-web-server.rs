@@ -22,7 +22,7 @@ patches:
               - name: zed-web-server
                 env:
                   - name: PUBLIC_REGISTRY_URL
-                    value: https://registry.aws.zpkg.net
+                    value: https://registry.aws.zpkg.tech
   - target:
       group: networking.k8s.io
       version: v1
@@ -32,14 +32,14 @@ patches:
       - op: replace
         path: /spec/tls/0/hosts
         value:
-          - web.aws.zpkg.net
+          - aws.zpkg.tech
       - op: replace
         path: /spec/tls/0/secretName
         value: zed-web-server-aws-tls
       - op: replace
         path: /spec/rules
         value:
-          - host: web.aws.zpkg.net
+          - host: aws.zpkg.tech
             http:
               paths:
                 - path: /
