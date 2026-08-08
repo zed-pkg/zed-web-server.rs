@@ -54,6 +54,8 @@ spec:
             # Restore the ExternalSecret before enabling durable production
             # metadata.
             - { name: DATABASE_URL, value: "postgres://zed@zed-postgres.zed.svc.cluster.local:5432/zed" }
+            # Optional: shared-auth service URL; non-empty enables the /shared-auth gateway path (empty keeps it 503).
+            - { name: SHARED_AUTH_URL, value: "" }
           # The UI degrades gracefully without the DB (offline banner), so
           # /healthz stays 200 through a DB blip — neither probe flaps on it.
           readinessProbe:

@@ -12,6 +12,8 @@ schema and write-path authority.
 - `src/state.rs` owns the read-only application state.
 - `src/entities.rs` owns SeaORM entity mappings used for registry reads.
 - `src/views.rs` owns Maud rendering.
+- `src/proxy.rs` owns the `/shared-auth` reverse-proxy handler (gateway to the
+  shared-auth service; enabled by `SHARED_AUTH_URL`, otherwise 503).
 
 The process runtime must not absorb route handlers, entity definitions, HTML
 rendering, registry write behavior, migrations, or schema ownership.
@@ -29,6 +31,18 @@ The UI preserves its existing fail-open startup behavior:
 `DB_CONNECT_MAX_WAIT_SECS` retain their existing defaults of 10, 8000, and 30.
 The server-side statement timeout remains below the HTTP timeout so abandoned
 queries cannot accumulate after a request future is dropped.
+
+## shared-auth gateway
+
+`SHARED_AUTH_URL` (unset or empty = disabled; trailing slashes trimmed) makes
+the process the first-party gateway for the shared-auth service: `/shared-auth`
+and everything under it is forwarded with the prefix stripped, method, query,
+body, and multi-value headers preserved, hop-by-hop headers dropped, and
+X-Forwarded-For/Proto/Host supplied. Redirects and response bodies pass through
+untouched (the upstream owns its links and its security headers, so the site's
+static CSP/HSTS layers do not apply to this subtree). Upstream connection
+failures map to 502; the disabled state answers 503. The global 10-second
+request timeout bounds proxied requests as well.
 
 ## Regression gate
 

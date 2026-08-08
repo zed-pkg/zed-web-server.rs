@@ -60,6 +60,14 @@ fn parse_u64_or(value: Option<&str>, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+/// `SHARED_AUTH_URL` enables the /shared-auth gateway path. Trailing slashes
+/// are trimmed so joining with the stripped request path cannot double a `/`;
+/// unset or empty leaves the gateway disabled (those routes answer 503).
+fn shared_auth_url(value: Option<&str>) -> Option<String> {
+    let trimmed = value?.trim_end_matches('/');
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 /// Open and verify one Postgres pool under the reviewed startup policy.
 async fn try_connect(url: &str, policy: DatabaseStartupPolicy) -> Result<DatabaseConnection> {
     let connect = url
@@ -136,13 +144,20 @@ pub async fn run() -> Result<()> {
         db: database,
         registry_url: std::env::var("PUBLIC_REGISTRY_URL")
             .unwrap_or_else(|_| zed_interfaces::registry::DEFAULT_REGISTRY_URL.to_string()),
+        shared_auth_url: shared_auth_url(std::env::var("SHARED_AUTH_URL").ok().as_deref()),
+        http: crate::proxy::client(),
     });
     let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_string());
 
     let app = crate::routes::router(state);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     tracing::info!("zed-web-server listening on {bind_addr}");
-    axum::serve(listener, app).await?;
+    // ConnectInfo feeds the gateway's X-Forwarded-For append.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -183,6 +198,21 @@ mod tests {
                 statement_timeout_ms: 8_000,
                 max_wait: Duration::from_secs(30),
             }
+        );
+    }
+
+    #[test]
+    fn shared_auth_url_trims_trailing_slashes_and_treats_empty_as_unset() {
+        assert_eq!(shared_auth_url(None), None);
+        assert_eq!(shared_auth_url(Some("")), None);
+        assert_eq!(shared_auth_url(Some("///")), None);
+        assert_eq!(
+            shared_auth_url(Some("http://127.0.0.1:8120")),
+            Some("http://127.0.0.1:8120".to_string())
+        );
+        assert_eq!(
+            shared_auth_url(Some("http://127.0.0.1:8120//")),
+            Some("http://127.0.0.1:8120".to_string())
         );
     }
 
