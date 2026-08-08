@@ -202,6 +202,21 @@ mod tests {
     }
 
     #[test]
+    fn shared_auth_url_trims_trailing_slashes_and_treats_empty_as_unset() {
+        assert_eq!(shared_auth_url(None), None);
+        assert_eq!(shared_auth_url(Some("")), None);
+        assert_eq!(shared_auth_url(Some("///")), None);
+        assert_eq!(
+            shared_auth_url(Some("http://127.0.0.1:8120")),
+            Some("http://127.0.0.1:8120".to_string())
+        );
+        assert_eq!(
+            shared_auth_url(Some("http://127.0.0.1:8120//")),
+            Some("http://127.0.0.1:8120".to_string())
+        );
+    }
+
+    #[test]
     fn executable_remains_a_thin_tokio_adapter() {
         let main = include_str!("main.rs");
         assert!(main.lines().count() <= 6);
