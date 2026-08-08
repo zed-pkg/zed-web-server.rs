@@ -56,6 +56,29 @@ fn pool_enforces_read_only_before_entering_application_state() {
 }
 
 #[test]
+fn kubernetes_uses_the_dedicated_read_only_secret() {
+    let deployment = read("k8s/base/deployment.yaml");
+    for contract in [
+        "name: dd-zed-web-secrets",
+        "key: ZED_WEB_DATABASE_URL",
+        "dedicated SELECT-only web principal",
+    ] {
+        assert!(deployment.contains(contract), "deployment lost {contract}");
+    }
+    assert!(
+        !deployment.contains("postgres://zed@"),
+        "the web Deployment must not embed the API bootstrap DSN"
+    );
+
+    let external_secret = read("k8s/externalsecret.yaml");
+    assert!(external_secret.contains("secretKey: ZED_WEB_DATABASE_URL"));
+    assert!(external_secret.contains("never contain the API or migrator credential"));
+
+    let kustomization = read("k8s/kustomization.yaml");
+    assert!(kustomization.contains("externalsecret.yaml"));
+}
+
+#[test]
 fn web_repository_contains_no_migration_crate_or_write_role() {
     let manifest = read("Cargo.toml");
     for forbidden in ["sea-orm-migration", "migration =", "DbRole::ReadWrite"] {
