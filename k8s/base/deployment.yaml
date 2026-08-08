@@ -48,7 +48,7 @@ spec:
               containerPort: 8081
           env:
             - { name: BIND_ADDR, value: "0.0.0.0:8081" }
-            - { name: PUBLIC_REGISTRY_URL, value: "https://registry.zpkg.tech" }
+            - { name: PUBLIC_REGISTRY_URL, value: "https://registry.zpkg.net" }
             - { name: RUST_LOG, value: "info" }
             # TEMPORARY bootstrap database shared with the registry API.
             # Restore the ExternalSecret before enabling durable production

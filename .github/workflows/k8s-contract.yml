@@ -38,7 +38,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -q 'registry.aws.zpkg.tech' /tmp/aws.yaml
-          grep -q 'host: aws.zpkg.tech' /tmp/aws.yaml
-          grep -q 'registry.hetzner.zpkg.tech' /tmp/hetzner.yaml
-          grep -q 'host: hetzner.zpkg.tech' /tmp/hetzner.yaml
+          grep -q 'registry.aws.zpkg.net' /tmp/aws.yaml
+          grep -q 'host: web.aws.zpkg.net' /tmp/aws.yaml
+          grep -q 'registry.hetzner.zpkg.net' /tmp/hetzner.yaml
+          grep -q 'host: web.hetzner.zpkg.net' /tmp/hetzner.yaml
