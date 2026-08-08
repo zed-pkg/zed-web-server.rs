@@ -144,13 +144,20 @@ pub async fn run() -> Result<()> {
         db: database,
         registry_url: std::env::var("PUBLIC_REGISTRY_URL")
             .unwrap_or_else(|_| zed_interfaces::registry::DEFAULT_REGISTRY_URL.to_string()),
+        shared_auth_url: shared_auth_url(std::env::var("SHARED_AUTH_URL").ok().as_deref()),
+        http: crate::proxy::client(),
     });
     let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_string());
 
     let app = crate::routes::router(state);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     tracing::info!("zed-web-server listening on {bind_addr}");
-    axum::serve(listener, app).await?;
+    // ConnectInfo feeds the gateway's X-Forwarded-For append.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
