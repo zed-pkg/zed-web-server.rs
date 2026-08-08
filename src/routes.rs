@@ -13,6 +13,7 @@ use serde::Deserialize;
 use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::entities::{org, package, version};
+use crate::proxy;
 use crate::state::WebState;
 use crate::views::{
     PackageRow, VersionRow, install_snippet, layout, package_rows, search_box, version_table,
