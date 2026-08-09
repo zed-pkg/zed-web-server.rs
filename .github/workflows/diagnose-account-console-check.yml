@@ -10,7 +10,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   diagnose:
@@ -27,16 +26,13 @@ jobs:
         with:
           toolchain: stable
       - name: Capture compiler output
-        id: check
         shell: bash
         run: |
           set +e
           cargo check --locked --all-targets --message-format short >"$RUNNER_TEMP/check.log" 2>&1
           status=$?
-          tail -c 14000 "$RUNNER_TEMP/check.log" >"$RUNNER_TEMP/check-tail.log"
-          payload="$(base64 -w0 < "$RUNNER_TEMP/check-tail.log")"
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/10/comments" \
-            -f body="ACCOUNT_CONSOLE_CHECK_DIAGNOSTIC protocol=1 head=${GITHUB_SHA} status=${status} data=${payload}" >/dev/null
+          tail -c 16000 "$RUNNER_TEMP/check.log" >"$RUNNER_TEMP/check-tail.log"
+          echo '--- bounded cargo check tail ---'
+          cat "$RUNNER_TEMP/check-tail.log"
+          echo '--- end bounded cargo check tail ---'
           exit "$status"
-        env:
-          GH_TOKEN: ${{ github.token }}
