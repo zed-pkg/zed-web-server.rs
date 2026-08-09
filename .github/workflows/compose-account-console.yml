@@ -36,45 +36,53 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
+
+          def replace_once(text: str, pattern: str, replacement: str, label: str) -> str:
+              updated, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+              if count != 1:
+                  raise SystemExit(f'could not find exactly one {label}: {count}')
+              return updated
 
           routes = Path('src/routes.rs')
           text = routes.read_text()
-          old = '.route("/", get(home))'
-          new = '.route("/", get(crate::account::home))'
-          if text.count(old) != 1:
-              raise SystemExit(f'expected one public home route, found {text.count(old)}')
-          text = text.replace(old, new)
-          old = 'async fn home(State(state): State<Arc<WebState>>) -> Html<String> {'
-          new = 'pub(crate) async fn public_home(State(state): State<Arc<WebState>>) -> Html<String> {'
-          if text.count(old) != 1:
-              raise SystemExit(f'expected one home handler, found {text.count(old)}')
-          routes.write_text(text.replace(old, new))
+          text = replace_once(
+              text,
+              r'\.route\("/",\s*get\(home\)\)',
+              '.route("/", get(crate::account::home))',
+              'public home route',
+          )
+          text = replace_once(
+              text,
+              r'async fn home\(State\(state\): State<Arc<WebState>>\) -> Html<String> \{',
+              'pub(crate) async fn public_home(State(state): State<Arc<WebState>>) -> Html<String> {',
+              'public home handler',
+          )
+          routes.write_text(text)
 
           server = Path('src/server.rs')
           text = server.read_text()
-          old = '''    let connect = url
-              .parse::<PgConnectOptions>()?
-              .options([("statement_timeout", policy.statement_timeout_ms.to_string())]);'''
-          new = '''    let connect = url.parse::<PgConnectOptions>()?.options([
-              ("statement_timeout", policy.statement_timeout_ms.to_string()),
-              ("default_transaction_read_only", "on".to_owned()),
-          ]);'''
-          if text.count(old) != 1:
-              raise SystemExit('could not find PgConnectOptions construction')
-          text = text.replace(old, new)
-          old = '    Ok(SqlxPostgresConnector::from_sqlx_postgres_pool(pool))'
-          new = '''    let database = SqlxPostgresConnector::from_sqlx_postgres_pool(pool);
+          text = replace_once(
+              text,
+              r'let connect = url\s*\.parse::<PgConnectOptions>\(\)\?\s*\.options\(\[\("statement_timeout",\s*policy\.statement_timeout_ms\.to_string\(\)\)\]\);',
+              '''let connect = url.parse::<PgConnectOptions>()?.options([
+                  ("statement_timeout", policy.statement_timeout_ms.to_string()),
+                  ("default_transaction_read_only", "on".to_owned()),
+              ]);''',
+              'PgConnectOptions construction',
+          )
+          text = replace_once(
+              text,
+              r'Ok\(SqlxPostgresConnector::from_sqlx_postgres_pool\(pool\)\)',
+              '''let database = SqlxPostgresConnector::from_sqlx_postgres_pool(pool);
               zed_orm::assert_read_only(&database).await?;
-              Ok(database)'''
-          if text.count(old) != 1:
-              raise SystemExit('could not find database pool return')
-          text = text.replace(old, new)
-          old = '''        registry_url: std::env::var("PUBLIC_REGISTRY_URL")
-              .unwrap_or_else(|_| zed_interfaces::registry::DEFAULT_REGISTRY_URL.to_string()),
-              shared_auth_url: shared_auth_url(std::env::var("SHARED_AUTH_URL").ok().as_deref()),'''
-          new = '''        registry_url: std::env::var("PUBLIC_REGISTRY_URL")
-              .unwrap_or_else(|_| zed_interfaces::registry::DEFAULT_REGISTRY_URL.to_string()),
-              api_url: std::env::var("ZED_API_URL")
+              Ok(database)''',
+              'database pool return',
+          )
+          text = replace_once(
+              text,
+              r'(registry_url:\s*std::env::var\("PUBLIC_REGISTRY_URL"\)\s*\.unwrap_or_else\(\|_\| zed_interfaces::registry::DEFAULT_REGISTRY_URL\.to_string\(\)\),\s*)(shared_auth_url:)',
+              r'''\1api_url: std::env::var("ZED_API_URL")
                   .unwrap_or_else(|_| "http://127.0.0.1:8080".to_owned())
                   .trim_end_matches('/')
                   .to_owned(),
@@ -84,15 +92,15 @@ jobs:
                   .to_owned(),
               session_cookie_name: std::env::var("AUTH_SESSION_COOKIE_NAME")
                   .unwrap_or_else(|_| "__Host-ore-session".to_owned()),
-              shared_auth_url: shared_auth_url(std::env::var("SHARED_AUTH_URL").ok().as_deref()),'''
-          if text.count(old) != 1:
-              raise SystemExit('could not find WebState construction')
-          text = text.replace(old, new)
-          old = '    let app = crate::routes::router(state);'
-          new = '''    let app = crate::routes::router(state.clone()).merge(crate::account::router(state));'''
-          if text.count(old) != 1:
-              raise SystemExit('could not find router composition')
-          text = text.replace(old, new)
+              \2''',
+              'WebState account fields',
+          )
+          text = replace_once(
+              text,
+              r'let app = crate::routes::router\(state\);',
+              'let app = crate::routes::router(state.clone()).merge(crate::account::router(state));',
+              'router composition',
+          )
           text = text.replace(
               '//! The API server remains the schema owner. This read-only web process may',
               '//! `zed-lib` owns the schema. This read-only web process may',
