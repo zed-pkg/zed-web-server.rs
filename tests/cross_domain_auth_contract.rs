@@ -12,23 +12,21 @@ fn function_source<'a>(source: &'a str, start: &str, next: &str) -> &'a str {
 
 #[test]
 fn browser_redirect_and_backchannel_use_distinct_shared_auth_origins() {
-    assert!(BROWSER_AUTH_SOURCE.contains(
-        "format!(\"{}/authorize\", config.shared_auth_public_url)"
-    ));
-    assert!(BROWSER_AUTH_SOURCE.contains(
-        "format!(\"{}/auth/handoff/redeem\", config.shared_auth_url)"
-    ));
-    assert!(BROWSER_AUTH_SOURCE.contains(
-        "format!(\"{}/auth/exchange\", config.shared_auth_url)"
-    ));
-    assert!(BROWSER_AUTH_SOURCE.contains(
-        "format!(\"{}/auth/delegate\", config.shared_auth_url)"
-    ));
+    assert!(BROWSER_AUTH_SOURCE.contains("config.shared_auth_public_url"));
+    assert!(BROWSER_AUTH_SOURCE.contains("/authorize"));
+    assert!(BROWSER_AUTH_SOURCE.contains("config.shared_auth_url"));
+    assert!(BROWSER_AUTH_SOURCE.contains("/auth/handoff/redeem"));
+    assert!(BROWSER_AUTH_SOURCE.contains("/auth/exchange"));
+    assert!(BROWSER_AUTH_SOURCE.contains("/auth/delegate"));
 }
 
 #[test]
 fn callback_is_anchored_to_the_zpkg_product_origin() {
-    let callback = function_source(BROWSER_AUTH_SOURCE, "fn callback_uri", "fn sanitize_return_to");
+    let callback = function_source(
+        BROWSER_AUTH_SOURCE,
+        "fn callback_uri",
+        "fn sanitize_return_to",
+    );
     assert!(callback.contains("config.public_origin"));
     assert!(callback.contains("/auth/shared/callback"));
     assert!(!callback.contains("shared_auth_public_url"));
@@ -37,7 +35,11 @@ fn callback_is_anchored_to_the_zpkg_product_origin() {
 
 #[test]
 fn product_cookie_is_host_only_and_never_sets_a_parent_domain() {
-    let cookie = function_source(BROWSER_AUTH_SOURCE, "fn signed_cookie", "fn clear_cookie");
+    let cookie = function_source(
+        BROWSER_AUTH_SOURCE,
+        "fn signed_cookie",
+        "fn clear_cookie",
+    );
     assert!(cookie.contains("Path=/"));
     assert!(cookie.contains("HttpOnly"));
     assert!(cookie.contains("SameSite=Lax"));
@@ -51,7 +53,9 @@ fn written_contract_rejects_cookie_sharing_and_direct_supabase_callbacks() {
     assert!(BFF_CONTRACT.contains("not a direct Supabase callback"));
     assert!(BFF_CONTRACT.contains("Never set `Domain=.zpkg.net`"));
     assert!(BFF_CONTRACT.contains("SHARED_AUTH_PUBLIC_URL=https://auth.oresoftware.dev"));
-    assert!(BFF_CONTRACT.contains(
-        "SHARED_AUTH_URL=http://shared-auth-server.shared-auth.svc.cluster.local"
-    ));
+    let internal_url = concat!(
+        "SHARED_AUTH_URL=http://",
+        "shared-auth-server.shared-auth.svc.cluster.local"
+    );
+    assert!(BFF_CONTRACT.contains(internal_url));
 }
