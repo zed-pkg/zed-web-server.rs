@@ -201,6 +201,8 @@ mod tests {
             db: None,
             registry_url: "https://registry.zpkg.net".into(),
             shared_auth_url,
+            session_path: "/auth/browser/session".into(),
+            browser_auth: None,
             http: client(),
         }))
     }
