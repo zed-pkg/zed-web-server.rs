@@ -1,0 +1,62 @@
+name: diagnose PKCE BFF complete source graph
+
+on:
+  push:
+    branches:
+      - feat/den-2955-shared-auth-pkce-bff
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: diagnose-pkce-bff-source-graph
+  cancel-in-progress: false
+
+env:
+  ZED_INTERFACES_SHA: 07d01604461d00e237c7d86ad3855464167574ec
+
+jobs:
+  diagnose:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: zed-web-server.rs
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: ${{ env.ZED_INTERFACES_SHA }}
+          path: zed-interfaces
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: Capture format, check, and Clippy diagnostics
+        working-directory: zed-web-server.rs
+        shell: bash
+        run: |
+          set +e
+          {
+            echo '=== cargo fmt ==='
+            cargo fmt --all -- --check
+            echo "fmt_exit=$?"
+            echo '=== cargo check ==='
+            cargo check --locked --all-targets
+            echo "check_exit=$?"
+            echo '=== cargo clippy ==='
+            cargo clippy --locked --all-targets -- -D warnings
+            echo "clippy_exit=$?"
+          } >ci-bff-check.txt 2>&1
+          rm -f .github/workflows/zz-diagnose-pkce-bff-source-graph.yml
+          git add -A
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "ci(DEN-2955): record complete BFF compiler diagnostics"
+          git push origin HEAD:feat/den-2955-shared-auth-pkce-bff
