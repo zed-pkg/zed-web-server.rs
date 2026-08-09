@@ -7,7 +7,9 @@ license = "MIT"
 repository = "https://github.com/zed-pkg/zed-web-server.rs"
 
 [dependencies]
-zed-interfaces = { path = "../zed-interfaces/src/rust" }
+# CI checks this exact repository out as a sibling. The Rust crate is rooted at
+# the repository root; `src/rust` was a removed transitional layout.
+zed-interfaces = { path = "../zed-interfaces" }
 # Default features only: the read-only surface. Enabling `read-write` here
 # would hand this process write symbols its database identity cannot use.
 zed-orm-core = { git = "https://github.com/zed-pkg/zed-lib-core.git", branch = "main" }
@@ -31,4 +33,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
-
