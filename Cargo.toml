@@ -7,12 +7,24 @@ license = "MIT"
 repository = "https://github.com/zed-pkg/zed-web-server.rs"
 
 [dependencies]
+# CI checks this exact repository out as a sibling. The Rust crate is rooted at
+# the repository root; `src/rust` was a removed transitional layout.
 zed-interfaces = { path = "../zed-interfaces" }
+# Default features only: the read-only surface. Enabling `read-write` here
+# would hand this process write symbols its database identity cannot use.
+# Pin the certified canonical data-plane revision; never follow a moving branch
+# in a production server lock graph.
+zed-orm-core = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "d9a1f72baad87a0bbe256ad892d61d7a4fdd9135" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 axum = "0.8"
 dotenvy = "0.15"
 maud = "0.27"
-sea-orm = { version = "1", features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-chrono", "with-uuid"] }
+# No default features: no auto-redirects wanted (policy is set to none at
+# construction anyway) and auth pages must pass through byte-for-byte, so no
+# decompression either. `stream` is for piping upstream bodies back verbatim.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -23,5 +35,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
-# Enables sea-orm's MockDatabase in tests only (not pulled into release builds).
-sea-orm = { version = "1", features = ["mock"] }
