@@ -103,6 +103,14 @@ jobs:
                   "value=(user.avatar_url.unwrap_or_default());",
                   "value=(user.avatar_url.as_deref().unwrap_or_default());",
               ),
+              (
+                  "fn require_same_origin(headers: &HeaderMap, state: &WebState) -> Result<(), Response> {",
+                  "fn require_same_origin(\n    headers: &HeaderMap,\n    state: &WebState,\n) -> Result<(), Box<Response>> {",
+              ),
+              (
+                  "        Err(simple_page(\n            state,\n            None,\n            StatusCode::FORBIDDEN,\n            \"Request rejected\",\n            \"The form origin did not match this registry console.\",\n        ))",
+                  "        Err(Box::new(simple_page(\n            state,\n            None,\n            StatusCode::FORBIDDEN,\n            \"Request rejected\",\n            \"The form origin did not match this registry console.\",\n        )))",
+              ),
           ]
           for stale, current in replacements:
               stale_count = text.count(stale)
@@ -116,6 +124,51 @@ jobs:
                       "src/account.rs: ambiguous repair state for "
                       f"{stale!r} (stale={stale_count}, current={current_count})"
                   )
+
+          origin_stale = (
+              "    if let Err(response) = require_same_origin(&headers, &state) {\n"
+              "        return response;\n"
+              "    }"
+          )
+          origin_current = (
+              "    if let Err(response) = require_same_origin(&headers, &state) {\n"
+              "        return *response;\n"
+              "    }"
+          )
+          stale_count = text.count(origin_stale)
+          current_count = text.count(origin_current)
+          if stale_count == 7 and current_count == 0:
+              text = text.replace(origin_stale, origin_current)
+          elif stale_count == 0 and current_count == 7:
+              pass
+          else:
+              raise SystemExit(
+                  "src/account.rs: ambiguous same-origin call-site state "
+                  f"(stale={stale_count}, current={current_count})"
+              )
+
+          dead_fields = [
+              "    id: String,\n",
+              "    aal: u8,\n",
+              "    org_id: String,\n",
+              "    project_slug: Option<String>,\n",
+          ]
+          expected_counts = {
+              "    id: String,\n": 3,
+              "    aal: u8,\n": 1,
+              "    org_id: String,\n": 2,
+              "    project_slug: Option<String>,\n": 1,
+          }
+          for field in dead_fields:
+              count = text.count(field)
+              expected = expected_counts[field]
+              if count != expected:
+                  raise SystemExit(
+                      f"src/account.rs: expected {expected} unused field occurrence(s) "
+                      f"for {field!r}, found {count}"
+                  )
+              text = text.replace(field, "")
+
           account.write_text(text)
 
           for obsolete in (
