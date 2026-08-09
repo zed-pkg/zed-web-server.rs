@@ -35,6 +35,15 @@ The registry Postgres identity used by this web process remains read-only. All
 writes still pass through the API's SeaORM write context and database policy
 triggers, including the 10-day/50-download private-to-public invariant.
 
+## Failure semantics
+
+A missing or invalid product cookie redirects a form submission back through
+the exact-client login flow. A state, callback, client, origin, principal, or
+scope mismatch fails closed. Shared Auth and registry API transport failures are
+reported as upstream failures rather than being interpreted as an anonymous or
+successful mutation. Refresh rotation is persisted back into the signed cookie
+on both successful API writes and API-level error responses.
+
 ## Required configuration
 
 | Variable | Purpose |
