@@ -7,14 +7,15 @@ license = "MIT"
 repository = "https://github.com/zed-pkg/zed-web-server.rs"
 
 [dependencies]
-# CI checks this exact repository out as a sibling. The Rust crate is rooted at
-# the repository root; `src/rust` was a removed transitional layout.
-zed-interfaces = { path = "../zed-interfaces" }
+# CI checks the exact interface repository out as a sibling. Its repository
+# root is now a virtual polyglot workspace; path consumers must select the Rust
+# package slice explicitly.
+zed-interfaces = { path = "../zed-interfaces/src/rust" }
 # Default features only: the read-only surface. Enabling `read-write` here
 # would hand this process write symbols its database identity cannot use.
 # Pin the certified canonical data-plane revision; never follow a moving branch
 # in a production server lock graph.
-zed-orm-core = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "d9a1f72baad87a0bbe256ad892d61d7a4fdd9135" }
+zed-orm-core = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "700f1f9578c6633a20693a5b1f52970ab845a740" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"

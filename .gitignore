@@ -16,3 +16,7 @@ env/dec/*
 .direnv/
 result
 result-*
+tmp
+temp
+tmp/worktrees
+temp/worktrees
