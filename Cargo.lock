@@ -3362,6 +3362,7 @@ dependencies = [
 [[package]]
 name = "zed-interfaces"
 version = "0.1.0"
+source = "git+https://github.com/zed-pkg/zed-interfaces.git?rev=f141e4cfae31a74c679b46d1d4bb0146b20555f6#f141e4cfae31a74c679b46d1d4bb0146b20555f6"
 dependencies = [
  "schemars",
  "semver",
@@ -3372,6 +3373,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zed-orm"
+version = "0.1.0"
+source = "git+https://github.com/zed-pkg/zed-lib.git?rev=430aafe24b6c3ab1263f1351ab4941545f592f19#430aafe24b6c3ab1263f1351ab4941545f592f19"
+dependencies = [
+ "sea-orm",
+]
+
+[[package]]
 name = "zed-web-server"
 version = "0.1.0"
 dependencies = [
@@ -3379,6 +3388,7 @@ dependencies = [
  "axum",
  "dotenvy",
  "maud",
+ "percent-encoding",
  "reqwest",
  "sea-orm",
  "semver",
@@ -3390,6 +3400,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zed-interfaces",
+ "zed-orm",
 ]
 
 [[package]]

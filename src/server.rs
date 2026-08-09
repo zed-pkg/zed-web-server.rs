@@ -1,6 +1,6 @@
 //! Process composition for the registry web server.
 //!
-//! The API server remains the schema owner. This read-only web process may
+//! `zed-lib` owns the schema. This read-only web process may
 //! start without Postgres and retry for a bounded interval before entering its
 //! existing offline mode.
 
@@ -70,15 +70,18 @@ fn shared_auth_url(value: Option<&str>) -> Option<String> {
 
 /// Open and verify one Postgres pool under the reviewed startup policy.
 async fn try_connect(url: &str, policy: DatabaseStartupPolicy) -> Result<DatabaseConnection> {
-    let connect = url
-        .parse::<PgConnectOptions>()?
-        .options([("statement_timeout", policy.statement_timeout_ms.to_string())]);
+    let connect = url.parse::<PgConnectOptions>()?.options([
+        ("statement_timeout", policy.statement_timeout_ms.to_string()),
+        ("default_transaction_read_only", "on".to_owned()),
+    ]);
     let pool = PgPoolOptions::new()
         .max_connections(policy.max_connections)
         .acquire_timeout(Duration::from_secs(8))
         .connect_with(connect)
         .await?;
-    Ok(SqlxPostgresConnector::from_sqlx_postgres_pool(pool))
+    let database = SqlxPostgresConnector::from_sqlx_postgres_pool(pool);
+    zed_orm::assert_read_only(&database).await?;
+    Ok(database)
 }
 
 /// Retry the initial Postgres connection until the bounded startup deadline.
@@ -144,12 +147,22 @@ pub async fn run() -> Result<()> {
         db: database,
         registry_url: std::env::var("PUBLIC_REGISTRY_URL")
             .unwrap_or_else(|_| zed_interfaces::registry::DEFAULT_REGISTRY_URL.to_string()),
+        api_url: std::env::var("ZED_API_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8080".to_owned())
+            .trim_end_matches('/')
+            .to_owned(),
+        public_origin: std::env::var("PUBLIC_WEB_ORIGIN")
+            .unwrap_or_else(|_| "http://localhost:8081".to_owned())
+            .trim_end_matches('/')
+            .to_owned(),
+        session_cookie_name: std::env::var("AUTH_SESSION_COOKIE_NAME")
+            .unwrap_or_else(|_| "__Host-ore-session".to_owned()),
         shared_auth_url: shared_auth_url(std::env::var("SHARED_AUTH_URL").ok().as_deref()),
         http: crate::proxy::client(),
     });
     let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_string());
 
-    let app = crate::routes::router(state);
+    let app = crate::routes::router(state.clone()).merge(crate::account::router(state));
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     tracing::info!("zed-web-server listening on {bind_addr}");
     // ConnectInfo feeds the gateway's X-Forwarded-For append.

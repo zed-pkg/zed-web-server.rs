@@ -1,11 +1,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Router;
 use axum::extract::{DefaultBodyLimit, Form, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
-use axum::Router;
 use maud::{DOCTYPE, Markup, html};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::Method;
@@ -200,10 +200,7 @@ pub fn router(state: Arc<WebState>) -> Router {
     Router::new()
         .route("/login", get(login))
         .route("/signup", get(signup))
-        .route(
-            "/dashboard",
-            get(dashboard).post(create_organization),
-        )
+        .route("/dashboard", get(dashboard).post(create_organization))
         .route(
             "/orgs/{org}/dashboard",
             get(org_dashboard).post(create_project),
@@ -254,22 +251,30 @@ pub(crate) async fn home(
     Query(query): Query<HomeQuery>,
 ) -> Response {
     let Some(token) = session_token(&headers, &state) else {
-        return crate::routes::public_home(State(state)).await.into_response();
+        return crate::routes::public_home(State(state))
+            .await
+            .into_response();
     };
     let path = format!("/v1/me/home?q={}", query_component(&query.q));
     match api_request::<HomeResponse>(&state, &token, Method::GET, &path, None).await {
         Ok(home) => account_home_page(&state, home).into_response(),
-        Err(ApiFailure::Unauthorized) => crate::routes::public_home(State(state)).await.into_response(),
+        Err(ApiFailure::Unauthorized) => crate::routes::public_home(State(state))
+            .await
+            .into_response(),
         Err(error) => api_failure_page(&state, None, "Home unavailable", error),
     }
 }
 
 async fn login(Query(query): Query<ReturnQuery>) -> Redirect {
-    Redirect::to(&shared_auth_sign_in(query.return_to.as_deref().unwrap_or("/dashboard")))
+    Redirect::to(&shared_auth_sign_in(
+        query.return_to.as_deref().unwrap_or("/dashboard"),
+    ))
 }
 
 async fn signup(Query(query): Query<ReturnQuery>) -> Redirect {
-    Redirect::to(&shared_auth_sign_in(query.return_to.as_deref().unwrap_or("/dashboard")))
+    Redirect::to(&shared_auth_sign_in(
+        query.return_to.as_deref().unwrap_or("/dashboard"),
+    ))
 }
 
 async fn dashboard(State(state): State<Arc<WebState>>, headers: HeaderMap) -> Response {
@@ -298,33 +303,25 @@ async fn create_organization(
         slug: form.slug.trim(),
         name: form.name.trim(),
     });
-    match api_request::<OrgResponse>(
-        &state,
-        &token,
-        Method::POST,
-        "/v1/account/orgs",
-        Some(body),
-    )
-    .await
-    {
-        Ok(org) => Redirect::to(&format!(
-            "/orgs/{}/dashboard",
-            path_segment(&org.slug)
-        ))
-        .into_response(),
-        Err(ApiFailure::Unauthorized) => login_redirect("/dashboard"),
-        Err(error) => match api_request::<HomeResponse>(
-            &state,
-            &token,
-            Method::GET,
-            "/v1/me/home",
-            None,
-        )
+    match api_request::<OrgResponse>(&state, &token, Method::POST, "/v1/account/orgs", Some(body))
         .await
-        {
-            Ok(home) => dashboard_page(&state, home, Some(failure_message(error))).into_response(),
-            Err(second) => api_failure_page(&state, None, "Organization was not created", second),
-        },
+    {
+        Ok(org) => {
+            Redirect::to(&format!("/orgs/{}/dashboard", path_segment(&org.slug))).into_response()
+        }
+        Err(ApiFailure::Unauthorized) => login_redirect("/dashboard"),
+        Err(error) => {
+            match api_request::<HomeResponse>(&state, &token, Method::GET, "/v1/me/home", None)
+                .await
+            {
+                Ok(home) => {
+                    dashboard_page(&state, home, Some(failure_message(error))).into_response()
+                }
+                Err(second) => {
+                    api_failure_page(&state, None, "Organization was not created", second)
+                }
+            }
+        }
     }
 }
 
@@ -406,10 +403,7 @@ async fn invite_org_member(
     let Some(token) = session_token(&headers, &state) else {
         return login_redirect(&format!("/orgs/{}/settings", path_segment(&org)));
     };
-    let path = format!(
-        "/v1/account/orgs/{}/invitations",
-        path_segment(&org)
-    );
+    let path = format!("/v1/account/orgs/{}/invitations", path_segment(&org));
     let body = json!(InviteRequest {
         email: form.email.trim(),
         role: form.role.trim(),
@@ -423,13 +417,10 @@ async fn invite_org_member(
         },
         Err(ApiFailure::Unauthorized) => login_redirect("/dashboard"),
         Err(error) => match fetch_dashboard(&state, &token, &org).await {
-            Ok(dashboard) => org_settings_page(
-                &state,
-                dashboard,
-                Some(failure_message(error)),
-                None,
-            )
-            .into_response(),
+            Ok(dashboard) => {
+                org_settings_page(&state, dashboard, Some(failure_message(error)), None)
+                    .into_response()
+            }
             Err(second) => api_failure_page(&state, None, "Invitation was not created", second),
         },
     }
@@ -490,13 +481,10 @@ async fn invite_project_member(
         },
         Err(ApiFailure::Unauthorized) => login_redirect(&return_to),
         Err(error) => match fetch_project(&state, &token, &org, &project).await {
-            Ok(project) => project_settings_page(
-                &state,
-                project,
-                Some(failure_message(error)),
-                None,
-            )
-            .into_response(),
+            Ok(project) => {
+                project_settings_page(&state, project, Some(failure_message(error)), None)
+                    .into_response()
+            }
             Err(second) => api_failure_page(&state, None, "Invitation was not created", second),
         },
     }
@@ -621,12 +609,16 @@ async fn update_user_settings(
     match api_request::<UserResponse>(&state, &token, Method::PATCH, "/v1/me", Some(body)).await {
         Ok(_) => Redirect::to("/settings").into_response(),
         Err(ApiFailure::Unauthorized) => login_redirect("/settings"),
-        Err(error) => match api_request::<UserResponse>(&state, &token, Method::GET, "/v1/me", None)
-            .await
-        {
-            Ok(user) => user_settings_page(&state, user, Some(failure_message(error))).into_response(),
-            Err(second) => api_failure_page(&state, None, "User settings were not updated", second),
-        },
+        Err(error) => {
+            match api_request::<UserResponse>(&state, &token, Method::GET, "/v1/me", None).await {
+                Ok(user) => {
+                    user_settings_page(&state, user, Some(failure_message(error))).into_response()
+                }
+                Err(second) => {
+                    api_failure_page(&state, None, "User settings were not updated", second)
+                }
+            }
+        }
     }
 }
 
@@ -684,10 +676,7 @@ async fn accept_invitation(
     if let Err(response) = require_same_origin(&headers, &state) {
         return response;
     }
-    let return_to = format!(
-        "/invitations/accept?token={}",
-        query_component(&form.token)
-    );
+    let return_to = format!("/invitations/accept?token={}", query_component(&form.token));
     let Some(token) = session_token(&headers, &state) else {
         return login_redirect(&return_to);
     };
@@ -716,10 +705,7 @@ async fn fetch_dashboard(
         state,
         token,
         Method::GET,
-        &format!(
-            "/v1/account/orgs/{}/dashboard",
-            path_segment(org)
-        ),
+        &format!("/v1/account/orgs/{}/dashboard", path_segment(org)),
         None,
     )
     .await
@@ -853,7 +839,11 @@ fn require_same_origin(headers: &HeaderMap, state: &WebState) -> Result<(), Resp
 }
 
 fn account_home_page(state: &WebState, home: HomeResponse) -> Html<String> {
-    let title = match home.user.as_ref().and_then(|user| user.display_name.as_deref()) {
+    let title = match home
+        .user
+        .as_ref()
+        .and_then(|user| user.display_name.as_deref())
+    {
         Some(name) => format!("Welcome, {name}"),
         None => "Your registry".to_owned(),
     };
@@ -902,11 +892,7 @@ fn account_home_page(state: &WebState, home: HomeResponse) -> Html<String> {
     )
 }
 
-fn dashboard_page(
-    _state: &WebState,
-    home: HomeResponse,
-    error: Option<String>,
-) -> Html<String> {
+fn dashboard_page(_state: &WebState, home: HomeResponse, error: Option<String>) -> Html<String> {
     let user = home.user.as_ref();
     Html(
         account_layout(
@@ -1336,7 +1322,10 @@ fn api_failure_page(
             StatusCode::UNAUTHORIZED,
             "Your Shared Auth session is missing or expired.".to_owned(),
         ),
-        ApiFailure::NotFound => (StatusCode::NOT_FOUND, "The requested resource was not found.".to_owned()),
+        ApiFailure::NotFound => (
+            StatusCode::NOT_FOUND,
+            "The requested resource was not found.".to_owned(),
+        ),
         ApiFailure::Rejected { status, message } => (
             StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
             message,
@@ -1433,7 +1422,8 @@ fn optional_text(value: &str) -> Option<String> {
 }
 
 fn parse_json_object(value: &str, label: &str) -> Result<Value, String> {
-    let value = serde_json::from_str::<Value>(value).map_err(|error| format!("Invalid {label}: {error}"))?;
+    let value = serde_json::from_str::<Value>(value)
+        .map_err(|error| format!("Invalid {label}: {error}"))?;
     if value.is_object() {
         Ok(value)
     } else {

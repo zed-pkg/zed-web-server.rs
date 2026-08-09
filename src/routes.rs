@@ -42,7 +42,7 @@ pub fn router(state: Arc<WebState>) -> Router {
     // Static security headers apply to the site only: the proxied auth pages
     // set their own (the upstream CSP must win, not be overridden here).
     let site = Router::new()
-        .route("/", get(home))
+        .route("/", get(crate::account::home))
         .route("/healthz", get(healthz))
         .route("/search", get(search_page))
         .route("/partials/search", get(search_partial))
@@ -127,7 +127,7 @@ async fn recent_packages(state: &WebState, limit: u64) -> Vec<PackageRow> {
     out
 }
 
-async fn home(State(state): State<Arc<WebState>>) -> Html<String> {
+pub(crate) async fn public_home(State(state): State<Arc<WebState>>) -> Html<String> {
     let recent = recent_packages(&state, 20).await;
     let content = html! {
         section class="hero" {
