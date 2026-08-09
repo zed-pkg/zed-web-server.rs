@@ -7,15 +7,17 @@ license = "MIT"
 repository = "https://github.com/zed-pkg/zed-web-server.rs"
 
 [dependencies]
-zed-interfaces = { path = "../zed-interfaces" }
+zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "f141e4cfae31a74c679b46d1d4bb0146b20555f6" }
+zed-orm = { git = "https://github.com/zed-pkg/zed-lib.git", rev = "c924cc61689c62d5df8f4cb190fa09f7f513f644", package = "zed-orm" }
 anyhow = "1"
 axum = "0.8"
 dotenvy = "0.15"
 maud = "0.27"
-# No default features: no auto-redirects wanted (policy is set to none at
-# construction anyway) and auth pages must pass through byte-for-byte, so no
-# decompression either. `stream` is for piping upstream bodies back verbatim.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+percent-encoding = "2"
+# No default features: no auto-redirects wanted and proxied auth pages must
+# pass through byte-for-byte. `json` is for the first-party account API and
+# `stream` pipes Shared Auth responses back verbatim.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 sea-orm = { version = "1", features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-chrono", "with-uuid"] }
 semver = "1"
 serde = { version = "1", features = ["derive"] }
