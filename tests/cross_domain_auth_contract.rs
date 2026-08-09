@@ -35,11 +35,7 @@ fn callback_is_anchored_to_the_zpkg_product_origin() {
 
 #[test]
 fn product_cookie_is_host_only_and_never_sets_a_parent_domain() {
-    let cookie = function_source(
-        BROWSER_AUTH_SOURCE,
-        "fn signed_cookie",
-        "fn clear_cookie",
-    );
+    let cookie = function_source(BROWSER_AUTH_SOURCE, "fn signed_cookie", "fn clear_cookie");
     assert!(cookie.contains("Path=/"));
     assert!(cookie.contains("HttpOnly"));
     assert!(cookie.contains("SameSite=Lax"));
