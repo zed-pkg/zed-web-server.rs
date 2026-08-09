@@ -1,0 +1,92 @@
+name: repair account console compile fixtures
+
+on:
+  push:
+    branches:
+      - feat/den-2955-mash-account-console
+    paths:
+      - .github/workflows/fix-account-console-compile.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.repository == 'zed-pkg/zed-web-server.rs'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: true
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Apply exact compiler repairs and commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          account = Path('src/account.rs')
+          text = account.read_text()
+          replacements = [
+              ('use axum::routing::{get, post};', 'use axum::routing::get;'),
+              ('fn account_home_page(state: &WebState, home: HomeResponse) -> Html<String> {',
+               'fn account_home_page(_state: &WebState, home: HomeResponse) -> Html<String> {'),
+              ('    let settings = serde_json::to_string_pretty(&user.settings).unwrap_or_else(|_| "{}".into());\n',
+               '    let settings = serde_json::to_string_pretty(&user.settings).unwrap_or_else(|_| "{}".into());\n'
+               '    let display_name = user.display_name.clone().unwrap_or_default();\n'
+               '    let avatar_url = user.avatar_url.clone().unwrap_or_default();\n'),
+              ('value=(user.display_name.unwrap_or_default());', 'value=(display_name);'),
+              ('value=(user.avatar_url.unwrap_or_default());', 'value=(avatar_url);'),
+          ]
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'account replacement count for {old!r}: {count}')
+              text = text.replace(old, new)
+          account.write_text(text)
+
+          state_fields = '''            api_url: "http://127.0.0.1:8080".into(),
+              public_origin: "http://localhost:8081".into(),
+              session_cookie_name: "__Host-ore-session".into(),
+          '''
+
+          proxy = Path('src/proxy.rs')
+          text = proxy.read_text()
+          marker = '''            registry_url: "https://registry.zpkg.net".into(),
+              shared_auth_url,'''
+          if text.count(marker) != 1:
+              raise SystemExit(f'proxy fixture marker count: {text.count(marker)}')
+          proxy.write_text(text.replace(
+              marker,
+              '''            registry_url: "https://registry.zpkg.net".into(),
+          ''' + state_fields + '''shared_auth_url,''',
+          ))
+
+          routes = Path('src/routes.rs')
+          text = routes.read_text()
+          marker = '''            registry_url: "https://registry.zpkg.net".into(),
+              shared_auth_url: None,'''
+          count = text.count(marker)
+          if count != 2:
+              raise SystemExit(f'route fixture marker count: {count}')
+          routes.write_text(text.replace(
+              marker,
+              '''            registry_url: "https://registry.zpkg.net".into(),
+          ''' + state_fields + '''shared_auth_url: None,''',
+          ))
+          PY
+          cargo fmt --all
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src
+          git commit -m 'fix(DEN-2955): repair account-console compile fixtures'
+          git push origin HEAD:${GITHUB_REF_NAME}
