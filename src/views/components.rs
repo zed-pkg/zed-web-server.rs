@@ -1,48 +1,6 @@
-//! Maud templates: typed HTML in Rust, brand palette black/orange/baby-blue.
+//! Reusable page fragments: search box, package lists, version tables.
 
-use maud::{DOCTYPE, Markup, html};
-
-pub fn layout(title: &str, db_online: bool, content: Markup) -> Markup {
-    html! {
-        (DOCTYPE)
-        html lang="en" {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
-                title { (title) }
-                link rel="stylesheet" href="/static/styles.css";
-                link rel="icon" type="image/svg+xml" href="/static/favicon.svg";
-                script src="/static/htmx.min.js" {}
-            }
-            body {
-                nav {
-                    div class="wrap nav-inner" {
-                        a class="brand" href="/" {
-                            span class="brand-z" { "zed" } span class="brand-pkg" { "-pkg" }
-                            span class="brand-tag" { "registry" }
-                        }
-                        div class="nav-links" {
-                            a href="/search" { "Search" }
-                            a href="https://zpkg.net" { "zpkg.net" }
-                            a href="https://github.com/zed-pkg" { "GitHub" }
-                        }
-                    }
-                }
-                @if !db_online {
-                    div class="banner offline" {
-                        "registry offline: no database connection; showing empty state"
-                    }
-                }
-                main class="wrap" { (content) }
-                footer {
-                    div class="wrap" {
-                        "(c) 2026 zed-pkg contributors - MIT - MASH stack (Maud, Axum, SeaORM, HTMX)"
-                    }
-                }
-            }
-        }
-    }
-}
+use maud::{Markup, html};
 
 pub fn search_box(query: &str) -> Markup {
     html! {
@@ -157,17 +115,6 @@ pub fn short_sha(sha256: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn layout_renders_nav_and_offline_banner() {
-        let page = layout("t", false, html! { p { "hello" } }).into_string();
-        assert!(page.contains("zed"));
-        assert!(page.contains("registry offline"));
-        assert!(page.contains("hello"));
-
-        let online = layout("t", true, html! {}).into_string();
-        assert!(!online.contains("registry offline"));
-    }
 
     #[test]
     fn search_box_is_wired_for_htmx() {

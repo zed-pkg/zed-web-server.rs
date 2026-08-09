@@ -10,9 +10,8 @@ use std::{
 };
 
 use anyhow::Result;
-use sea_orm::sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sea_orm::{DatabaseConnection, SqlxPostgresConnector};
 use tracing_subscriber::EnvFilter;
+use zed_orm_core::{ConnectPolicy, ReadContext};
 
 use crate::state::WebState;
 
@@ -68,17 +67,32 @@ fn shared_auth_url(value: Option<&str>) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-/// Open and verify one Postgres pool under the reviewed startup policy.
-async fn try_connect(url: &str, policy: DatabaseStartupPolicy) -> Result<DatabaseConnection> {
-    let connect = url
-        .parse::<PgConnectOptions>()?
-        .options([("statement_timeout", policy.statement_timeout_ms.to_string())]);
-    let pool = PgPoolOptions::new()
-        .max_connections(policy.max_connections)
-        .acquire_timeout(Duration::from_secs(8))
-        .connect_with(connect)
-        .await?;
-    Ok(SqlxPostgresConnector::from_sqlx_postgres_pool(pool))
+/// Path on shared-auth that exchanges the sealed session cookie for claims.
+///
+/// Configurable, and defaulted rather than required, so this tier keeps working
+/// if that endpoint moves. A leading slash is enforced because the value is
+/// concatenated onto the trimmed base URL.
+fn session_path(value: Option<&str>) -> String {
+    const DEFAULT: &str = "/auth/browser/session";
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(path) if path.starts_with('/') => path.to_owned(),
+        Some(path) => format!("/{path}"),
+        None => DEFAULT.to_owned(),
+    }
+}
+
+/// Open and verify one read-only Postgres pool under the reviewed startup policy.
+///
+/// `connect_read_only` does more than dial: it verifies the resolved schema and
+/// that `default_transaction_read_only` is actually on, and refuses the
+/// connection otherwise. A misconfigured DSN therefore fails here rather than
+/// silently handing this tier a writable session.
+async fn try_connect(url: &str, policy: DatabaseStartupPolicy) -> Result<ReadContext> {
+    let connect_policy = ConnectPolicy::default()
+        .with_max_connections(policy.max_connections)
+        .with_acquire_timeout(Duration::from_secs(8))
+        .with_statement_timeout_ms(policy.statement_timeout_ms);
+    Ok(zed_orm_core::connect_read_only_with_policy(url, connect_policy).await?)
 }
 
 /// Retry the initial Postgres connection until the bounded startup deadline.
@@ -86,10 +100,7 @@ async fn try_connect(url: &str, policy: DatabaseStartupPolicy) -> Result<Databas
 /// A read-only web pod normally starts alongside its database. If the deadline
 /// expires, the existing fail-open behavior is preserved and the UI serves in
 /// registry-offline mode.
-async fn connect_with_retry(
-    url: &str,
-    policy: DatabaseStartupPolicy,
-) -> Option<DatabaseConnection> {
+async fn connect_with_retry(url: &str, policy: DatabaseStartupPolicy) -> Option<ReadContext> {
     let started = Instant::now();
     let mut attempt = 0_u32;
     loop {
@@ -145,6 +156,7 @@ pub async fn run() -> Result<()> {
         registry_url: std::env::var("PUBLIC_REGISTRY_URL")
             .unwrap_or_else(|_| zed_interfaces::registry::DEFAULT_REGISTRY_URL.to_string()),
         shared_auth_url: shared_auth_url(std::env::var("SHARED_AUTH_URL").ok().as_deref()),
+        session_path: session_path(std::env::var("SHARED_AUTH_SESSION_PATH").ok().as_deref()),
         http: crate::proxy::client(),
     });
     let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_string());
@@ -164,6 +176,17 @@ pub async fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_path_defaults_and_normalizes() {
+        assert_eq!(session_path(None), "/auth/browser/session");
+        assert_eq!(session_path(Some("")), "/auth/browser/session");
+        assert_eq!(session_path(Some("  ")), "/auth/browser/session");
+        assert_eq!(session_path(Some("/v1/session")), "/v1/session");
+        // A configured value without its leading slash would otherwise join
+        // onto the base URL as "https://hostv1/session".
+        assert_eq!(session_path(Some("v1/session")), "/v1/session");
+    }
 
     #[test]
     fn database_policy_defaults_preserve_the_existing_runtime_contract() {
