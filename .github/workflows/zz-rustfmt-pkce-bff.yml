@@ -1,0 +1,44 @@
+name: apply rustfmt to PKCE BFF
+
+on:
+  push:
+    branches:
+      - feat/den-2955-shared-auth-pkce-bff
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-rustfmt-pkce-bff
+  cancel-in-progress: false
+
+jobs:
+  format:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Format and commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          rm -f .github/workflows/zz-rustfmt-pkce-bff.yml
+          git add -A
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "style(DEN-2955): format the PKCE BFF"
+          git push origin HEAD:feat/den-2955-shared-auth-pkce-bff
