@@ -1,5 +1,6 @@
-# Fast Rust CI: pinned source graph, mold as the linker, cargo-nextest for
-# parallel tests, and a dependency cache that degrades gracefully.
+# Fast Rust CI: immutable git-pinned source graph, mold as the linker,
+# cargo-nextest for parallel tests, and a dependency cache that degrades
+# gracefully.
 name: ci
 
 on:
@@ -17,33 +18,52 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  ZED_INTERFACES_SHA: 07d01604461d00e237c7d86ad3855464167574ec
+  ZED_INTERFACES_SHA: f141e4cfae31a74c679b46d1d4bb0146b20555f6
+  ZED_ORM_SHA: 430aafe24b6c3ab1263f1351ab4941545f592f19
 
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          path: zed-web-server.rs
           persist-credentials: false
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: zed-pkg/zed-interfaces
-          ref: ${{ env.ZED_INTERFACES_SHA }}
-          path: zed-interfaces
-          persist-credentials: false
-      - name: Verify the complete source graph
+      - name: Verify the standalone immutable source graph
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git -C zed-web-server.rs rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git -C zed-interfaces rev-parse HEAD)" = "$ZED_INTERFACES_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test ! -e ../zed-interfaces
+          test ! -e ../zed-lib
+          python3 - <<'PY'
+          from pathlib import Path
+          import tomllib
+
+          manifest = tomllib.loads(Path("Cargo.toml").read_text())
+          interfaces = manifest["dependencies"]["zed-interfaces"]
+          orm = manifest["dependencies"]["zed-orm"]
+          expected_interfaces = "f141e4cfae31a74c679b46d1d4bb0146b20555f6"
+          expected_orm = "430aafe24b6c3ab1263f1351ab4941545f592f19"
+          assert "path" not in interfaces, interfaces
+          assert interfaces["rev"] == expected_interfaces, interfaces
+          assert "path" not in orm, orm
+          assert orm["rev"] == expected_orm, orm
+          assert orm["package"] == "zed-orm", orm
+          lock = Path("Cargo.lock").read_text()
+          assert (
+              "git+https://github.com/zed-pkg/zed-interfaces.git?"
+              f"rev={expected_interfaces}#{expected_interfaces}"
+          ) in lock
+          assert (
+              "git+https://github.com/zed-pkg/zed-lib.git?"
+              f"rev={expected_orm}#{expected_orm}"
+          ) in lock
+          PY
       - name: Validate workflow syntax
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
         with:
-          args: zed-web-server.rs/.github/workflows/ci.yml
+          args: .github/workflows/ci.yml
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: rustfmt, clippy
@@ -52,44 +72,43 @@ jobs:
         with:
           make-default: true
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          workspaces: zed-web-server.rs
       - name: Install cargo-nextest
         uses: taiki-e/install-action@a6e08638ce5ee7b285b1e051c006e3be64fcff91 # nextest
+      - name: Resolve only the committed lockfile
+        run: cargo metadata --locked --format-version 1 >/dev/null
       - name: Format
-        working-directory: zed-web-server.rs
         run: cargo fmt --all -- --check
       - name: Check all targets
-        working-directory: zed-web-server.rs
         run: cargo check --locked --all-targets
       - name: Strict Clippy
-        working-directory: zed-web-server.rs
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Test with nextest
-        working-directory: zed-web-server.rs
         run: cargo nextest run --locked
       - name: Documentation
-        working-directory: zed-web-server.rs
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --locked --no-deps
       - name: Release build
-        working-directory: zed-web-server.rs
         run: cargo build --locked --release
       - name: Enforce process-runtime boundaries
-        working-directory: zed-web-server.rs
         shell: bash
         run: |
           set -euo pipefail
           test -f src/lib.rs
           test -f src/server.rs
+          test -f src/account.rs
+          test -f static/account.css
           test -f RUNTIME.md
           test "$(wc -l < src/main.rs)" -le 6
           git grep -qF 'pub async fn run' -- src/server.rs
           git grep -qF 'connect_with_retry' -- src/server.rs
           git grep -qF 'DatabaseStartupPolicy' -- src/server.rs
-          git grep -qF 'The API server remains the' -- RUNTIME.md
-          git grep -qF 'schema and write-path authority.' -- RUNTIME.md
+          git grep -qF 'zed_orm::assert_read_only' -- src/server.rs
+          git grep -qF 'zed-lib' -- RUNTIME.md
+          git grep -qF 'schema and migration authority' -- RUNTIME.md
+          git grep -qF '/orgs/{org}/settings' -- src/account.rs
+          git grep -qF '/orgs/{org}/projects/{project}/settings' -- src/account.rs
+          git grep -qF '/orgs/{org}/packages/{package}/settings' -- src/account.rs
           if git grep -nE 'DatabaseConnection|PgPoolOptions|routes::router|TcpListener::bind' -- src/main.rs; then
             echo 'database, routing, and listener lifecycle must remain outside src/main.rs' >&2
             exit 1
