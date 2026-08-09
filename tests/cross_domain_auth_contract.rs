@@ -55,7 +55,7 @@ fn written_contract_rejects_cookie_sharing_and_direct_supabase_callbacks() {
     assert!(BFF_CONTRACT.contains("SHARED_AUTH_PUBLIC_URL=https://auth.oresoftware.dev"));
     let internal_url = concat!(
         "SHARED_AUTH_URL=http://",
-        "shared-auth-server.shared-auth.svc.cluster.local"
+        "shared-auth-server.shared-auth.svc.cluster.local",
     );
     assert!(BFF_CONTRACT.contains(internal_url));
 }
