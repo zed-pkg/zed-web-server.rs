@@ -4,11 +4,11 @@
 //! entrypoint remains a minimal Tokio adapter so startup policy can be tested
 //! without coupling it to executable glue.
 //!
-//! This tier is **read-only by construction**: its database identity holds only
-//! SELECT, and it depends on `zed-orm-core` with default features, so the
-//! compiler refuses to give it a write context at all. Every mutation the UI
-//! offers is a form that posts to the API server.
+//! This tier is **read-only by construction** at the database boundary. Browser
+//! mutations terminate at a same-origin BFF route, which refreshes/delegates a
+//! Shared Auth session and forwards the operation to the write-enabled API.
 
+mod browser_auth;
 mod proxy;
 mod routes;
 pub mod server;
