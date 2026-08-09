@@ -63,10 +63,7 @@ fn shared_auth_ui_service_path(uri: &Uri) -> Option<&str> {
 fn shared_auth_ui_path_allowed(path: &str) -> bool {
     matches!(
         path,
-        "/" | "/ui"
-            | "/auth/browser/sign-in"
-            | "/auth/browser/consume"
-            | "/auth/browser/otp"
+        "/" | "/ui" | "/auth/browser/sign-in" | "/auth/browser/consume" | "/auth/browser/otp"
     )
 }
 
@@ -189,13 +186,11 @@ mod tests {
     #[test]
     fn shared_auth_ui_prefix_preserves_path_and_query() {
         let root: Uri = "/shared-auth-ui".parse().unwrap();
-        assert_eq!(
-            shared_auth_ui_upstream_uri(&root).unwrap(),
-            "/shared-auth/"
-        );
+        assert_eq!(shared_auth_ui_upstream_uri(&root).unwrap(), "/shared-auth/");
 
-        let sign_in: Uri =
-            "/shared-auth-ui/auth/browser/sign-in?return=%2Fdashboard".parse().unwrap();
+        let sign_in: Uri = "/shared-auth-ui/auth/browser/sign-in?return=%2Fdashboard"
+            .parse()
+            .unwrap();
         assert_eq!(
             shared_auth_ui_upstream_uri(&sign_in).unwrap(),
             "/shared-auth/auth/browser/sign-in?return=%2Fdashboard"
