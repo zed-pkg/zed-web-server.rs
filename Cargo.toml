@@ -12,7 +12,9 @@ repository = "https://github.com/zed-pkg/zed-web-server.rs"
 zed-interfaces = { path = "../zed-interfaces" }
 # Default features only: the read-only surface. Enabling `read-write` here
 # would hand this process write symbols its database identity cannot use.
-zed-orm-core = { git = "https://github.com/zed-pkg/zed-lib-core.git", branch = "main" }
+# Pin the certified canonical data-plane revision; never follow a moving branch
+# in a production server lock graph.
+zed-orm-core = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "d9a1f72baad87a0bbe256ad892d61d7a4fdd9135" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
