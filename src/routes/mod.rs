@@ -64,17 +64,11 @@ pub fn router(state: Arc<WebState>) -> Router {
             "/shared-auth/auth/browser/sign-in",
             get(browser_auth::sign_in),
         )
-        .route(
-            "/shared-auth/auth/logout",
-            post(browser_auth::logout),
-        )
+        .route("/shared-auth/auth/logout", post(browser_auth::logout))
         // Stable same-origin form endpoints. Each handler translates the old
         // UI path to `/api/v1/account/*` after origin checks and delegation.
         .route("/v1/orgs", post(browser_auth::create_org))
-        .route(
-            "/v1/orgs/{org}/invitations",
-            post(browser_auth::invite_org),
-        )
+        .route("/v1/orgs/{org}/invitations", post(browser_auth::invite_org))
         .route(
             "/v1/orgs/{org}/projects",
             post(browser_auth::create_project),

@@ -111,12 +111,9 @@ fn browser_auth_config(
     let Some(shared_auth_url) = shared_auth_url else {
         return Ok(None);
     };
-    let shared_auth_public_url = trimmed_base_url(
-        std::env::var("SHARED_AUTH_PUBLIC_URL")
-            .ok()
-            .as_deref(),
-    )
-    .unwrap_or_else(|| shared_auth_url.clone());
+    let shared_auth_public_url =
+        trimmed_base_url(std::env::var("SHARED_AUTH_PUBLIC_URL").ok().as_deref())
+            .unwrap_or_else(|| shared_auth_url.clone());
     let session_signing_secret = required_env("ZED_SESSION_SIGNING_SECRET")?;
     if session_signing_secret.as_bytes().len() < 32 {
         bail!("ZED_SESSION_SIGNING_SECRET must contain at least 32 bytes");
@@ -133,11 +130,9 @@ fn browser_auth_config(
         handoff_client_secret: required_env("SHARED_AUTH_HANDOFF_CLIENT_SECRET")?,
         delegate_client_id: std::env::var("SHARED_AUTH_DELEGATE_CLIENT_ID")
             .unwrap_or_else(|_| "zpkg-web".to_owned()),
-        audience: std::env::var("SHARED_AUTH_AUDIENCE")
-            .unwrap_or_else(|_| "zed-pkg".to_owned()),
+        audience: std::env::var("SHARED_AUTH_AUDIENCE").unwrap_or_else(|_| "zed-pkg".to_owned()),
         scopes: parse_scopes(
-            &std::env::var("SHARED_AUTH_SCOPES")
-                .unwrap_or_else(|_| "zpkg:account".to_owned()),
+            &std::env::var("SHARED_AUTH_SCOPES").unwrap_or_else(|_| "zpkg:account".to_owned()),
         )?,
         session_signing_secret,
         session_cookie_name: if secure_cookies {
@@ -208,11 +203,9 @@ pub async fn run() -> Result<()> {
     };
 
     let public_origin = normalize_origin(
-        &std::env::var("PUBLIC_BASE_URL")
-            .unwrap_or_else(|_| "http://localhost:8081".to_owned()),
+        &std::env::var("PUBLIC_BASE_URL").unwrap_or_else(|_| "http://localhost:8081".to_owned()),
     )?;
-    let shared_auth_url =
-        trimmed_base_url(std::env::var("SHARED_AUTH_URL").ok().as_deref());
+    let shared_auth_url = trimmed_base_url(std::env::var("SHARED_AUTH_URL").ok().as_deref());
     let browser_auth = browser_auth_config(shared_auth_url.clone(), &public_origin)?;
 
     let state = Arc::new(WebState {
