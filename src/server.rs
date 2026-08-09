@@ -9,11 +9,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use tracing_subscriber::EnvFilter;
 use zed_orm_core::{ConnectPolicy, ReadContext};
 
-use crate::state::WebState;
+use crate::state::{BrowserAuthConfig, WebState};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct DatabaseStartupPolicy {
@@ -59,34 +59,96 @@ fn parse_u64_or(value: Option<&str>, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-/// `SHARED_AUTH_URL` enables the /shared-auth gateway path. Trailing slashes
-/// are trimmed so joining with the stripped request path cannot double a `/`;
-/// unset or empty leaves the gateway disabled (those routes answer 503).
-fn shared_auth_url(value: Option<&str>) -> Option<String> {
-    let trimmed = value?.trim_end_matches('/');
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
+fn trimmed_base_url(value: Option<&str>) -> Option<String> {
+    let trimmed = value?.trim().trim_end_matches('/');
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
-/// Path on shared-auth that exchanges the sealed session cookie for claims.
-///
-/// Configurable, and defaulted rather than required, so this tier keeps working
-/// if that endpoint moves. A leading slash is enforced because the value is
-/// concatenated onto the trimmed base URL.
-fn session_path(value: Option<&str>) -> String {
-    const DEFAULT: &str = "/auth/browser/session";
-    match value.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(path) if path.starts_with('/') => path.to_owned(),
-        Some(path) => format!("/{path}"),
-        None => DEFAULT.to_owned(),
+fn required_env(name: &str) -> Result<String> {
+    let value = std::env::var(name).with_context(|| format!("{name} is required"))?;
+    let value = value.trim().to_owned();
+    if value.is_empty() {
+        bail!("{name} cannot be empty");
     }
+    Ok(value)
 }
 
-/// Open and verify one read-only Postgres pool under the reviewed startup policy.
-///
-/// `connect_read_only` does more than dial: it verifies the resolved schema and
-/// that `default_transaction_read_only` is actually on, and refuses the
-/// connection otherwise. A misconfigured DSN therefore fails here rather than
-/// silently handing this tier a writable session.
+fn normalize_origin(value: &str) -> Result<String> {
+    let url = reqwest::Url::parse(value).context("PUBLIC_BASE_URL must be an absolute URL")?;
+    if !matches!(url.scheme(), "http" | "https") {
+        bail!("PUBLIC_BASE_URL must use http or https");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        bail!("PUBLIC_BASE_URL must not contain credentials");
+    }
+    if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+        bail!("PUBLIC_BASE_URL must be an origin without a path, query, or fragment");
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
+fn parse_scopes(value: &str) -> Result<Vec<String>> {
+    let mut scopes = Vec::new();
+    for candidate in value
+        .split(|character: char| character == ',' || character.is_ascii_whitespace())
+        .map(str::trim)
+        .filter(|candidate| !candidate.is_empty())
+    {
+        if !scopes.iter().any(|scope| scope == candidate) {
+            scopes.push(candidate.to_owned());
+        }
+    }
+    if !scopes.iter().any(|scope| scope == "zpkg:account") {
+        bail!("SHARED_AUTH_SCOPES must include zpkg:account");
+    }
+    Ok(scopes)
+}
+
+fn browser_auth_config(
+    shared_auth_url: Option<String>,
+    public_origin: &str,
+) -> Result<Option<BrowserAuthConfig>> {
+    let Some(shared_auth_url) = shared_auth_url else {
+        return Ok(None);
+    };
+    let shared_auth_public_url =
+        trimmed_base_url(std::env::var("SHARED_AUTH_PUBLIC_URL").ok().as_deref())
+            .unwrap_or_else(|| shared_auth_url.clone());
+    let session_signing_secret = required_env("ZED_SESSION_SIGNING_SECRET")?;
+    if session_signing_secret.len() < 32 {
+        bail!("ZED_SESSION_SIGNING_SECRET must contain at least 32 bytes");
+    }
+    let secure_cookies = public_origin.starts_with("https://");
+    Ok(Some(BrowserAuthConfig {
+        shared_auth_url,
+        shared_auth_public_url,
+        public_origin: public_origin.to_owned(),
+        api_url: trimmed_base_url(std::env::var("ZED_API_URL").ok().as_deref())
+            .unwrap_or_else(|| "http://127.0.0.1:8080".to_owned()),
+        handoff_client_id: std::env::var("SHARED_AUTH_HANDOFF_CLIENT_ID")
+            .unwrap_or_else(|_| "zpkg".to_owned()),
+        handoff_client_secret: required_env("SHARED_AUTH_HANDOFF_CLIENT_SECRET")?,
+        delegate_client_id: std::env::var("SHARED_AUTH_DELEGATE_CLIENT_ID")
+            .unwrap_or_else(|_| "zpkg-web".to_owned()),
+        audience: std::env::var("SHARED_AUTH_AUDIENCE").unwrap_or_else(|_| "zed-pkg".to_owned()),
+        scopes: parse_scopes(
+            &std::env::var("SHARED_AUTH_SCOPES").unwrap_or_else(|_| "zpkg:account".to_owned()),
+        )?,
+        session_signing_secret,
+        session_cookie_name: if secure_cookies {
+            "__Host-zpkg_session".to_owned()
+        } else {
+            "zpkg_session".to_owned()
+        },
+        login_cookie_name: if secure_cookies {
+            "__Host-zpkg_login".to_owned()
+        } else {
+            "zpkg_login".to_owned()
+        },
+        secure_cookies,
+    }))
+}
+
 async fn try_connect(url: &str, policy: DatabaseStartupPolicy) -> Result<ReadContext> {
     let connect_policy = ConnectPolicy::default()
         .with_max_connections(policy.max_connections)
@@ -95,11 +157,6 @@ async fn try_connect(url: &str, policy: DatabaseStartupPolicy) -> Result<ReadCon
     Ok(zed_orm_core::connect_read_only_with_policy(url, connect_policy).await?)
 }
 
-/// Retry the initial Postgres connection until the bounded startup deadline.
-///
-/// A read-only web pod normally starts alongside its database. If the deadline
-/// expires, the existing fail-open behavior is preserved and the UI serves in
-/// registry-offline mode.
 async fn connect_with_retry(url: &str, policy: DatabaseStartupPolicy) -> Option<ReadContext> {
     let started = Instant::now();
     let mut attempt = 0_u32;
@@ -130,12 +187,6 @@ async fn connect_with_retry(url: &str, policy: DatabaseStartupPolicy) -> Option<
 }
 
 /// Run the read-only MASH registry UI.
-///
-/// # Errors
-///
-/// Returns an error when the listener cannot bind or the HTTP server exits
-/// unexpectedly. Database unavailability retains the product's reviewed
-/// offline-mode behavior and is not a process-startup error.
 pub async fn run() -> Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
@@ -151,20 +202,27 @@ pub async fn run() -> Result<()> {
         }
     };
 
+    let public_origin = normalize_origin(
+        &std::env::var("PUBLIC_BASE_URL").unwrap_or_else(|_| "http://localhost:8081".to_owned()),
+    )?;
+    let shared_auth_url = trimmed_base_url(std::env::var("SHARED_AUTH_URL").ok().as_deref());
+    let browser_auth = browser_auth_config(shared_auth_url.clone(), &public_origin)?;
+
     let state = Arc::new(WebState {
         db: database,
-        registry_url: std::env::var("PUBLIC_REGISTRY_URL")
-            .unwrap_or_else(|_| zed_interfaces::registry::DEFAULT_REGISTRY_URL.to_string()),
-        shared_auth_url: shared_auth_url(std::env::var("SHARED_AUTH_URL").ok().as_deref()),
-        session_path: session_path(std::env::var("SHARED_AUTH_SESSION_PATH").ok().as_deref()),
+        // Existing Maud forms now target the same origin; the BFF routes below
+        // translate their stable legacy paths to the canonical API hierarchy.
+        registry_url: String::new(),
+        shared_auth_url,
+        session_path: "/auth/browser/session".to_owned(),
+        browser_auth,
         http: crate::proxy::client(),
     });
-    let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_string());
+    let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_owned());
 
     let app = crate::routes::router(state);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     tracing::info!("zed-web-server listening on {bind_addr}");
-    // ConnectInfo feeds the gateway's X-Forwarded-For append.
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
@@ -176,17 +234,6 @@ pub async fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn session_path_defaults_and_normalizes() {
-        assert_eq!(session_path(None), "/auth/browser/session");
-        assert_eq!(session_path(Some("")), "/auth/browser/session");
-        assert_eq!(session_path(Some("  ")), "/auth/browser/session");
-        assert_eq!(session_path(Some("/v1/session")), "/v1/session");
-        // A configured value without its leading slash would otherwise join
-        // onto the base URL as "https://hostv1/session".
-        assert_eq!(session_path(Some("v1/session")), "/v1/session");
-    }
 
     #[test]
     fn database_policy_defaults_preserve_the_existing_runtime_contract() {
@@ -225,17 +272,22 @@ mod tests {
     }
 
     #[test]
-    fn shared_auth_url_trims_trailing_slashes_and_treats_empty_as_unset() {
-        assert_eq!(shared_auth_url(None), None);
-        assert_eq!(shared_auth_url(Some("")), None);
-        assert_eq!(shared_auth_url(Some("///")), None);
+    fn origins_are_exact_and_pathless() {
         assert_eq!(
-            shared_auth_url(Some("http://127.0.0.1:8120")),
-            Some("http://127.0.0.1:8120".to_string())
+            normalize_origin("https://app.zpkg.net/").unwrap(),
+            "https://app.zpkg.net"
         );
+        assert!(normalize_origin("https://app.zpkg.net/path").is_err());
+        assert!(normalize_origin("javascript:alert(1)").is_err());
+        assert!(normalize_origin("https://user@app.zpkg.net").is_err());
+    }
+
+    #[test]
+    fn account_scope_is_mandatory_and_deduplicated() {
+        assert!(parse_scopes("packages:read").is_err());
         assert_eq!(
-            shared_auth_url(Some("http://127.0.0.1:8120//")),
-            Some("http://127.0.0.1:8120".to_string())
+            parse_scopes("zpkg:account, zpkg:account packages:write").unwrap(),
+            vec!["zpkg:account", "packages:write"]
         );
     }
 
