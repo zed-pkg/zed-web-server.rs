@@ -1,0 +1,48 @@
+[package]
+org = "zed-pkg"
+name = "zed-web-server"
+version = "0.1.0"
+description = "Zed account console and registry web server with Maud, Axum, HTMX, and Shared Auth PKCE"
+license = "MIT"
+keywords = ["zed", "registry", "web", "htmx", "pkce"]
+language = "rust"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/zed-pkg/zed-web-server.rs"
+
+[dependencies]
+"zed-pkg/zed-interfaces" = "^0.1.0"
+"zed-pkg/zed-lib-core" = "^0.1.0"
+
+[install]
+adapter = "none"
+dir = ".vendor/.zed"
+
+[targets.repository]
+dir = "."
+
+[publish]
+include_readme = true
+tag_format = "v{version}"
+smoke_test = "test -f \"$ZED_PKG_TEST_TARGET/src/account.rs\" && test -f \"$ZED_PKG_TEST_TARGET/src/session.rs\""
+exclude = [
+  ".env",
+  ".env.*",
+  ".direnv/**",
+  ".zed/**",
+  ".zed-pack/**",
+  ".vendor/.zed/**",
+  "env/enc/**",
+  "target/**",
+  "**/target/**",
+  "tmp/**",
+  "artifacts/**",
+  "**/*.log",
+  ".DS_Store",
+]
+
+[scripts]
+test = "cargo test --all-targets --locked"
+lint = "cargo clippy --all-targets --locked -- -D warnings"
+format = "cargo fmt --all -- --check"
