@@ -1,16 +1,541 @@
+=== cargo fmt ===
+fmt_exit=0
+=== cargo check ===
 [1m[92m    Updating[0m crates.io index
-[1m[91merror[0m: failed to get `zed-interfaces` as a dependency of package `zed-web-server v0.1.0 (/home/runner/work/zed-web-server.rs/zed-web-server.rs)`
+[1m[92m    Updating[0m git repository `https://github.com/zed-pkg/zed-lib-core.git`
+[1m[92m Downloading[0m crates ...
+[1m[92m  Downloaded[0m thread_local v1.1.10
+[1m[92m  Downloaded[0m time-core v0.1.9
+[1m[92m  Downloaded[0m time-macros v0.2.32
+[1m[92m  Downloaded[0m tokio-macros v2.7.1
+[1m[92m  Downloaded[0m tinyvec_macros v0.1.1
+[1m[92m  Downloaded[0m errno v0.3.14
+[1m[92m  Downloaded[0m toml_writer v1.1.2+spec-1.1.0
+[1m[92m  Downloaded[0m ref-cast-impl v1.0.26
+[1m[92m  Downloaded[0m tower-layer v0.3.3
+[1m[92m  Downloaded[0m tokio-stream v0.1.19
+[1m[92m  Downloaded[0m toml_datetime v1.1.1+spec-1.1.0
+[1m[92m  Downloaded[0m tracing-log v0.2.0
+[1m[92m  Downloaded[0m toml_parser v1.1.2+spec-1.1.0
+[1m[92m  Downloaded[0m tower-service v0.3.3
+[1m[92m  Downloaded[0m cpufeatures v0.3.0
+[1m[92m  Downloaded[0m try-lock v0.2.5
+[1m[92m  Downloaded[0m unicase v2.9.0
+[1m[92m  Downloaded[0m zerofrom v0.1.8
+[1m[92m  Downloaded[0m version_check v0.9.5
+[1m[92m  Downloaded[0m equivalent v1.0.2
+[1m[92m  Downloaded[0m tinystr v0.8.3
+[1m[92m  Downloaded[0m tinyvec v1.12.0
+[1m[92m  Downloaded[0m tokio-rustls v0.26.4
+[1m[92m  Downloaded[0m yoke-derive v0.8.2
+[1m[92m  Downloaded[0m cpufeatures v0.2.17
+[1m[92m  Downloaded[0m crc v3.4.0
+[1m[92m  Downloaded[0m dyn-clone v1.0.20
+[1m[92m  Downloaded[0m untrusted v0.9.0
+[1m[92m  Downloaded[0m utf8_iter v1.0.4
+[1m[92m  Downloaded[0m webpki-roots v0.26.11
+[1m[92m  Downloaded[0m aliasable v0.1.3
+[1m[92m  Downloaded[0m async-stream-impl v0.3.6
+[1m[92m  Downloaded[0m atoi v2.0.0
+[1m[92m  Downloaded[0m block-buffer v0.10.4
+[1m[92m  Downloaded[0m deranged v0.5.8
+[1m[92m  Downloaded[0m heck v0.4.1
+[1m[92m  Downloaded[0m cfg-if v1.0.4
+[1m[92m  Downloaded[0m reqwest v0.12.28
+[1m[92m  Downloaded[0m serde_urlencoded v0.7.1
+[1m[92m  Downloaded[0m tracing-core v0.1.36
+[1m[92m  Downloaded[0m unicode-xid v0.2.6
+[1m[92m  Downloaded[0m want v0.3.1
+[1m[92m  Downloaded[0m zerofrom-derive v0.1.7
+[1m[92m  Downloaded[0m zmij v1.0.23
+[1m[92m  Downloaded[0m async-stream v0.3.6
+[1m[92m  Downloaded[0m async-trait v0.1.91
+[1m[92m  Downloaded[0m atomic-waker v1.1.2
+[1m[92m  Downloaded[0m base64ct v1.8.3
+[1m[92m  Downloaded[0m byteorder v1.5.0
+[1m[92m  Downloaded[0m cfg_aliases v0.2.2
+[1m[92m  Downloaded[0m concurrent-queue v2.5.0
+[1m[92m  Downloaded[0m crossbeam-queue v0.3.13
+[1m[92m  Downloaded[0m crypto-common v0.1.7
+[1m[92m  Downloaded[0m either v1.16.0
+[1m[92m  Downloaded[0m inherent v1.0.14
+[1m[92m  Downloaded[0m mac_address v1.1.8
+[1m[92m  Downloaded[0m rand_core v0.6.4
+[1m[92m  Downloaded[0m strum v0.26.3
+[1m[92m  Downloaded[0m subtle v2.6.1
+[1m[92m  Downloaded[0m sha1 v0.10.7
+[1m[92m  Downloaded[0m sync_wrapper v1.0.2
+[1m[92m  Downloaded[0m zerovec-derive v0.11.3
+[1m[92m  Downloaded[0m digest v0.10.7
+[1m[92m  Downloaded[0m heck v0.5.0
+[1m[92m  Downloaded[0m httpdate v1.0.3
+[1m[92m  Downloaded[0m writeable v0.6.3
+[1m[92m  Downloaded[0m yoke v0.8.3
+[1m[92m  Downloaded[0m zeroize v1.9.0
+[1m[92m  Downloaded[0m autocfg v1.5.1
+[1m[92m  Downloaded[0m axum-core v0.5.6
+[1m[92m  Downloaded[0m const-oid v0.9.6
+[1m[92m  Downloaded[0m crc-catalog v2.5.0
+[1m[92m  Downloaded[0m num-conv v0.2.2
+[1m[92m  Downloaded[0m toml v1.1.3+spec-1.1.0
+[1m[92m  Downloaded[0m tracing-attributes v0.1.31
+[1m[92m  Downloaded[0m allocator-api2 v0.2.21
+[1m[92m  Downloaded[0m arrayvec v0.7.8
+[1m[92m  Downloaded[0m crossbeam-utils v0.8.22
+[1m[92m  Downloaded[0m displaydoc v0.2.6
+[1m[92m  Downloaded[0m stringprep v0.1.5
+[1m[92m  Downloaded[0m foldhash v0.1.5
+[1m[92m  Downloaded[0m stable_deref_trait v1.2.1
+[1m[92m  Downloaded[0m futures-sink v0.3.33
+[1m[92m  Downloaded[0m event-listener v5.4.1
+[1m[92m  Downloaded[0m mime_guess v2.0.5
+[1m[92m  Downloaded[0m pin-project-lite v0.2.17
+[1m[92m  Downloaded[0m ppv-lite86 v0.2.21
+[1m[92m  Downloaded[0m quinn-udp v0.5.15
+[1m[92m  Downloaded[0m unicode-bidi v0.3.18
+[1m[92m  Downloaded[0m unicode-ident v1.0.24
+[1m[92m  Downloaded[0m unicode-properties v0.1.4
+[1m[92m  Downloaded[0m whoami v1.6.1
+[1m[92m  Downloaded[0m yansi v1.0.1
+[1m[92m  Downloaded[0m zerotrie v0.2.4
+[1m[92m  Downloaded[0m anyhow v1.0.104
+[1m[92m  Downloaded[0m base64 v0.22.1
+[1m[92m  Downloaded[0m bitflags v2.13.1
+[1m[92m  Downloaded[0m bytes v1.12.1
+[1m[92m  Downloaded[0m chacha20 v0.10.1
+[1m[92m  Downloaded[0m dotenvy v0.15.7
+[1m[92m  Downloaded[0m futures-io v0.3.33
+[1m[92m  Downloaded[0m icu_provider v2.2.0
+[1m[92m  Downloaded[0m rand_core v0.10.1
+[1m[92m  Downloaded[0m aho-corasick v1.1.4
+[1m[92m  Downloaded[0m generic-array v0.14.7
+[1m[92m  Downloaded[0m rustc-hash v2.1.3
+[1m[92m  Downloaded[0m sea-bae v0.2.2
+[1m[92m  Downloaded[0m futures-task v0.3.33
+[1m[92m  Downloaded[0m parking_lot_core v0.9.12
+[1m[92m  Downloaded[0m pkcs1 v0.7.5
+[1m[92m  Downloaded[0m uuid v1.24.0
+[1m[92m  Downloaded[0m cc v1.3.0
+[1m[92m  Downloaded[0m der v0.7.10
+[1m[92m  Downloaded[0m derive_more v2.1.1
+[1m[92m  Downloaded[0m derive_more-impl v2.1.1
+[1m[92m  Downloaded[0m idna_adapter v1.2.2
+[1m[92m  Downloaded[0m mime v0.3.17
+[1m[92m  Downloaded[0m parking v2.2.1
+[1m[92m  Downloaded[0m pgvector v0.4.2
+[1m[92m  Downloaded[0m powerfmt v0.2.0
+[1m[92m  Downloaded[0m signature v2.2.0
+[1m[92m  Downloaded[0m tokio-util v0.7.19
+[1m[92m  Downloaded[0m tower v0.5.3
+[1m[92m  Downloaded[0m typenum v1.20.1
+[1m[92m  Downloaded[0m unicode-normalization v0.1.25
+[1m[92m  Downloaded[0m url v2.5.8
+[1m[92m  Downloaded[0m zerovec v0.11.6
+[1m[92m  Downloaded[0m bigdecimal v0.4.10
+[1m[92m  Downloaded[0m ipnet v2.12.1
+[1m[92m  Downloaded[0m litemap v0.8.2
+[1m[92m  Downloaded[0m num-bigint v0.4.8
+[1m[92m  Downloaded[0m num-bigint-dig v0.8.6
+[1m[92m  Downloaded[0m rustc_version v0.4.1
+[1m[92m  Downloaded[0m sea-query-binder v0.7.0
+[1m[92m  Downloaded[0m tower-http v0.6.11
+[1m[92m  Downloaded[0m http-range-header v0.4.2
+[1m[92m  Downloaded[0m futures-macro v0.3.33
+[1m[92m  Downloaded[0m home v0.5.12
+[1m[92m  Downloaded[0m http-body v1.1.0
+[1m[92m  Downloaded[0m itoa v1.0.18
+[1m[92m  Downloaded[0m scopeguard v1.2.0
+[1m[92m  Downloaded[0m sqlx-macros v0.8.6
+[1m[92m  Downloaded[0m static_assertions v1.1.0
+[1m[92m  Downloaded[0m synstructure v0.13.2
+[1m[92m  Downloaded[0m form_urlencoded v1.2.2
+[1m[92m  Downloaded[0m futures-core v0.3.33
+[1m[92m  Downloaded[0m proc-macro2 v1.0.107
+[1m[92m  Downloaded[0m axum v0.8.9
+[1m[92m  Downloaded[0m lazy_static v1.5.0
+[1m[92m  Downloaded[0m log v0.4.33
+[1m[92m  Downloaded[0m mio v1.2.2
+[1m[92m  Downloaded[0m pkcs8 v0.10.2
+[1m[92m  Downloaded[0m time v0.3.54
+[1m[92m  Downloaded[0m tracing-subscriber v0.3.23
+[1m[92m  Downloaded[0m webpki-roots v1.0.9
+[1m[92m  Downloaded[0m winnow v1.0.4
+[1m[92m  Downloaded[0m idna v1.1.0
+[1m[92m  Downloaded[0m libm v0.2.16
+[1m[92m  Downloaded[0m vcpkg v0.2.15
+[1m[92m  Downloaded[0m zerocopy v0.8.55
+[1m[92m  Downloaded[0m chrono v0.4.45
+[1m[92m  Downloaded[0m icu_properties_data v2.2.0
+[1m[92m  Downloaded[0m indexmap v2.14.0
+[1m[92m  Downloaded[0m md-5 v0.10.6
+[1m[92m  Downloaded[0m serde_spanned v1.1.1
+[1m[92m  Downloaded[0m thiserror-impl v2.0.19
+[1m[92m  Downloaded[0m find-msvc-tools v0.1.9
+[1m[92m  Downloaded[0m schemars_derive v1.2.1
+[1m[92m  Downloaded[0m serde_derive_internals v0.29.1
+[1m[92m  Downloaded[0m sha2 v0.10.9
+[1m[92m  Downloaded[0m slab v0.4.12
+[1m[92m  Downloaded[0m spki v0.7.3
+[1m[92m  Downloaded[0m tracing v0.1.44
+[1m[92m  Downloaded[0m hashlink v0.10.0
+[1m[92m  Downloaded[0m hex v0.4.3
+[1m[92m  Downloaded[0m hyper-rustls v0.27.9
+[1m[92m  Downloaded[0m matchers v0.2.0
+[1m[92m  Downloaded[0m nu-ansi-term v0.50.3
+[1m[92m  Downloaded[0m num-iter v0.1.46
+[1m[92m  Downloaded[0m ouroboros v0.18.5
+[1m[92m  Downloaded[0m potential_utf v0.1.5
+[1m[92m  Downloaded[0m rand_pcg v0.10.2
+[1m[92m  Downloaded[0m serde_path_to_error v0.1.20
+[1m[92m  Downloaded[0m maud_macros v0.27.0
+[1m[92m  Downloaded[0m memoffset v0.9.1
+[1m[92m  Downloaded[0m num-integer v0.1.46
+[1m[92m  Downloaded[0m ordered-float v4.6.0
+[1m[92m  Downloaded[0m pem-rfc7468 v0.7.0
+[1m[92m  Downloaded[0m matchit v0.8.4
+[1m[92m  Downloaded[0m maud v0.27.0
+[1m[92m  Downloaded[0m num-traits v0.2.19
+[1m[92m  Downloaded[0m once_cell v1.21.4
+[1m[92m  Downloaded[0m ouroboros_macro v0.18.5
+[1m[92m  Downloaded[0m parking_lot v0.12.5
+[1m[92m  Downloaded[0m http-body-util v0.1.4
+[1m[92m  Downloaded[0m lru-slab v0.1.2
+[1m[92m  Downloaded[0m proc-macro2-diagnostics v0.10.1
+[1m[92m  Downloaded[0m sea-orm-macros v1.1.20
+[1m[92m  Downloaded[0m sqlx-macros-core v0.8.6
+[1m[92m  Downloaded[0m rustls-pki-types v1.15.1
+[1m[92m  Downloaded[0m spin v0.9.9
+[1m[92m  Downloaded[0m getrandom v0.4.3
+[1m[92m  Downloaded[0m lock_api v0.4.14
+[1m[92m  Downloaded[0m memchr v2.8.3
+[1m[92m  Downloaded[0m percent-encoding v2.3.2
+[1m[92m  Downloaded[0m rand_chacha v0.3.1
+[1m[92m  Downloaded[0m ref-cast v1.0.26
+[1m[92m  Downloaded[0m shlex v2.0.1
+[1m[92m  Downloaded[0m signal-hook-registry v1.4.8
+[1m[92m  Downloaded[0m smallvec v1.15.2
+[1m[92m  Downloaded[0m thiserror v2.0.19
+[1m[92m  Downloaded[0m futures-executor v0.3.33
+[1m[92m  Downloaded[0m iana-time-zone v0.1.65
+[1m[92m  Downloaded[0m tokio v1.53.1
+[1m[92m  Downloaded[0m libc v0.2.189
+[1m[92m  Downloaded[0m quinn-proto v0.11.16
+[1m[92m  Downloaded[0m nix v0.29.0
+[1m[92m  Downloaded[0m getrandom v0.2.17
+[1m[92m  Downloaded[0m httparse v1.10.1
+[1m[92m  Downloaded[0m icu_properties v2.2.0
+[1m[92m  Downloaded[0m semver v1.0.28
+[1m[92m  Downloaded[0m hmac v0.12.1
+[1m[92m  Downloaded[0m pkg-config v0.3.33
+[1m[92m  Downloaded[0m ryu v1.0.23
+[1m[92m  Downloaded[0m sharded-slab v0.1.7
+[1m[92m  Downloaded[0m icu_normalizer_data v2.2.0
+[1m[92m  Downloaded[0m quote v1.0.47
+[1m[92m  Downloaded[0m sqlx-mysql v0.8.6
+[1m[92m  Downloaded[0m serde_core v1.0.229
+[1m[92m  Downloaded[0m serde_derive v1.0.229
+[1m[92m  Downloaded[0m flume v0.11.1
+[1m[92m  Downloaded[0m icu_normalizer v2.2.0
+[1m[92m  Downloaded[0m socket2 v0.6.5
+[1m[92m  Downloaded[0m sqlx-sqlite v0.8.6
+[1m[92m  Downloaded[0m futures-channel v0.3.33
+[1m[92m  Downloaded[0m regex-syntax v0.8.11
+[1m[92m  Downloaded[0m rustls-webpki v0.103.13
+[1m[92m  Downloaded[0m schemars v1.2.1
+[1m[92m  Downloaded[0m futures-intrusive v0.5.0
+[1m[92m  Downloaded[0m icu_collections v2.2.0
+[1m[92m  Downloaded[0m serde v1.0.229
+[1m[92m  Downloaded[0m http v1.4.2
+[1m[92m  Downloaded[0m icu_locale_core v2.2.0
+[1m[92m  Downloaded[0m quinn v0.11.11
+[1m[92m  Downloaded[0m rsa v0.9.10
+[1m[92m  Downloaded[0m sqlx-core v0.8.6
+[1m[92m  Downloaded[0m hyper-util v0.1.20
+[1m[92m  Downloaded[0m rand v0.8.7
+[1m[92m  Downloaded[0m rand v0.10.2
+[1m[92m  Downloaded[0m hashbrown v0.15.5
+[1m[92m  Downloaded[0m sqlx-postgres v0.8.6
+[1m[92m  Downloaded[0m futures-util v0.3.33
+[1m[92m  Downloaded[0m hashbrown v0.17.1
+[1m[92m  Downloaded[0m serde_json v1.0.151
+[1m[92m  Downloaded[0m hkdf v0.12.4
+[1m[92m  Downloaded[0m hyper v1.11.0
+[1m[92m  Downloaded[0m rust_decimal v1.42.1
+[1m[92m  Downloaded[0m sqlx v0.8.6
+[1m[92m  Downloaded[0m sea-query v0.32.7
+[1m[92m  Downloaded[0m syn v2.0.119
+[1m[92m  Downloaded[0m syn v3.0.3
+[1m[92m  Downloaded[0m rustls v0.23.42
+[1m[92m  Downloaded[0m regex-automata v0.4.16
+[1m[92m  Downloaded[0m ring v0.17.14
+[1m[92m  Downloaded[0m libsqlite3-sys v0.30.1
+[1m[92m  Downloaded[0m sea-orm v1.1.20
+[1m[92m   Compiling[0m proc-macro2 v1.0.107
+[1m[92m   Compiling[0m quote v1.0.47
+[1m[92m   Compiling[0m unicode-ident v1.0.24
+[1m[92m   Compiling[0m serde_core v1.0.229
+[1m[92m   Compiling[0m libc v0.2.189
+[1m[92m    Checking[0m cfg-if v1.0.4
+[1m[92m   Compiling[0m serde v1.0.229
+[1m[92m    Checking[0m pin-project-lite v0.2.17
+[1m[92m   Compiling[0m version_check v0.9.5
+[1m[92m    Checking[0m itoa v1.0.18
+[1m[92m    Checking[0m futures-core v0.3.33
+[1m[92m   Compiling[0m parking_lot_core v0.9.12
+[1m[92m   Compiling[0m syn v2.0.119
+[1m[92m   Compiling[0m syn v3.0.3
+[1m[92m    Checking[0m stable_deref_trait v1.2.1
+[1m[92m    Checking[0m bytes v1.12.1
+[1m[92m    Checking[0m scopeguard v1.2.0
+[1m[92m    Checking[0m lock_api v0.4.14
+[1m[92m    Checking[0m once_cell v1.21.4
+[1m[92m    Checking[0m errno v0.3.14
+[1m[92m    Checking[0m signal-hook-registry v1.4.8
+[1m[92m    Checking[0m socket2 v0.6.5
+[1m[92m    Checking[0m mio v1.2.2
+[1m[92m    Checking[0m memchr v2.8.3
+[1m[92m    Checking[0m tracing-core v0.1.36
+[1m[92m   Compiling[0m find-msvc-tools v0.1.9
+[1m[92m    Checking[0m log v0.4.33
+[1m[92m    Checking[0m futures-sink v0.3.33
+[1m[92m   Compiling[0m shlex v2.0.1
+[1m[92m    Checking[0m getrandom v0.2.17
+[1m[92m   Compiling[0m cc v1.3.0
+[1m[92m   Compiling[0m generic-array v0.14.7
+[1m[92m    Checking[0m subtle v2.6.1
+[1m[92m    Checking[0m writeable v0.6.3
+[1m[92m    Checking[0m litemap v0.8.2
+[1m[92m   Compiling[0m icu_properties_data v2.2.0
+[1m[92m   Compiling[0m icu_normalizer_data v2.2.0
+[1m[92m    Checking[0m percent-encoding v2.3.2
+[1m[92m    Checking[0m utf8_iter v1.0.4
+[1m[92m   Compiling[0m zmij v1.0.23
+[1m[92m    Checking[0m zeroize v1.9.0
+[1m[92m    Checking[0m typenum v1.20.1
+[1m[92m   Compiling[0m ring v0.17.14
+[1m[92m   Compiling[0m synstructure v0.13.2
+[1m[92m   Compiling[0m serde_derive v1.0.229
+[1m[92m    Checking[0m rustls-pki-types v1.15.1
+[1m[92m    Checking[0m futures-task v0.3.33
+[1m[92m    Checking[0m slab v0.4.12
+[1m[92m   Compiling[0m serde_json v1.0.151
+[1m[92m    Checking[0m futures-io v0.3.33
+[1m[92m   Compiling[0m autocfg v1.5.1
+[1m[92m   Compiling[0m zerofrom-derive v0.1.7
+[1m[92m   Compiling[0m yoke-derive v0.8.2
+[1m[92m    Checking[0m zerofrom v0.1.8
+[1m[92m   Compiling[0m zerovec-derive v0.11.3
+[1m[92m    Checking[0m yoke v0.8.3
+[1m[92m   Compiling[0m displaydoc v0.2.6
+[1m[92m    Checking[0m smallvec v1.15.2
+[1m[92m   Compiling[0m tokio-macros v2.7.1
+[1m[92m    Checking[0m parking_lot v0.12.5
+[1m[92m    Checking[0m zerovec v0.11.6
+[1m[92m   Compiling[0m tracing-attributes v0.1.31
+[1m[92m    Checking[0m tokio v1.53.1
+[1m[92m    Checking[0m tinystr v0.8.3
+[1m[92m    Checking[0m icu_locale_core v2.2.0
+[1m[92m    Checking[0m tracing v0.1.44
+[1m[92m    Checking[0m potential_utf v0.1.5
+[1m[92m    Checking[0m zerotrie v0.2.4
+[1m[92m    Checking[0m icu_collections v2.2.0
+[1m[92m    Checking[0m icu_provider v2.2.0
+[1m[92m   Compiling[0m num-traits v0.2.19
+[1m[92m    Checking[0m futures-util v0.3.33
+[1m[92m    Checking[0m untrusted v0.9.0
+[1m[92m    Checking[0m icu_normalizer v2.2.0
+[1m[92m    Checking[0m icu_properties v2.2.0
+[1m[92m    Checking[0m block-buffer v0.10.4
+[1m[92m    Checking[0m crypto-common v0.1.7
+[1m[92m    Checking[0m form_urlencoded v1.2.2
+[1m[92m   Compiling[0m rustls v0.23.42
+[1m[92m   Compiling[0m crossbeam-utils v0.8.22
+[1m[92m    Checking[0m digest v0.10.7
+[1m[92m    Checking[0m futures-channel v0.3.33
+[1m[92m    Checking[0m idna_adapter v1.2.2
+[1m[92m   Compiling[0m zerocopy v0.8.55
+[1m[92m   Compiling[0m getrandom v0.4.3
+[1m[92m    Checking[0m base64 v0.22.1
+[1m[92m    Checking[0m idna v1.1.0
+[1m[92m    Checking[0m webpki-roots v1.0.9
+[1m[92m    Checking[0m http v1.4.2
+[1m[92m    Checking[0m equivalent v1.0.2
+[1m[92m   Compiling[0m thiserror v2.0.19
+[1m[92m    Checking[0m url v2.5.8
+[1m[92m   Compiling[0m thiserror-impl v2.0.19
+[1m[92m    Checking[0m http-body v1.1.0
+[1m[92m   Compiling[0m proc-macro2-diagnostics v0.10.1
+[1m[92m    Checking[0m iana-time-zone v0.1.65
+[1m[92m    Checking[0m foldhash v0.1.5
+[1m[92m    Checking[0m tinyvec_macros v0.1.1
+[1m[92m    Checking[0m allocator-api2 v0.2.21
+[1m[92m    Checking[0m hashbrown v0.15.5
+[1m[92m    Checking[0m tinyvec v1.12.0
+[1m[92m    Checking[0m chrono v0.4.45
+[1m[92m    Checking[0m uuid v1.24.0
+[1m[92m    Checking[0m concurrent-queue v2.5.0
+[1m[92m    Checking[0m rand_core v0.6.4
+[1m[92m    Checking[0m parking v2.2.1
+[1m[92m   Compiling[0m yansi v1.0.1
+[1m[92m    Checking[0m bitflags v2.13.1
+[1m[92m    Checking[0m cpufeatures v0.2.17
+[1m[92m    Checking[0m hashbrown v0.17.1
+[1m[92m    Checking[0m tower-service v0.3.3
+[1m[92m    Checking[0m crc-catalog v2.5.0
+[1m[92m   Compiling[0m httparse v1.10.1
+[1m[92m    Checking[0m indexmap v2.14.0
+[1m[92m    Checking[0m crc v3.4.0
+[1m[92m    Checking[0m sha2 v0.10.9
+[1m[92m    Checking[0m event-listener v5.4.1
+[1m[92m    Checking[0m ppv-lite86 v0.2.21
+[1m[92m    Checking[0m unicode-normalization v0.1.25
+[1m[92m    Checking[0m hashlink v0.10.0
+[1m[92m    Checking[0m rand_chacha v0.3.1
+[1m[92m    Checking[0m crossbeam-queue v0.3.13
+[1m[92m    Checking[0m webpki-roots v0.26.11
+[1m[92m    Checking[0m tokio-stream v0.1.19
+[1m[92m    Checking[0m hmac v0.12.1
+[1m[92m    Checking[0m futures-intrusive v0.5.0
+[1m[92m    Checking[0m either v1.16.0
+[1m[92m    Checking[0m unicode-properties v0.1.4
+[1m[92m   Compiling[0m heck v0.4.1
+[1m[92m    Checking[0m try-lock v0.2.5
+[1m[92m    Checking[0m unicode-bidi v0.3.18
+[1m[92m    Checking[0m httpdate v1.0.3
+[1m[92m    Checking[0m want v0.3.1
+[1m[92m    Checking[0m hkdf v0.12.4
+[1m[92m    Checking[0m rand v0.8.7
+[1m[92m    Checking[0m stringprep v0.1.5
+[1m[92m    Checking[0m atoi v2.0.0
+[1m[92m    Checking[0m md-5 v0.10.6
+[1m[92m    Checking[0m sync_wrapper v1.0.2
+[1m[92m    Checking[0m home v0.5.12
+[1m[92m    Checking[0m mime v0.3.17
+[1m[92m    Checking[0m whoami v1.6.1
+[1m[92m    Checking[0m dotenvy v0.15.7
+[1m[92m    Checking[0m tower-layer v0.3.3
+[1m[92m   Compiling[0m unicase v2.9.0
+[1m[92m    Checking[0m byteorder v1.5.0
+[1m[92m    Checking[0m atomic-waker v1.1.2
+[1m[92m    Checking[0m hex v0.4.3
+[1m[92m   Compiling[0m mime_guess v2.0.5
+[1m[92m    Checking[0m hyper v1.11.0
+[1m[92m    Checking[0m http-body-util v0.1.4
+[1m[92m    Checking[0m ordered-float v4.6.0
+[1m[92m   Compiling[0m inherent v1.0.14
+[1m[92m    Checking[0m ipnet v2.12.1
+[1m[92m   Compiling[0m unicode-xid v0.2.6
+[1m[92m   Compiling[0m ref-cast v1.0.26
+[1m[92m    Checking[0m rustls-webpki v0.103.13
+[1m[92m   Compiling[0m derive_more-impl v2.1.1
+[1m[92m    Checking[0m hyper-util v0.1.20
+[1m[92m    Checking[0m sea-query v0.32.7
+[1m[92m    Checking[0m tower v0.5.3
+[1m[92m   Compiling[0m sea-bae v0.2.2
+[1m[92m   Compiling[0m ouroboros_macro v0.18.5
+[1m[92m   Compiling[0m async-stream-impl v0.3.6
+[1m[92m   Compiling[0m ref-cast-impl v1.0.26
+[1m[92m   Compiling[0m serde_derive_internals v0.29.1
+[1m[92m    Checking[0m ryu v1.0.23
+[1m[92m    Checking[0m winnow v1.0.4
+[1m[92m    Checking[0m static_assertions v1.1.0
+[1m[92m    Checking[0m regex-syntax v0.8.11
+[1m[92m   Compiling[0m heck v0.5.0
+[1m[92m    Checking[0m sqlx-core v0.8.6
+[1m[92m    Checking[0m aliasable v0.1.3
+[1m[92m    Checking[0m ouroboros v0.18.5
+[1m[92m   Compiling[0m schemars_derive v1.2.1
+[1m[92m   Compiling[0m sea-orm-macros v1.1.20
+[1m[92m    Checking[0m regex-automata v0.4.16
+[1m[92m    Checking[0m tokio-rustls v0.26.4
+[1m[92m    Checking[0m sqlx-postgres v0.8.6
+[1m[92m    Checking[0m toml_parser v1.1.2+spec-1.1.0
+[1m[92m    Checking[0m serde_urlencoded v0.7.1
+[1m[92m    Checking[0m async-stream v0.3.6
+[1m[92m    Checking[0m derive_more v2.1.1
+[1m[92m    Checking[0m tokio-util v0.7.19
+[1m[92m   Compiling[0m async-trait v0.1.91
+[1m[92m    Checking[0m toml_datetime v1.1.1+spec-1.1.0
+[1m[92m    Checking[0m serde_spanned v1.1.1
+[1m[92m    Checking[0m toml_writer v1.1.2+spec-1.1.0
+[1m[92m    Checking[0m dyn-clone v1.0.20
+[1m[92m    Checking[0m http-range-header v0.4.2
+[1m[92m   Compiling[0m anyhow v1.0.104
+[1m[92m    Checking[0m strum v0.26.3
+[1m[92m    Checking[0m lazy_static v1.5.0
+[1m[92m    Checking[0m tower-http v0.6.11
+[1m[92m    Checking[0m sharded-slab v0.1.7
+[1m[92m    Checking[0m schemars v1.2.1
+[1m[92m    Checking[0m toml v1.1.3+spec-1.1.0
+[1m[92m    Checking[0m matchers v0.2.0
+[1m[92m    Checking[0m hyper-rustls v0.27.9
+[1m[92m    Checking[0m axum-core v0.5.6
+[1m[92m   Compiling[0m maud_macros v0.27.0
+[1m[92m    Checking[0m tracing-log v0.2.0
+[1m[92m    Checking[0m semver v1.0.28
+[1m[92m    Checking[0m sqlx v0.8.6
+[1m[92m    Checking[0m sea-query-binder v0.7.0
+[1m[92m    Checking[0m serde_path_to_error v0.1.20
+[1m[92m    Checking[0m sea-orm v1.1.20
+[1m[92m    Checking[0m thread_local v1.1.10
+[1m[92m    Checking[0m matchit v0.8.4
+[1m[92m    Checking[0m nu-ansi-term v0.50.3
+[1m[92m    Checking[0m maud v0.27.0
+[1m[92m    Checking[0m zed-interfaces v0.1.0 (/home/runner/work/zed-web-server.rs/zed-web-server.rs/zed-interfaces)
+[1m[92m    Checking[0m tracing-subscriber v0.3.23
+[1m[92m    Checking[0m axum v0.8.9
+[1m[92m    Checking[0m reqwest v0.12.28
+[1m[92m    Checking[0m zed-orm-core v0.1.0 (https://github.com/zed-pkg/zed-lib-core.git?rev=d9a1f72baad87a0bbe256ad892d61d7a4fdd9135#d9a1f72b)
+[1m[92m    Checking[0m zed-web-server v0.1.0 (/home/runner/work/zed-web-server.rs/zed-web-server.rs/zed-web-server.rs)
+[1m[91merror[E0308][0m[1m: `match` arms have incompatible types[0m
+   [1m[94m--> [0msrc/browser_auth.rs:813:23
+    [1m[94m|[0m
+[1m[94m811[0m [1m[94m|[0m     match HeaderValue::from_str(&cookie) {
+    [1m[94m|[0m     [1m[94m------------------------------------[0m [1m[94m`match` arms have incompatible types[0m
+[1m[94m812[0m [1m[94m|[0m         Ok(value) => response.headers_mut().append(header::SET_COOKIE, value),
+    [1m[94m|[0m                      [1m[94m--------------------------------------------------------[0m [1m[94mthis is found to be of type `bool`[0m
+[1m[94m813[0m [1m[94m|[0m         Err(error) => tracing::error!(%error, "refused to emit malformed session cookie"),
+    [1m[94m|[0m                       [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m [1m[91mexpected `bool`, found `()`[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: this error originates in the macro `$crate::event` which comes from the expansion of the macro `tracing::error` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-Caused by:
-  failed to load source for dependency `zed-interfaces`
+[1m[91merror[E0063][0m[1m: missing field `browser_auth` in initializer of `state::WebState`[0m
+   [1m[94m--> [0msrc/proxy.rs:200:40
+    [1m[94m|[0m
+[1m[94m200[0m [1m[94m|[0m         crate::routes::router(Arc::new(WebState {
+    [1m[94m|[0m                                        [1m[91m^^^^^^^^[0m [1m[91mmissing `browser_auth`[0m
 
-Caused by:
-  unable to update /home/runner/work/zed-web-server.rs/zed-interfaces
+[1mFor more information about this error, try `rustc --explain E0308`.[0m
+[1m[91merror[0m: could not compile `zed-web-server` (lib) due to 1 previous error
+[1m[33mwarning[0m: build failed, waiting for other jobs to finish...
+[1mSome errors have detailed explanations: E0063, E0308.[0m
+[1mFor more information about an error, try `rustc --explain E0063`.[0m
+[1m[91merror[0m: could not compile `zed-web-server` (lib test) due to 2 previous errors
+check_exit=101
+=== cargo clippy ===
+[1m[92m    Checking[0m zed-web-server v0.1.0 (/home/runner/work/zed-web-server.rs/zed-web-server.rs/zed-web-server.rs)
+[1m[91merror[E0308][0m[1m: `match` arms have incompatible types[0m
+   [1m[94m--> [0msrc/browser_auth.rs:813:23
+    [1m[94m|[0m
+[1m[94m811[0m [1m[94m|[0m     match HeaderValue::from_str(&cookie) {
+    [1m[94m|[0m     [1m[94m------------------------------------[0m [1m[94m`match` arms have incompatible types[0m
+[1m[94m812[0m [1m[94m|[0m         Ok(value) => response.headers_mut().append(header::SET_COOKIE, value),
+    [1m[94m|[0m                      [1m[94m--------------------------------------------------------[0m [1m[94mthis is found to be of type `bool`[0m
+[1m[94m813[0m [1m[94m|[0m         Err(error) => tracing::error!(%error, "refused to emit malformed session cookie"),
+    [1m[94m|[0m                       [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m [1m[91mexpected `bool`, found `()`[0m
+    [1m[94m|[0m
+    [1m[94m= [0m[1mnote[0m: this error originates in the macro `$crate::event` which comes from the expansion of the macro `tracing::error` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-Caused by:
-  failed to read `/home/runner/work/zed-web-server.rs/zed-interfaces/Cargo.toml`
+[1m[91merror[E0063][0m[1m: missing field `browser_auth` in initializer of `state::WebState`[0m
+   [1m[94m--> [0msrc/proxy.rs:200:40
+    [1m[94m|[0m
+[1m[94m200[0m [1m[94m|[0m         crate::routes::router(Arc::new(WebState {
+    [1m[94m|[0m                                        [1m[91m^^^^^^^^[0m [1m[91mmissing `browser_auth`[0m
 
-Caused by:
-  No such file or directory (os error 2)
-
-exit=101
+[1mFor more information about this error, try `rustc --explain E0308`.[0m
+[1m[91merror[0m: could not compile `zed-web-server` (lib) due to 1 previous error
+[1m[33mwarning[0m: build failed, waiting for other jobs to finish...
+[1mSome errors have detailed explanations: E0063, E0308.[0m
+[1mFor more information about an error, try `rustc --explain E0063`.[0m
+[1m[91merror[0m: could not compile `zed-web-server` (lib test) due to 2 previous errors
+clippy_exit=101
