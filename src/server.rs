@@ -115,7 +115,7 @@ fn browser_auth_config(
         trimmed_base_url(std::env::var("SHARED_AUTH_PUBLIC_URL").ok().as_deref())
             .unwrap_or_else(|| shared_auth_url.clone());
     let session_signing_secret = required_env("ZED_SESSION_SIGNING_SECRET")?;
-    if session_signing_secret.as_bytes().len() < 32 {
+    if session_signing_secret.len() < 32 {
         bail!("ZED_SESSION_SIGNING_SECRET must contain at least 32 bytes");
     }
     let secure_cookies = public_origin.starts_with("https://");

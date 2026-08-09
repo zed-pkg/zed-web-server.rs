@@ -32,7 +32,7 @@ fn security_header(
     name: header::HeaderName,
     value: &'static str,
 ) -> SetResponseHeaderLayer<HeaderValue> {
-    SetResponseHeaderLayer::overriding(name, HeaderValue::from_static(value))
+    SetResponseHeaderLayer::if_not_present(name, HeaderValue::from_static(value))
 }
 
 pub fn router(state: Arc<WebState>) -> Router {

@@ -124,13 +124,15 @@ fn default_return_to() -> String {
     "/".to_owned()
 }
 
-fn auth_config(state: &WebState) -> Result<&BrowserAuthConfig, Response> {
-    state.browser_auth.as_ref().ok_or_else(|| {
-        error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "browser authentication is not configured",
-        )
-    })
+fn auth_config(state: &WebState) -> Option<&BrowserAuthConfig> {
+    state.browser_auth.as_ref()
+}
+
+fn auth_unavailable() -> Response {
+    error_json(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "browser authentication is not configured",
+    )
 }
 
 pub fn session_subject(state: &WebState, headers: &HeaderMap) -> Option<Uuid> {
@@ -147,9 +149,8 @@ pub async fn sign_in(
     State(state): State<Arc<WebState>>,
     Query(query): Query<SignInQuery>,
 ) -> Response {
-    let config = match auth_config(&state) {
-        Ok(config) => config,
-        Err(response) => return response,
+    let Some(config) = auth_config(&state) else {
+        return auth_unavailable();
     };
     let return_to = sanitize_return_to(&query.return_to);
     let login = LoginState {
@@ -196,9 +197,8 @@ pub async fn callback(
     headers: HeaderMap,
     Query(query): Query<CallbackQuery>,
 ) -> Response {
-    let config = match auth_config(&state) {
-        Ok(config) => config,
-        Err(response) => return response,
+    let Some(config) = auth_config(&state) else {
+        return auth_unavailable();
     };
     let Some(login) = read_signed_cookie::<LoginState>(&headers, &config.login_cookie_name, config)
     else {
@@ -312,9 +312,8 @@ pub async fn callback(
 }
 
 pub async fn logout(State(state): State<Arc<WebState>>, headers: HeaderMap) -> Response {
-    let config = match auth_config(&state) {
-        Ok(config) => config,
-        Err(response) => return response,
+    let Some(config) = auth_config(&state) else {
+        return auth_unavailable();
     };
     if !same_origin_request(&headers, config) {
         return error_json(StatusCode::FORBIDDEN, "cross-origin logout rejected");
@@ -523,9 +522,8 @@ async fn mutate(
     path: String,
     body: Value,
 ) -> Response {
-    let config = match auth_config(state) {
-        Ok(config) => config,
-        Err(response) => return response,
+    let Some(config) = auth_config(state) else {
+        return auth_unavailable();
     };
     if !same_origin_request(headers, config) {
         return error_json(StatusCode::FORBIDDEN, "cross-origin mutation rejected");
@@ -809,7 +807,9 @@ fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 
 fn append_cookie(response: &mut Response, cookie: String) {
     match HeaderValue::from_str(&cookie) {
-        Ok(value) => response.headers_mut().append(header::SET_COOKIE, value),
+        Ok(value) => {
+            response.headers_mut().append(header::SET_COOKIE, value);
+        }
         Err(error) => tracing::error!(%error, "refused to emit malformed session cookie"),
     }
 }
@@ -853,7 +853,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(value: &str) -> Option<Vec<u8>> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return None;
     }
     value
@@ -874,7 +874,7 @@ fn hex_nibble(value: u8) -> Option<u8> {
 
 fn base64url_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut output = String::with_capacity(((bytes.len() + 2) / 3) * 4);
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let first = chunk[0];
         let second = chunk.get(1).copied().unwrap_or_default();
