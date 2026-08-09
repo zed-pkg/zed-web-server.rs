@@ -47,33 +47,27 @@ jobs:
 
           auth = Path("src/browser_auth.rs")
           text = auth.read_text()
-          old = '''    match HeaderValue::from_str(&cookie) {
-                  Ok(value) => response.headers_mut().append(header::SET_COOKIE, value),
-                  Err(error) => tracing::error!(%error, "refused to emit malformed session cookie"),
-              }
-          '''.replace("          ", "")
-          new = '''    match HeaderValue::from_str(&cookie) {
-                  Ok(value) => {
-                      response.headers_mut().append(header::SET_COOKIE, value);
-                  }
-                  Err(error) => tracing::error!(%error, "refused to emit malformed session cookie"),
-              }
-          '''.replace("          ", "")
+          old = "        Ok(value) => response.headers_mut().append(header::SET_COOKIE, value),"
+          new = (
+              "        Ok(value) => {\n"
+              "            response.headers_mut().append(header::SET_COOKIE, value);\n"
+              "        }"
+          )
           if text.count(old) != 1:
-              raise SystemExit(f"src/browser_auth.rs: expected one append-cookie match, found {text.count(old)}")
+              raise SystemExit(f"src/browser_auth.rs: expected one append-cookie arm, found {text.count(old)}")
           auth.write_text(text.replace(old, new, 1))
 
           proxy = Path("src/proxy.rs")
           text = proxy.read_text()
-          old = '''            shared_auth_url,
-                      session_path: "/auth/browser/session".into(),
-                      http: client(),
-                  }))'''.replace("          ", "")
-          new = '''            shared_auth_url,
-                      session_path: "/auth/browser/session".into(),
-                      browser_auth: None,
-                      http: client(),
-                  }))'''.replace("          ", "")
+          old = (
+              "            session_path: \"/auth/browser/session\".into(),\n"
+              "            http: client(),"
+          )
+          new = (
+              "            session_path: \"/auth/browser/session\".into(),\n"
+              "            browser_auth: None,\n"
+              "            http: client(),"
+          )
           if text.count(old) != 1:
               raise SystemExit(f"src/proxy.rs: expected one test WebState constructor, found {text.count(old)}")
           proxy.write_text(text.replace(old, new, 1))
