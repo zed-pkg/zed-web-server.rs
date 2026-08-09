@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - feat/den-2955-shared-auth-pkce-bff
+  pull_request:
+    branches:
+      - agent/den-2955-app-zpkg-net
+    types:
+      - opened
+      - reopened
+      - synchronize
   workflow_dispatch:
 
 permissions:
@@ -24,6 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: feat/den-2955-shared-auth-pkce-bff
           path: zed-web-server.rs
           fetch-depth: 0
           persist-credentials: true
