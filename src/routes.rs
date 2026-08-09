@@ -419,6 +419,9 @@ mod tests {
         Arc::new(WebState {
             db: None,
             registry_url: "https://registry.zpkg.net".into(),
+            api_url: "http://127.0.0.1:8081".into(),
+            public_origin: "http://localhost:8080".into(),
+            session_cookie_name: "zed_session".into(),
             shared_auth_url: None,
             http: crate::proxy::client(),
         })
@@ -511,6 +514,9 @@ mod tests {
         let state = Arc::new(WebState {
             db: Some(db),
             registry_url: "https://registry.zpkg.net".into(),
+            api_url: "http://127.0.0.1:8081".into(),
+            public_origin: "http://localhost:8080".into(),
+            session_cookie_name: "zed_session".into(),
             shared_auth_url: None,
             http: crate::proxy::client(),
         });

@@ -5,7 +5,7 @@ use axum::Router;
 use axum::extract::{DefaultBodyLimit, Form, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
 use maud::{DOCTYPE, Markup, html};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::Method;
@@ -24,18 +24,15 @@ const ACCOUNT_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'sel
 
 #[derive(Clone, Debug, Deserialize)]
 struct UserResponse {
-    id: String,
     subject: String,
     email: Option<String>,
     display_name: Option<String>,
     avatar_url: Option<String>,
     settings: Value,
-    aal: u8,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 struct OrgResponse {
-    id: String,
     slug: String,
     name: String,
     description: Option<String>,
@@ -45,7 +42,6 @@ struct OrgResponse {
 #[derive(Clone, Debug, Deserialize)]
 struct ProjectResponse {
     id: String,
-    org_id: String,
     org_slug: String,
     slug: String,
     name: String,
@@ -55,11 +51,8 @@ struct ProjectResponse {
 
 #[derive(Clone, Debug, Deserialize)]
 struct PackageResponse {
-    id: String,
-    org_id: String,
     org_slug: String,
     project_id: Option<String>,
-    project_slug: Option<String>,
     name: String,
     description: Option<String>,
     visibility: String,
@@ -294,7 +287,7 @@ async fn create_organization(
     Form(form): Form<CreateOrgForm>,
 ) -> Response {
     if let Err(response) = require_same_origin(&headers, &state) {
-        return response;
+        return *response;
     }
     let Some(token) = session_token(&headers, &state) else {
         return login_redirect("/dashboard");
@@ -349,7 +342,7 @@ async fn create_project(
     Form(form): Form<CreateProjectForm>,
 ) -> Response {
     if let Err(response) = require_same_origin(&headers, &state) {
-        return response;
+        return *response;
     }
     let Some(token) = session_token(&headers, &state) else {
         return login_redirect(&format!("/orgs/{}/dashboard", path_segment(&org)));
@@ -398,7 +391,7 @@ async fn invite_org_member(
     Form(form): Form<InviteForm>,
 ) -> Response {
     if let Err(response) = require_same_origin(&headers, &state) {
-        return response;
+        return *response;
     }
     let Some(token) = session_token(&headers, &state) else {
         return login_redirect(&format!("/orgs/{}/settings", path_segment(&org)));
@@ -453,7 +446,7 @@ async fn invite_project_member(
     Form(form): Form<InviteForm>,
 ) -> Response {
     if let Err(response) = require_same_origin(&headers, &state) {
-        return response;
+        return *response;
     }
     let return_to = format!(
         "/orgs/{}/projects/{}/settings",
@@ -519,7 +512,7 @@ async fn update_package_settings(
     Form(form): Form<PackageForm>,
 ) -> Response {
     if let Err(response) = require_same_origin(&headers, &state) {
-        return response;
+        return *response;
     }
     let return_to = format!(
         "/orgs/{}/packages/{}/settings",
@@ -585,7 +578,7 @@ async fn update_user_settings(
     Form(form): Form<UserForm>,
 ) -> Response {
     if let Err(response) = require_same_origin(&headers, &state) {
-        return response;
+        return *response;
     }
     let Some(token) = session_token(&headers, &state) else {
         return login_redirect("/settings");
@@ -674,7 +667,7 @@ async fn accept_invitation(
     Form(form): Form<AcceptForm>,
 ) -> Response {
     if let Err(response) = require_same_origin(&headers, &state) {
-        return response;
+        return *response;
     }
     let return_to = format!("/invitations/accept?token={}", query_component(&form.token));
     let Some(token) = session_token(&headers, &state) else {
@@ -821,24 +814,24 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
         })
 }
 
-fn require_same_origin(headers: &HeaderMap, state: &WebState) -> Result<(), Response> {
+fn require_same_origin(headers: &HeaderMap, state: &WebState) -> Result<(), Box<Response>> {
     let origin = headers
         .get(header::ORIGIN)
         .and_then(|value| value.to_str().ok());
     if origin == Some(state.public_origin.trim_end_matches('/')) {
         Ok(())
     } else {
-        Err(simple_page(
+        Err(Box::new(simple_page(
             state,
             None,
             StatusCode::FORBIDDEN,
             "Request rejected",
             "The form origin did not match this registry console.",
-        ))
+        )))
     }
 }
 
-fn account_home_page(state: &WebState, home: HomeResponse) -> Html<String> {
+fn account_home_page(_state: &WebState, home: HomeResponse) -> Html<String> {
     let title = match home
         .user
         .as_ref()
@@ -1141,8 +1134,8 @@ fn user_settings_page(
                 (notice(error.as_deref()))
                 section class="console-card narrow" {
                     form method="post" action="/settings" class="stack" {
-                        label { "Display name" input name="display_name" maxlength="160" value=(user.display_name.unwrap_or_default()); }
-                        label { "Avatar URL" input type="url" name="avatar_url" maxlength="2048" value=(user.avatar_url.unwrap_or_default()); }
+                        label { "Display name" input name="display_name" maxlength="160" value=(user.display_name.as_deref().unwrap_or_default()); }
+                        label { "Avatar URL" input type="url" name="avatar_url" maxlength="2048" value=(user.avatar_url.as_deref().unwrap_or_default()); }
                         label { "Settings (JSON)" textarea name="settings" class="mono code-area" { (settings) } }
                         button type="submit" class="button primary" { "Save user settings" }
                     }
