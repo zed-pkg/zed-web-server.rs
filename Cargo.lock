@@ -3132,10 +3132,12 @@ dependencies = [
 name = "zed-interfaces"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "schemars",
  "semver",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "toml",
 ]
@@ -3143,7 +3145,7 @@ dependencies = [
 [[package]]
 name = "zed-orm-core"
 version = "0.1.0"
-source = "git+https://github.com/zed-pkg/zed-lib-core.git?rev=d9a1f72baad87a0bbe256ad892d61d7a4fdd9135#d9a1f72baad87a0bbe256ad892d61d7a4fdd9135"
+source = "git+https://github.com/zed-pkg/zed-lib-core.git?rev=700f1f9578c6633a20693a5b1f52970ab845a740#700f1f9578c6633a20693a5b1f52970ab845a740"
 dependencies = [
  "chrono",
  "sea-orm",

@@ -34,7 +34,7 @@ concurrency:
 
 env:
   # A commit-tagged web image must identify the complete path-dependency graph.
-  ZED_INTERFACES_SHA: 07d01604461d00e237c7d86ad3855464167574ec
+  ZED_INTERFACES_SHA: 5394b2e7b070354ee79a4c6ac79c26d6264970cd
 
 jobs:
   image:
