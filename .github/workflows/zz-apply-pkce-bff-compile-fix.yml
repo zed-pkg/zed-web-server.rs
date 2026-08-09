@@ -138,6 +138,13 @@ jobs:
               "    if session_signing_secret.len() < 32 {",
           )
 
+          routes = Path("src/routes/mod.rs")
+          replace_exact(
+              routes,
+              "    SetResponseHeaderLayer::overriding(name, HeaderValue::from_static(value))",
+              "    SetResponseHeaderLayer::if_not_present(name, HeaderValue::from_static(value))",
+          )
+
           for obsolete in (
               Path("ci-bff-check.txt"),
               Path(".github/workflows/zz-apply-pkce-bff-compile-fix.yml"),
