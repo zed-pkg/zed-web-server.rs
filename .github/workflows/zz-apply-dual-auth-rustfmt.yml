@@ -1,0 +1,50 @@
+name: apply dual-auth rustfmt
+
+on:
+  push:
+    branches:
+      - agent/document-dual-shared-auth-ceremonies
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-dual-auth-rustfmt
+  cancel-in-progress: false
+
+jobs:
+  format-and-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Apply and verify rustfmt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
+          rm .github/workflows/zz-apply-dual-auth-rustfmt.yml
+          git add src/routes/mod.rs .github/workflows/zz-apply-dual-auth-rustfmt.yml
+          git diff --cached --check
+      - name: Commit formatted source and remove helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --cached --quiet; then
+            echo "No formatting changes were required"
+            exit 0
+          fi
+          git commit -m "style(auth): apply rustfmt"
+          git push origin HEAD:agent/document-dual-shared-auth-ceremonies
