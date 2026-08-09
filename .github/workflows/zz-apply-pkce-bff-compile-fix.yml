@@ -1,0 +1,106 @@
+name: apply bounded PKCE BFF compile fixes
+
+on:
+  push:
+    branches:
+      - feat/den-2955-shared-auth-pkce-bff
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-pkce-bff-compile-fixes
+  cancel-in-progress: false
+
+env:
+  ZED_INTERFACES_SHA: 07d01604461d00e237c7d86ad3855464167574ec
+
+jobs:
+  patch-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: zed-web-server.rs
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: ${{ env.ZED_INTERFACES_SHA }}
+          path: zed-interfaces
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: Apply assertion-checked fixes
+        working-directory: zed-web-server.rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          auth = Path("src/browser_auth.rs")
+          text = auth.read_text()
+          old = '''    match HeaderValue::from_str(&cookie) {
+                  Ok(value) => response.headers_mut().append(header::SET_COOKIE, value),
+                  Err(error) => tracing::error!(%error, "refused to emit malformed session cookie"),
+              }
+          '''.replace("          ", "")
+          new = '''    match HeaderValue::from_str(&cookie) {
+                  Ok(value) => {
+                      response.headers_mut().append(header::SET_COOKIE, value);
+                  }
+                  Err(error) => tracing::error!(%error, "refused to emit malformed session cookie"),
+              }
+          '''.replace("          ", "")
+          if text.count(old) != 1:
+              raise SystemExit(f"src/browser_auth.rs: expected one append-cookie match, found {text.count(old)}")
+          auth.write_text(text.replace(old, new, 1))
+
+          proxy = Path("src/proxy.rs")
+          text = proxy.read_text()
+          old = '''            shared_auth_url,
+                      session_path: "/auth/browser/session".into(),
+                      http: client(),
+                  }))'''.replace("          ", "")
+          new = '''            shared_auth_url,
+                      session_path: "/auth/browser/session".into(),
+                      browser_auth: None,
+                      http: client(),
+                  }))'''.replace("          ", "")
+          if text.count(old) != 1:
+              raise SystemExit(f"src/proxy.rs: expected one test WebState constructor, found {text.count(old)}")
+          proxy.write_text(text.replace(old, new, 1))
+
+          for obsolete in (
+              Path("ci-bff-check.txt"),
+              Path(".github/workflows/zz-apply-pkce-bff-compile-fix.yml"),
+          ):
+              if obsolete.exists():
+                  obsolete.unlink()
+          PY
+      - name: Validate the complete source graph
+        working-directory: zed-web-server.rs
+        run: |
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo check --locked --all-targets
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all-targets
+      - name: Commit validated fixes
+        working-directory: zed-web-server.rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix(DEN-2955): compile the complete PKCE BFF"
+          git push origin HEAD:feat/den-2955-shared-auth-pkce-bff
