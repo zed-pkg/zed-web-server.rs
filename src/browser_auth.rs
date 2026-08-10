@@ -670,8 +670,19 @@ async fn decode_json<T: for<'de> Deserialize<'de>>(
 ) -> Result<T, Response> {
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        tracing::warn!(%status, %operation, body = %body, "upstream authentication operation failed");
+        let response_bytes = response.content_length();
+        let request_id = response
+            .headers()
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("<missing>");
+        tracing::warn!(
+            %status,
+            %operation,
+            ?response_bytes,
+            %request_id,
+            "upstream authentication operation failed"
+        );
         let mapped = if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
             StatusCode::UNAUTHORIZED
         } else if status.is_client_error() {
@@ -724,15 +735,58 @@ fn callback_uri(config: &BrowserAuthConfig) -> String {
 }
 
 fn sanitize_return_to(value: &str) -> String {
-    if value.starts_with('/')
-        && !value.starts_with("//")
-        && !value.contains('\r')
-        && !value.contains('\n')
-    {
+    if return_target_is_local(value) {
         value.to_owned()
     } else {
         default_return_to()
     }
+}
+
+fn return_target_is_local(value: &str) -> bool {
+    let mut candidate = value.as_bytes().to_vec();
+    for _ in 0..=8 {
+        let Ok(text) = std::str::from_utf8(&candidate) else {
+            return false;
+        };
+        if !text.starts_with('/')
+            || text.starts_with("//")
+            || text.starts_with("/\\")
+            || text
+                .chars()
+                .any(|character| character == '\\' || character == '#' || character.is_control())
+        {
+            return false;
+        }
+
+        let (decoded, changed) = percent_decode_once(text);
+        if !changed {
+            return true;
+        }
+        candidate = decoded;
+    }
+    false
+}
+
+fn percent_decode_once(value: &str) -> (Vec<u8>, bool) {
+    let bytes = value.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    let mut changed = false;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) =
+                (hex_nibble(bytes[index + 1]), hex_nibble(bytes[index + 2]))
+            {
+                output.push((high << 4) | low);
+                index += 3;
+                changed = true;
+                continue;
+            }
+        }
+        output.push(bytes[index]);
+        index += 1;
+    }
+    (output, changed)
 }
 
 fn random_token() -> String {
@@ -1086,12 +1140,40 @@ mod tests {
 
     #[test]
     fn return_targets_are_local_paths_only() {
-        assert_eq!(
-            sanitize_return_to("/dashboard/acme?tab=1"),
-            "/dashboard/acme?tab=1"
-        );
-        for invalid in ["https://evil.test", "//evil.test", "/ok\r\nLocation: bad"] {
+        for valid in [
+            "/",
+            "/dashboard/acme?tab=1",
+            "/search?q=hello%20world",
+            "/search?next=%2Fpackages",
+        ] {
+            assert_eq!(sanitize_return_to(valid), valid);
+        }
+        for invalid in [
+            "https://evil.test",
+            "//evil.test",
+            "/\\evil.test",
+            "/ok#fragment",
+            "/ok\r\nLocation: bad",
+            "/ok\tbad",
+            "/%2Fevil.test",
+            "/%5Cevil.test",
+            "/%255cevil.test",
+            "/ok%23fragment",
+            "/ok%0Abad",
+            "/ok%250Abad",
+            "/ok%00bad",
+            "/ok%7Fbad",
+        ] {
             assert_eq!(sanitize_return_to(invalid), "/");
         }
+    }
+
+    #[test]
+    fn authentication_failures_never_log_upstream_response_bodies() {
+        let source = include_str!("browser_auth.rs");
+        let body_log = ["body", " = %body"].concat();
+        let body_read = ["response", ".text().await"].concat();
+        assert!(!source.contains(&body_log));
+        assert!(!source.contains(&body_read));
     }
 }
