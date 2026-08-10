@@ -51,10 +51,7 @@ async fn marketing_auth_entry() -> Redirect {
 /// viewer server-side and send an existing member to the first visible org. A
 /// signed-in user without an org gets the personal settings/onboarding surface;
 /// an anonymous browser begins the PKCE/BFF ceremony.
-async fn marketing_dashboard(
-    State(state): State<Arc<WebState>>,
-    headers: HeaderMap,
-) -> Response {
+async fn marketing_dashboard(State(state): State<Arc<WebState>>, headers: HeaderMap) -> Response {
     let viewer = crate::session::resolve(&state, &headers).await;
     if !viewer.is_signed_in() {
         return Redirect::temporary(MARKETING_AUTH_ENTRY).into_response();
@@ -217,10 +214,7 @@ mod tests {
 
     #[test]
     fn marketing_account_entry_is_local_and_returns_to_dashboard() {
-        assert_eq!(
-            MARKETING_AUTH_ENTRY,
-            "/auth/sign-in?return_to=%2Fdashboard"
-        );
+        assert_eq!(MARKETING_AUTH_ENTRY, "/auth/sign-in?return_to=%2Fdashboard");
         assert!(MARKETING_AUTH_ENTRY.starts_with('/'));
         assert!(!MARKETING_AUTH_ENTRY.starts_with("//"));
     }
