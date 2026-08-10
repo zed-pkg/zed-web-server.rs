@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{Request, State};
-use axum::http::{HeaderValue, StatusCode, Uri, header};
-use axum::response::{IntoResponse, Response};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{any, get, post};
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -30,12 +30,36 @@ const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; st
      object-src 'none'";
 const STRICT_TRANSPORT_SECURITY: &str = "max-age=63072000; includeSubDomains";
 const SHARED_AUTH_UI_PREFIX: &str = "/shared-auth-ui";
+const MARKETING_AUTH_ENTRY: &str = "/auth/sign-in?return_to=%2Fdashboard";
 
 fn security_header(
     name: header::HeaderName,
     value: &'static str,
 ) -> SetResponseHeaderLayer<HeaderValue> {
     SetResponseHeaderLayer::if_not_present(name, HeaderValue::from_static(value))
+}
+
+/// Stable marketing entry used by both "Log in" and "Sign up". Shared Auth
+/// decides whether a verified email resumes an account or creates one according
+/// to the registered customer-realm policy; the static site never handles a
+/// provider token or secret.
+async fn marketing_auth_entry() -> Redirect {
+    Redirect::temporary(MARKETING_AUTH_ENTRY)
+}
+
+/// `/dashboard` is intentionally organization-neutral. Resolve the product
+/// viewer server-side and send an existing member to the first visible org. A
+/// signed-in user without an org gets the personal settings/onboarding surface;
+/// an anonymous browser begins the PKCE/BFF ceremony.
+async fn marketing_dashboard(State(state): State<Arc<WebState>>, headers: HeaderMap) -> Response {
+    let viewer = crate::session::resolve(&state, &headers).await;
+    if !viewer.is_signed_in() {
+        return Redirect::temporary(MARKETING_AUTH_ENTRY).into_response();
+    }
+    if let Some(org) = viewer.orgs().first() {
+        return Redirect::temporary(&format!("/dashboard/{}", org.slug)).into_response();
+    }
+    Redirect::temporary("/settings").into_response()
 }
 
 /// Convert the dedicated same-origin Shared Auth UI prefix into the legacy
@@ -87,6 +111,11 @@ async fn forward_shared_auth_ui(
 pub fn router(state: Arc<WebState>) -> Router {
     let site = Router::new()
         .route("/", get(home::page))
+        // Stable account destinations used by zpkg.net. They terminate at the
+        // Rust web server, never in static JavaScript.
+        .route("/login", get(marketing_auth_entry))
+        .route("/signup", get(marketing_auth_entry))
+        .route("/dashboard", get(marketing_dashboard))
         .route("/healthz", get(health::healthz))
         .route("/search", get(search::page))
         .route("/partials/search", get(search::partial))
@@ -182,6 +211,13 @@ pub fn router(state: Arc<WebState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marketing_account_entry_is_local_and_returns_to_dashboard() {
+        assert_eq!(MARKETING_AUTH_ENTRY, "/auth/sign-in?return_to=%2Fdashboard");
+        assert!(MARKETING_AUTH_ENTRY.starts_with('/'));
+        assert!(!MARKETING_AUTH_ENTRY.starts_with("//"));
+    }
 
     #[test]
     fn shared_auth_ui_prefix_preserves_path_and_query() {
