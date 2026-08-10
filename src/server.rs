@@ -88,8 +88,12 @@ fn normalize_origin(value: &str) -> Result<String> {
     let host = url
         .host_str()
         .context("PUBLIC_BASE_URL must include a host")?;
-    let is_loopback = host.eq_ignore_ascii_case("localhost")
-        || host
+    let host_without_ipv6_brackets = host
+        .strip_prefix('[')
+        .and_then(|candidate| candidate.strip_suffix(']'))
+        .unwrap_or(host);
+    let is_loopback = host_without_ipv6_brackets.eq_ignore_ascii_case("localhost")
+        || host_without_ipv6_brackets
             .parse::<std::net::IpAddr>()
             .map(|address| address.is_loopback())
             .unwrap_or(false);
