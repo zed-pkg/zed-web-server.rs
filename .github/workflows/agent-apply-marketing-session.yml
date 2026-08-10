@@ -1,0 +1,348 @@
+name: Apply marketing session contract
+
+on:
+  push:
+    branches:
+      - agent/stable-marketing-auth-routes-20260810
+    paths:
+      - .github/workflows/agent-apply-marketing-session.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-apply-marketing-session
+  cancel-in-progress: false
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply deterministic source patch
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly one match, found {count}")
+              return text.replace(old, new, 1)
+
+          state_path = Path("src/state.rs")
+          state = state_path.read_text()
+          state = replace_once(
+              state,
+              "    /// Exact public origin of this web application, without a trailing slash.\n    pub public_origin: String,\n    /// Cluster-internal zed API origin.\n",
+              "    /// Exact public origin of this web application, without a trailing slash.\n    pub public_origin: String,\n    /// Exact static marketing origin allowed to perform token-blind session probes.\n    pub marketing_origin: String,\n    /// Cluster-internal zed API origin.\n",
+              "marketing origin state",
+          )
+          state_path.write_text(state)
+
+          server_path = Path("src/server.rs")
+          server = server_path.read_text()
+          server = replace_once(
+              server,
+              "fn browser_auth_config(\n    shared_auth_url: Option<String>,\n    public_origin: &str,\n) -> Result<Option<BrowserAuthConfig>> {\n",
+              "fn browser_auth_config(\n    shared_auth_url: Option<String>,\n    public_origin: &str,\n    marketing_origin: &str,\n) -> Result<Option<BrowserAuthConfig>> {\n",
+              "browser auth signature",
+          )
+          server = replace_once(
+              server,
+              "        public_origin: public_origin.to_owned(),\n        api_url:",
+              "        public_origin: public_origin.to_owned(),\n        marketing_origin: marketing_origin.to_owned(),\n        api_url:",
+              "browser auth marketing origin",
+          )
+          server = replace_once(
+              server,
+              "    let shared_auth_url = trimmed_base_url(std::env::var(\"SHARED_AUTH_URL\").ok().as_deref());\n    let browser_auth = browser_auth_config(shared_auth_url.clone(), &public_origin)?;\n",
+              "    let marketing_origin = normalize_origin(\n        &std::env::var(\"ZED_MARKETING_ORIGIN\")\n            .unwrap_or_else(|_| \"https://zpkg.net\".to_owned()),\n    )?;\n    let shared_auth_url = trimmed_base_url(std::env::var(\"SHARED_AUTH_URL\").ok().as_deref());\n    let browser_auth =\n        browser_auth_config(shared_auth_url.clone(), &public_origin, &marketing_origin)?;\n",
+              "marketing origin runtime",
+          )
+          server_path.write_text(server)
+
+          auth_path = Path("src/browser_auth.rs")
+          auth = auth_path.read_text()
+          auth = replace_once(
+              auth,
+              "use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};\n",
+              "use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};\n",
+              "header imports",
+          )
+          auth = replace_once(
+              auth,
+              "const LOGIN_STATE_MAX_AGE_SECONDS: i64 = 10 * 60;\nconst SESSION_MAX_AGE_SECONDS: i64 = 30 * 24 * 60 * 60;\n",
+              "const LOGIN_STATE_MAX_AGE_SECONDS: i64 = 10 * 60;\nconst SESSION_MAX_AGE_SECONDS: i64 = 30 * 24 * 60 * 60;\nconst MARKETING_REFRESH_AFTER_SECONDS: u64 = 50 * 60;\n",
+              "refresh interval",
+          )
+          auth = replace_once(
+              auth,
+              "#[derive(Debug, Deserialize)]\nstruct DelegateResponse {\n    access_token: String,\n}\n",
+              "#[derive(Debug, Deserialize)]\nstruct DelegateResponse {\n    access_token: String,\n}\n\n/// Minimal cross-subdomain response. It deliberately excludes the principal,\n/// email, tenant, access token, and opaque refresh handle.\n#[derive(Debug, Serialize)]\n#[serde(rename_all = \"camelCase\")]\nstruct SessionStatus {\n    authenticated: bool,\n    refresh_after_seconds: u64,\n}\n",
+              "session status type",
+          )
+
+          handlers = r'''
+
+fn valid_browser_session(
+    headers: &HeaderMap,
+    config: &BrowserAuthConfig,
+) -> Option<BrowserSession> {
+    let session =
+        read_signed_cookie::<BrowserSession>(headers, &config.session_cookie_name, config)?;
+    let age = Utc::now().timestamp() - session.issued_at;
+    (0..=SESSION_MAX_AGE_SECONDS).contains(&age).then_some(session)
+}
+
+fn session_request_origin_allowed(headers: &HeaderMap, config: &BrowserAuthConfig) -> bool {
+    headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|origin| {
+            origin == config.public_origin || origin == config.marketing_origin
+        })
+}
+
+fn session_status_response(
+    request_headers: &HeaderMap,
+    config: &BrowserAuthConfig,
+    status: StatusCode,
+    authenticated: bool,
+) -> Response {
+    let mut response = (
+        status,
+        axum::Json(SessionStatus {
+            authenticated,
+            refresh_after_seconds: MARKETING_REFRESH_AFTER_SECONDS,
+        }),
+    )
+        .into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, max-age=0"),
+    );
+    headers.insert(
+        HeaderName::from_static("pragma"),
+        HeaderValue::from_static("no-cache"),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-resource-policy"),
+        HeaderValue::from_static("same-site"),
+    );
+    headers.append(header::VARY, HeaderValue::from_static("Origin"));
+
+    let marketing_request = request_headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|origin| origin == config.marketing_origin);
+    if marketing_request
+        && let Ok(origin) = HeaderValue::from_str(&config.marketing_origin)
+    {
+        headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+        headers.insert(
+            header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+            HeaderValue::from_static("true"),
+        );
+    }
+    response
+}
+
+fn session_origin_rejected() -> Response {
+    error_json(StatusCode::FORBIDDEN, "cross-origin session request rejected")
+}
+
+/// Report only whether the signed product-session cookie is structurally valid
+/// and within its bounded lifetime. The static site receives no credential or
+/// identity data and cannot read the HttpOnly cookie itself.
+pub async fn session_status(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(config) = auth_config(&state) else {
+        return auth_unavailable();
+    };
+    if !session_request_origin_allowed(&headers, config) {
+        return session_origin_rejected();
+    }
+
+    let authenticated = valid_browser_session(&headers, config).is_some();
+    session_status_response(&headers, config, StatusCode::OK, authenticated)
+}
+
+/// Rotate the Shared Auth access/refresh pair on the back channel, then replace
+/// the host-only signed cookie with the new opaque refresh handle. The response
+/// remains token-blind and is safe for the exact same-site marketing origin.
+pub async fn refresh_session(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(config) = auth_config(&state) else {
+        return auth_unavailable();
+    };
+    if !session_request_origin_allowed(&headers, config) {
+        return session_origin_rejected();
+    }
+    let Some(session) = valid_browser_session(&headers, config) else {
+        let mut response = session_status_response(&headers, config, StatusCode::OK, false);
+        append_cookie(
+            &mut response,
+            clear_cookie(&config.session_cookie_name, config),
+        );
+        return response;
+    };
+
+    let refreshed = match refresh(&state, config, &session).await {
+        Ok(refreshed) => refreshed,
+        Err(upstream) if upstream.status() == StatusCode::UNAUTHORIZED => {
+            let mut response = session_status_response(&headers, config, StatusCode::OK, false);
+            append_cookie(
+                &mut response,
+                clear_cookie(&config.session_cookie_name, config),
+            );
+            return response;
+        }
+        Err(_) => {
+            return session_status_response(
+                &headers,
+                config,
+                StatusCode::SERVICE_UNAVAILABLE,
+                false,
+            );
+        }
+    };
+
+    let next_session = BrowserSession {
+        refresh_token: refreshed.refresh_token,
+        shared_user_id: refreshed.shared_user_id,
+        issued_at: Utc::now().timestamp(),
+    };
+    let cookie = signed_cookie(
+        &config.session_cookie_name,
+        &next_session,
+        SESSION_MAX_AGE_SECONDS,
+        config,
+    );
+    let mut response = session_status_response(&headers, config, StatusCode::OK, true);
+    append_cookie(&mut response, cookie);
+    response
+}
+'''
+          auth = replace_once(
+              auth,
+              "pub fn session_subject(state: &WebState, headers: &HeaderMap) -> Option<Uuid> {\n    let config = state.browser_auth.as_ref()?;\n    let session =\n        read_signed_cookie::<BrowserSession>(headers, &config.session_cookie_name, config)?;\n    let age = Utc::now().timestamp() - session.issued_at;\n    (0..=SESSION_MAX_AGE_SECONDS)\n        .contains(&age)\n        .then_some(session.shared_user_id)\n}\n",
+              "pub fn session_subject(state: &WebState, headers: &HeaderMap) -> Option<Uuid> {\n    let config = state.browser_auth.as_ref()?;\n    valid_browser_session(headers, config).map(|session| session.shared_user_id)\n}\n" + handlers,
+              "session handlers",
+          )
+          auth = replace_once(
+              auth,
+              "            public_origin: \"https://app.zpkg.net\".into(),\n            api_url:",
+              "            public_origin: \"https://app.zpkg.net\".into(),\n            marketing_origin: \"https://zpkg.net\".into(),\n            api_url:",
+              "test config marketing origin",
+          )
+
+          tests = r'''
+
+    #[test]
+    fn marketing_session_origin_is_exact_and_does_not_widen_mutation_csrf() {
+        let config = config();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://zpkg.net"),
+        );
+        assert!(session_request_origin_allowed(&headers, &config));
+        assert!(!same_origin_request(&headers, &config));
+
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://evil.example"),
+        );
+        assert!(!session_request_origin_allowed(&headers, &config));
+    }
+
+    #[test]
+    fn marketing_session_status_is_token_blind_and_credentialed_cors() {
+        let config = config();
+        let payload = serde_json::to_string(&SessionStatus {
+            authenticated: true,
+            refresh_after_seconds: MARKETING_REFRESH_AFTER_SECONDS,
+        })
+        .unwrap();
+        assert_eq!(
+            payload,
+            r#"{"authenticated":true,"refreshAfterSeconds":3000}"#
+        );
+        assert!(!payload.contains("token"));
+        assert!(!payload.contains("email"));
+        assert!(!payload.contains("user"));
+
+        let mut request_headers = HeaderMap::new();
+        request_headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://zpkg.net"),
+        );
+        let response = session_status_response(
+            &request_headers,
+            &config,
+            StatusCode::OK,
+            true,
+        );
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&HeaderValue::from_static("https://zpkg.net"))
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS),
+            Some(&HeaderValue::from_static("true"))
+        );
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static("no-store, max-age=0"))
+        );
+    }
+'''
+          marker = "\n    #[test]\n    fn authentication_failures_never_log_upstream_response_bodies() {"
+          auth = replace_once(auth, marker, tests + marker, "session contract tests")
+          auth_path.write_text(auth)
+
+          routes_path = Path("src/routes/mod.rs")
+          routes = routes_path.read_text()
+          routes = replace_once(
+              routes,
+              "        .route(\"/auth/logout\", post(browser_auth::logout))\n",
+              "        .route(\"/auth/logout\", post(browser_auth::logout))\n        .route(\"/auth/session/status\", get(browser_auth::session_status))\n        .route(\"/auth/session/refresh\", post(browser_auth::refresh_session))\n",
+              "session routes",
+          )
+          routes_path.write_text(routes)
+
+          docs = Path("docs/marketing-session-contract.md")
+          docs.parent.mkdir(parents=True, exist_ok=True)
+          docs.write_text("""# Marketing session contract\n\nThe static `zpkg.net` site never receives a JWT, Shared Auth access token, opaque refresh handle, principal id, or account data. It calls `app.zpkg.net` with `credentials: include`:\n\n- `GET /auth/session/status` returns only `{ authenticated, refreshAfterSeconds }`.\n- `POST /auth/session/refresh` rotates the Shared Auth session on the Rust back channel and replaces the signed, HttpOnly host-only cookie.\n- Credentialed CORS is emitted only for the exact `ZED_MARKETING_ORIGIN` (default `https://zpkg.net`); wildcard origins are forbidden.\n- Both responses are `no-store`. Other product mutations retain the stricter app-origin-only CSRF check.\n- Web clients refresh after 50 minutes while active, on focus/visibility/online recovery, and opportunistically through a service worker. Mobile clients use the same target where background execution is granted and always recover on foreground/resume.\n""")
+          PY
+
+      - name: Format and validate
+        shell: bash
+        run: |
+          cargo fmt --all
+          git diff --check
+          ! grep -R -n -E '^(<<<<<<< .+|=======|>>>>>>> .+)$' --exclude-dir=.git .
+          cargo test --locked
+
+      - name: Commit tested source and remove bootstrap workflow
+        shell: bash
+        run: |
+          git config user.name "session-pattern-agent"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/agent-apply-marketing-session.yml
+          git add src/state.rs src/server.rs src/browser_auth.rs src/routes/mod.rs docs/marketing-session-contract.md
+          git commit -m "feat(auth): expose token-blind marketing session refresh"
+          git push origin HEAD:${GITHUB_REF_NAME}
