@@ -6,10 +6,10 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -65,7 +65,9 @@ fn read_valid_session(headers: &HeaderMap, config: &BrowserAuthConfig) -> Option
     let session =
         read_signed_cookie::<BrowserSession>(headers, &config.session_cookie_name, config)?;
     let age = Utc::now().timestamp() - session.issued_at;
-    (0..=SESSION_MAX_AGE_SECONDS).contains(&age).then_some(session)
+    (0..=SESSION_MAX_AGE_SECONDS)
+        .contains(&age)
+        .then_some(session)
 }
 
 fn status_response(
@@ -124,10 +126,7 @@ fn rejected_origin() -> Response {
 
 /// Return only session presence. A valid HMAC and bounded issued-at timestamp
 /// are required; no browser-readable storage is consulted.
-pub async fn status(
-    State(state): State<Arc<WebState>>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn status(State(state): State<Arc<WebState>>, headers: HeaderMap) -> Response {
     let Some(config) = auth_config(&state) else {
         return status_response(&headers, StatusCode::SERVICE_UNAVAILABLE, false);
     };
@@ -144,10 +143,7 @@ pub async fn status(
 
 /// Rotate the Shared Auth session on the server and replace the signed,
 /// host-only HttpOnly cookie. The response remains the same token-blind shape.
-pub async fn refresh(
-    State(state): State<Arc<WebState>>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn refresh(State(state): State<Arc<WebState>>, headers: HeaderMap) -> Response {
     let Some(config) = auth_config(&state) else {
         return status_response(&headers, StatusCode::SERVICE_UNAVAILABLE, false);
     };
@@ -223,11 +219,13 @@ async fn refresh_upstream(
             %request_id,
             "Shared Auth marketing-session refresh was rejected"
         );
-        return Err(if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-            RefreshError::Unauthorized
-        } else {
-            RefreshError::Unavailable
-        });
+        return Err(
+            if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+                RefreshError::Unauthorized
+            } else {
+                RefreshError::Unavailable
+            },
+        );
     }
 
     let refreshed = response.json::<RefreshResponse>().await.map_err(|error| {
@@ -533,10 +531,7 @@ mod tests {
     fn marketing_origin_is_exact_and_does_not_match_neighbors() {
         let config = config();
         let mut headers = HeaderMap::new();
-        headers.insert(
-            header::ORIGIN,
-            HeaderValue::from_static("https://zpkg.net"),
-        );
+        headers.insert(header::ORIGIN, HeaderValue::from_static("https://zpkg.net"));
         assert!(request_origin_allowed(&headers, &config));
 
         for rejected in [
@@ -565,10 +560,7 @@ mod tests {
         }
 
         let mut request_headers = HeaderMap::new();
-        request_headers.insert(
-            header::ORIGIN,
-            HeaderValue::from_static("https://zpkg.net"),
-        );
+        request_headers.insert(header::ORIGIN, HeaderValue::from_static("https://zpkg.net"));
         let response = status_response(&request_headers, StatusCode::OK, true);
         assert_eq!(
             response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
