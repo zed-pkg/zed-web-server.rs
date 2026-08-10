@@ -2,18 +2,39 @@
 org = "zed-pkg"
 name = "zed-web-server.rs"
 version = "0.1.0"
-description = "part of zed-pkg: universal package manager backed by git/hg servers"
+description = "Zed account console and registry web server with Maud, Axum, HTMX, Shared Auth PKCE, and read-only registry projections"
 license = "MIT"
-keywords = ["zed-pkg", "package-manager"]
+keywords = ["zed-pkg", "registry", "web", "htmx", "pkce"]
+language = "rust"
 
 [package.repository]
 vcs = "git"
 url = "https://github.com/zed-pkg/zed-web-server.rs"
 
+[dependencies]
+"zed-pkg/zed-interfaces" = "^0.1.0"
+"zed-pkg/zed-lib-core" = "^0.1.0"
+
 [publish]
 include_readme = true
 tag_format = "v{version}"
-exclude = [".env", ".env.*", ".direnv/**", ".zed/**", ".zed-pack/**", ".vendor/.zed/**", "target/**", "**/target/**", "**/node_modules/**", "tmp/**", "**/*.log", ".DS_Store"]
+smoke_test = "test -f \"$ZED_PKG_TEST_TARGET/src/routes/console.rs\" && test -f \"$ZED_PKG_TEST_TARGET/src/session.rs\""
+exclude = [
+  ".env",
+  ".env.*",
+  ".direnv/**",
+  ".zed/**",
+  ".zed-pack/**",
+  ".vendor/.zed/**",
+  "env/enc/**",
+  "target/**",
+  "**/target/**",
+  "**/node_modules/**",
+  "tmp/**",
+  "artifacts/**",
+  "**/*.log",
+  ".DS_Store",
+]
 
 [install]
 dir = ".vendor/.zed"
@@ -21,3 +42,8 @@ dir = ".vendor/.zed"
 [targets.repository]
 dir = "."
 adapter = "none"
+
+[scripts]
+test = "cargo test --all-targets --locked"
+lint = "cargo clippy --all-targets --locked -- -D warnings"
+format = "cargo fmt --all -- --check"
