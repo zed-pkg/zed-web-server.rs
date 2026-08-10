@@ -17,7 +17,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  ZED_INTERFACES_SHA: 07d01604461d00e237c7d86ad3855464167574ec
+  ZED_INTERFACES_SHA: 5394b2e7b070354ee79a4c6ac79c26d6264970cd
 
 jobs:
   test:
@@ -56,6 +56,9 @@ jobs:
           workspaces: zed-web-server.rs
       - name: Install cargo-nextest
         uses: taiki-e/install-action@a6e08638ce5ee7b285b1e051c006e3be64fcff91 # nextest
+      - name: Resolve only the committed lockfile
+        working-directory: zed-web-server.rs
+        run: cargo metadata --locked --format-version 1 >/dev/null
       - name: Format
         working-directory: zed-web-server.rs
         run: cargo fmt --all -- --check
@@ -83,13 +86,18 @@ jobs:
           set -euo pipefail
           test -f src/lib.rs
           test -f src/server.rs
+          test -f src/browser_auth.rs
+          test -f src/routes/console.rs
+          test -f docs/shared-auth-pkce-bff.md
           test -f RUNTIME.md
           test "$(wc -l < src/main.rs)" -le 6
           git grep -qF 'pub async fn run' -- src/server.rs
           git grep -qF 'connect_with_retry' -- src/server.rs
           git grep -qF 'DatabaseStartupPolicy' -- src/server.rs
-          git grep -qF 'The API server remains the' -- RUNTIME.md
-          git grep -qF 'schema and write-path authority.' -- RUNTIME.md
+          git grep -qF 'connect_read_only_with_policy' -- src/server.rs
+          git grep -qF '/api/v1/account/me' -- src/browser_auth.rs
+          git grep -qF 'The API server remains the schema and' -- RUNTIME.md
+          git grep -qF 'write-path authority' -- RUNTIME.md
           if git grep -nE 'DatabaseConnection|PgPoolOptions|routes::router|TcpListener::bind' -- src/main.rs; then
             echo 'database, routing, and listener lifecycle must remain outside src/main.rs' >&2
             exit 1

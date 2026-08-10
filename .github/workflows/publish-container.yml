@@ -34,7 +34,7 @@ concurrency:
 
 env:
   # A commit-tagged web image must identify the complete path-dependency graph.
-  ZED_INTERFACES_SHA: 07d01604461d00e237c7d86ad3855464167574ec
+  ZED_INTERFACES_SHA: 5394b2e7b070354ee79a4c6ac79c26d6264970cd
 
 jobs:
   image:
@@ -166,7 +166,7 @@ jobs:
           immutable="ghcr.io/zed-pkg/zed-web-server:${GITHUB_SHA}"
           push_output="$(docker push "$immutable")"
           printf '%s\n' "$push_output"
-          digest="$(awk '/digest: sha256:/{print $2}' <<<"$push_output" | tail -n 1)"
+          digest="$(awk '$2 == "digest:" && $3 ~ /^sha256:/ {print $3}' <<<"$push_output" | tail -n 1)"
           [[ "$digest" == sha256:* ]] || { echo 'could not recover pushed image digest' >&2; exit 1; }
           docker push ghcr.io/zed-pkg/zed-web-server:main
           printf 'image=%s@%s\nweb_revision=%s\ninterfaces_revision=%s\n' \
