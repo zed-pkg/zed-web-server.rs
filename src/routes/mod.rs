@@ -9,7 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::extract::{Request, State};
+use axum::http::{HeaderValue, StatusCode, Uri, header};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -27,12 +29,59 @@ const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; st
      img-src 'self' data: https:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; \
      object-src 'none'";
 const STRICT_TRANSPORT_SECURITY: &str = "max-age=63072000; includeSubDomains";
+const SHARED_AUTH_UI_PREFIX: &str = "/shared-auth-ui";
 
 fn security_header(
     name: header::HeaderName,
     value: &'static str,
 ) -> SetResponseHeaderLayer<HeaderValue> {
     SetResponseHeaderLayer::if_not_present(name, HeaderValue::from_static(value))
+}
+
+/// Convert the dedicated same-origin Shared Auth UI prefix into the legacy
+/// internal proxy prefix. `proxy::forward` then removes `/shared-auth` before
+/// contacting the service. Shared Auth must render links with
+/// `AUTH_BROWSER_PUBLIC_PREFIX=/shared-auth-ui`, so redirects return through
+/// this route rather than through the PKCE/BFF callback.
+fn shared_auth_ui_upstream_uri(uri: &Uri) -> Result<Uri, axum::http::uri::InvalidUri> {
+    let service_path = shared_auth_ui_service_path(uri).unwrap_or("/");
+    let query = uri
+        .query()
+        .map(|value| format!("?{value}"))
+        .unwrap_or_default();
+    format!("/shared-auth{service_path}{query}").parse()
+}
+
+fn shared_auth_ui_service_path(uri: &Uri) -> Option<&str> {
+    let rest = uri.path().strip_prefix(SHARED_AUTH_UI_PREFIX)?;
+    Some(if rest.is_empty() { "/" } else { rest })
+}
+
+/// Only browser-ceremony routes are exposed through the dedicated prefix.
+/// Redemption, exchange, delegation, refresh, introspection, metrics, and
+/// internal webhooks remain cluster-internal back-channel endpoints.
+fn shared_auth_ui_path_allowed(path: &str) -> bool {
+    matches!(
+        path,
+        "/" | "/ui" | "/auth/browser/sign-in" | "/auth/browser/consume" | "/auth/browser/otp"
+    )
+}
+
+async fn forward_shared_auth_ui(
+    State(state): State<Arc<WebState>>,
+    mut request: Request,
+) -> Response {
+    let Some(service_path) = shared_auth_ui_service_path(request.uri()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    if !shared_auth_ui_path_allowed(service_path) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Ok(uri) = shared_auth_ui_upstream_uri(request.uri()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    *request.uri_mut() = uri;
+    proxy::forward(State(state), request).await
 }
 
 pub fn router(state: Arc<WebState>) -> Router {
@@ -60,6 +109,8 @@ pub fn router(state: Arc<WebState>) -> Router {
         .route("/auth/shared/callback", get(browser_auth::callback))
         .route("/auth/logout", post(browser_auth::logout))
         // Compatibility aliases used by the already-reviewed header markup.
+        // These aliases remain PKCE/BFF routes. The distinct `/shared-auth-ui`
+        // namespace below is the actual same-origin proxied ceremony.
         .route(
             "/shared-auth/auth/browser/sign-in",
             get(browser_auth::sign_in),
@@ -90,8 +141,16 @@ pub fn router(state: Arc<WebState>) -> Router {
             post(browser_auth::make_public),
         )
         .route("/v1/users/me", post(browser_auth::update_user))
-        // Raw Shared Auth gateway for browser-owned pages/assets not handled by
-        // the exact product routes above.
+        // Dedicated same-origin Shared Auth browser ceremony. It has its own
+        // public prefix, never invokes `/auth/shared/callback`, and exposes only
+        // the browser routes above; confidential APIs stay on the cluster URL.
+        .route("/shared-auth-ui", any(forward_shared_auth_ui))
+        .route("/shared-auth-ui/", any(forward_shared_auth_ui))
+        .route("/shared-auth-ui/{*rest}", any(forward_shared_auth_ui))
+        // Raw Shared Auth gateway retained for compatibility with already
+        // reviewed pages/assets. New integrations should use `/shared-auth-ui`
+        // for the browser ceremony and the cluster-internal URL for back-channel
+        // APIs instead of depending on this broad legacy surface.
         .route("/shared-auth", any(proxy::forward))
         .route("/shared-auth/", any(proxy::forward))
         .route("/shared-auth/{*rest}", any(proxy::forward))
@@ -118,4 +177,47 @@ pub fn router(state: Arc<WebState>) -> Router {
             Duration::from_secs(10),
         ))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_auth_ui_prefix_preserves_path_and_query() {
+        let root: Uri = "/shared-auth-ui".parse().unwrap();
+        assert_eq!(shared_auth_ui_upstream_uri(&root).unwrap(), "/shared-auth/");
+
+        let sign_in: Uri = "/shared-auth-ui/auth/browser/sign-in?return=%2Fdashboard"
+            .parse()
+            .unwrap();
+        assert_eq!(
+            shared_auth_ui_upstream_uri(&sign_in).unwrap(),
+            "/shared-auth/auth/browser/sign-in?return=%2Fdashboard"
+        );
+    }
+
+    #[test]
+    fn shared_auth_ui_prefix_exposes_only_browser_ceremony_routes() {
+        for allowed in [
+            "/",
+            "/ui",
+            "/auth/browser/sign-in",
+            "/auth/browser/consume",
+            "/auth/browser/otp",
+        ] {
+            assert!(shared_auth_ui_path_allowed(allowed), "{allowed}");
+        }
+        for internal in [
+            "/auth/handoff/redeem",
+            "/auth/exchange",
+            "/auth/delegate",
+            "/auth/refresh",
+            "/auth/introspect",
+            "/internal/webhook/sync",
+            "/metrics",
+        ] {
+            assert!(!shared_auth_ui_path_allowed(internal), "{internal}");
+        }
+    }
 }
