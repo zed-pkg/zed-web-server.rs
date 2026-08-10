@@ -54,13 +54,10 @@ pub async fn status(State(state): State<Arc<WebState>>, headers: HeaderMap) -> R
     }
 
     let cookie_present = cookie_value(&headers, &config.session_cookie_name).is_some();
-    let authenticated = read_signed_cookie::<BrowserSession>(
-        &headers,
-        &config.session_cookie_name,
-        config,
-    )
-    .as_ref()
-    .is_some_and(session_is_current);
+    let authenticated =
+        read_signed_cookie::<BrowserSession>(&headers, &config.session_cookie_name, config)
+            .as_ref()
+            .is_some_and(session_is_current);
     let mut response = marketing_status_response(config, &headers, StatusCode::OK, authenticated);
     if cookie_present && !authenticated {
         append_cookie(
@@ -88,12 +85,9 @@ pub async fn refresh(State(state): State<Arc<WebState>>, headers: HeaderMap) -> 
     }
 
     let cookie_present = cookie_value(&headers, &config.session_cookie_name).is_some();
-    let Some(session) = read_signed_cookie::<BrowserSession>(
-        &headers,
-        &config.session_cookie_name,
-        config,
-    )
-    .filter(session_is_current)
+    let Some(session) =
+        read_signed_cookie::<BrowserSession>(&headers, &config.session_cookie_name, config)
+            .filter(session_is_current)
     else {
         let mut response = marketing_status_response(config, &headers, StatusCode::OK, false);
         if cookie_present {
