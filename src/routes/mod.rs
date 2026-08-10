@@ -16,6 +16,7 @@ use axum::routing::{any, get, post};
 use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::browser_auth;
+use crate::marketing_session;
 use crate::proxy;
 use crate::state::WebState;
 
@@ -137,6 +138,10 @@ pub fn router(state: Arc<WebState>) -> Router {
         .route("/auth/sign-in", get(browser_auth::sign_in))
         .route("/auth/shared/callback", get(browser_auth::callback))
         .route("/auth/logout", post(browser_auth::logout))
+        // Token-blind, exact-origin contract consumed by the static marketing
+        // header and its best-effort background refresh worker.
+        .route("/auth/session/status", get(marketing_session::status))
+        .route("/auth/session/refresh", post(marketing_session::refresh))
         // Compatibility aliases used by the already-reviewed header markup.
         // These aliases remain PKCE/BFF routes. The distinct `/shared-auth-ui`
         // namespace below is the actual same-origin proxied ceremony.
