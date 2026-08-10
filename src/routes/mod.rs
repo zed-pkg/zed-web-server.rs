@@ -136,7 +136,10 @@ pub fn router(state: Arc<WebState>) -> Router {
         // browser never receives the delegated zed-pkg API token.
         .route("/auth/sign-in", get(browser_auth::sign_in))
         .route("/auth/shared/callback", get(browser_auth::callback))
-        .route("/auth/session/status", get(crate::marketing_session::status))
+        .route(
+            "/auth/session/status",
+            get(crate::marketing_session::status),
+        )
         .route(
             "/auth/session/refresh",
             post(crate::marketing_session::refresh),
