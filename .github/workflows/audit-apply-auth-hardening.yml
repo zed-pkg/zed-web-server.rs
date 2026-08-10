@@ -31,20 +31,11 @@ jobs:
           path = Path("src/browser_auth.rs")
           source = path.read_text(encoding="utf-8")
 
-          old_decode = r'''    if !status.is_success() {
-              let body = response.text().await.unwrap_or_default();
-              tracing::warn!(%status, %operation, body = %body, "upstream authentication operation failed");
-              let mapped = if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-                  StatusCode::UNAUTHORIZED
-              } else if status.is_client_error() {
-                  StatusCode::BAD_REQUEST
-              } else {
-                  StatusCode::BAD_GATEWAY
-              };
-              return Err(error_json(mapped, "authentication operation failed"));
-          }
-          '''
-          new_decode = r'''    if !status.is_success() {
+          decode_start = source.index("async fn decode_json")
+          decode_end = source.index("\nfn same_origin_request", decode_start)
+          failure_start = source.index("    if !status.is_success() {", decode_start, decode_end)
+          failure_end = source.index("    response.json::<T>()", failure_start, decode_end)
+          new_failure = r'''    if !status.is_success() {
               let response_bytes = response.content_length();
               let request_id = response
                   .headers()
@@ -68,19 +59,10 @@ jobs:
               return Err(error_json(mapped, "authentication operation failed"));
           }
           '''
+          source = source[:failure_start] + new_failure + source[failure_end:]
 
-          old_sanitize = r'''fn sanitize_return_to(value: &str) -> String {
-              if value.starts_with('/')
-                  && !value.starts_with("//")
-                  && !value.contains('\r')
-                  && !value.contains('\n')
-              {
-                  value.to_owned()
-              } else {
-                  default_return_to()
-              }
-          }
-          '''
+          sanitize_start = source.index("fn sanitize_return_to")
+          sanitize_end = source.index("\nfn random_token", sanitize_start)
           new_sanitize = r'''fn sanitize_return_to(value: &str) -> String {
               if return_target_is_local(value) {
                   value.to_owned()
@@ -92,20 +74,20 @@ jobs:
           fn return_target_is_local(value: &str) -> bool {
               let mut candidate = value.as_bytes().to_vec();
               for _ in 0..=8 {
-                  let Ok(candidate) = std::str::from_utf8(&candidate) else {
+                  let Ok(text) = std::str::from_utf8(&candidate) else {
                       return false;
                   };
-                  if !candidate.starts_with('/')
-                      || candidate.starts_with("//")
-                      || candidate.starts_with("/\\")
-                      || candidate
+                  if !text.starts_with('/')
+                      || text.starts_with("//")
+                      || text.starts_with("/\\")
+                      || text
                           .chars()
                           .any(|character| character == '\\' || character == '#' || character.is_control())
                   {
                       return false;
                   }
 
-                  let (decoded, changed) = percent_decode_once(candidate);
+                  let (decoded, changed) = percent_decode_once(text);
                   if !changed {
                       return true;
                   }
@@ -136,18 +118,12 @@ jobs:
               (output, changed)
           }
           '''
+          source = source[:sanitize_start] + new_sanitize + source[sanitize_end:]
 
-          old_tests = r'''    #[test]
-              fn return_targets_are_local_paths_only() {
-                  assert_eq!(
-                      sanitize_return_to("/dashboard/acme?tab=1"),
-                      "/dashboard/acme?tab=1"
-                  );
-                  for invalid in ["https://evil.test", "//evil.test", "/ok\r\nLocation: bad"] {
-                      assert_eq!(sanitize_return_to(invalid), "/");
-                  }
-              }
-          '''
+          test_start = source.index("    #[test]\n    fn return_targets_are_local_paths_only()")
+          module_end = source.rfind("\n}")
+          if module_end <= test_start:
+              raise SystemExit("could not bound final browser-auth test module")
           new_tests = r'''    #[test]
               fn return_targets_are_local_paths_only() {
                   for valid in [
@@ -181,21 +157,13 @@ jobs:
               #[test]
               fn authentication_failures_never_log_upstream_response_bodies() {
                   let source = include_str!("browser_auth.rs");
-                  assert!(!source.contains("body = %body"));
-                  assert!(!source.contains("response.text().await"));
+                  let body_log = ["body", " = %body"].concat();
+                  let body_read = ["response", ".text().await"].concat();
+                  assert!(!source.contains(&body_log));
+                  assert!(!source.contains(&body_read));
               }
           '''
-
-          replacements = [
-              (old_decode, new_decode, "decode_json"),
-              (old_sanitize, new_sanitize, "sanitize_return_to"),
-              (old_tests, new_tests, "return-target tests"),
-          ]
-          for old, new, name in replacements:
-              count = source.count(old)
-              if count != 1:
-                  raise SystemExit(f"expected exactly one {name} source block, found {count}")
-              source = source.replace(old, new)
+          source = source[:test_start] + new_tests + source[module_end:]
 
           path.write_text(source, encoding="utf-8")
           PY
