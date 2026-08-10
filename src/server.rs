@@ -84,6 +84,23 @@ fn normalize_origin(value: &str) -> Result<String> {
     if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
         bail!("PUBLIC_BASE_URL must be an origin without a path, query, or fragment");
     }
+
+    let host = url
+        .host_str()
+        .context("PUBLIC_BASE_URL must include a host")?;
+    let host_without_ipv6_brackets = host
+        .strip_prefix('[')
+        .and_then(|candidate| candidate.strip_suffix(']'))
+        .unwrap_or(host);
+    let is_loopback = host_without_ipv6_brackets.eq_ignore_ascii_case("localhost")
+        || host_without_ipv6_brackets
+            .parse::<std::net::IpAddr>()
+            .map(|address| address.is_loopback())
+            .unwrap_or(false);
+    if url.scheme() == "http" && !is_loopback {
+        bail!("PUBLIC_BASE_URL must use https outside loopback development");
+    }
+
     Ok(url.origin().ascii_serialization())
 }
 
@@ -286,11 +303,25 @@ mod tests {
     }
 
     #[test]
-    fn origins_are_exact_and_pathless() {
+    fn origins_are_exact_pathless_and_secure_outside_loopback() {
         assert_eq!(
             normalize_origin("https://app.zpkg.net/").unwrap(),
             "https://app.zpkg.net"
         );
+        assert_eq!(
+            normalize_origin("http://localhost:8081/").unwrap(),
+            "http://localhost:8081"
+        );
+        assert_eq!(
+            normalize_origin("http://127.0.0.1:8081/").unwrap(),
+            "http://127.0.0.1:8081"
+        );
+        assert_eq!(
+            normalize_origin("http://[::1]:8081/").unwrap(),
+            "http://[::1]:8081"
+        );
+        assert!(normalize_origin("http://app.zpkg.net").is_err());
+        assert!(normalize_origin("http://10.0.0.5:8081").is_err());
         assert!(normalize_origin("https://app.zpkg.net/path").is_err());
         assert!(normalize_origin("javascript:alert(1)").is_err());
         assert!(normalize_origin("https://user@app.zpkg.net").is_err());
