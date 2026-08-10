@@ -1,0 +1,210 @@
+name: apply one-time auth hardening patch
+
+on:
+  push:
+    branches:
+      - audit/harden-auth-redirects-20260809
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.repository == 'zed-pkg/zed-web-server.rs' && github.ref == 'refs/heads/audit/harden-auth-redirects-20260809'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the exact audit branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply the reviewed fail-closed patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object src/browser_auth.rs)" = "8577b273cdd521cf871a43fadbdedb01df219710"
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("src/browser_auth.rs")
+          source = path.read_text(encoding="utf-8")
+
+          old_decode = r'''    if !status.is_success() {
+              let body = response.text().await.unwrap_or_default();
+              tracing::warn!(%status, %operation, body = %body, "upstream authentication operation failed");
+              let mapped = if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+                  StatusCode::UNAUTHORIZED
+              } else if status.is_client_error() {
+                  StatusCode::BAD_REQUEST
+              } else {
+                  StatusCode::BAD_GATEWAY
+              };
+              return Err(error_json(mapped, "authentication operation failed"));
+          }
+          '''
+          new_decode = r'''    if !status.is_success() {
+              let response_bytes = response.content_length();
+              let request_id = response
+                  .headers()
+                  .get("x-request-id")
+                  .and_then(|value| value.to_str().ok())
+                  .unwrap_or("<missing>");
+              tracing::warn!(
+                  %status,
+                  %operation,
+                  ?response_bytes,
+                  %request_id,
+                  "upstream authentication operation failed"
+              );
+              let mapped = if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+                  StatusCode::UNAUTHORIZED
+              } else if status.is_client_error() {
+                  StatusCode::BAD_REQUEST
+              } else {
+                  StatusCode::BAD_GATEWAY
+              };
+              return Err(error_json(mapped, "authentication operation failed"));
+          }
+          '''
+
+          old_sanitize = r'''fn sanitize_return_to(value: &str) -> String {
+              if value.starts_with('/')
+                  && !value.starts_with("//")
+                  && !value.contains('\r')
+                  && !value.contains('\n')
+              {
+                  value.to_owned()
+              } else {
+                  default_return_to()
+              }
+          }
+          '''
+          new_sanitize = r'''fn sanitize_return_to(value: &str) -> String {
+              if return_target_is_local(value) {
+                  value.to_owned()
+              } else {
+                  default_return_to()
+              }
+          }
+
+          fn return_target_is_local(value: &str) -> bool {
+              let mut candidate = value.as_bytes().to_vec();
+              for _ in 0..=8 {
+                  let Ok(candidate) = std::str::from_utf8(&candidate) else {
+                      return false;
+                  };
+                  if !candidate.starts_with('/')
+                      || candidate.starts_with("//")
+                      || candidate.starts_with("/\\")
+                      || candidate
+                          .chars()
+                          .any(|character| character == '\\' || character == '#' || character.is_control())
+                  {
+                      return false;
+                  }
+
+                  let (decoded, changed) = percent_decode_once(candidate);
+                  if !changed {
+                      return true;
+                  }
+                  candidate = decoded;
+              }
+              false
+          }
+
+          fn percent_decode_once(value: &str) -> (Vec<u8>, bool) {
+              let bytes = value.as_bytes();
+              let mut output = Vec::with_capacity(bytes.len());
+              let mut index = 0;
+              let mut changed = false;
+              while index < bytes.len() {
+                  if bytes[index] == b'%' && index + 2 < bytes.len() {
+                      if let (Some(high), Some(low)) =
+                          (hex_nibble(bytes[index + 1]), hex_nibble(bytes[index + 2]))
+                      {
+                          output.push((high << 4) | low);
+                          index += 3;
+                          changed = true;
+                          continue;
+                      }
+                  }
+                  output.push(bytes[index]);
+                  index += 1;
+              }
+              (output, changed)
+          }
+          '''
+
+          old_tests = r'''    #[test]
+              fn return_targets_are_local_paths_only() {
+                  assert_eq!(
+                      sanitize_return_to("/dashboard/acme?tab=1"),
+                      "/dashboard/acme?tab=1"
+                  );
+                  for invalid in ["https://evil.test", "//evil.test", "/ok\r\nLocation: bad"] {
+                      assert_eq!(sanitize_return_to(invalid), "/");
+                  }
+              }
+          '''
+          new_tests = r'''    #[test]
+              fn return_targets_are_local_paths_only() {
+                  for valid in [
+                      "/",
+                      "/dashboard/acme?tab=1",
+                      "/search?q=hello%20world",
+                      "/search?next=%2Fpackages",
+                  ] {
+                      assert_eq!(sanitize_return_to(valid), valid);
+                  }
+                  for invalid in [
+                      "https://evil.test",
+                      "//evil.test",
+                      "/\\evil.test",
+                      "/ok#fragment",
+                      "/ok\r\nLocation: bad",
+                      "/ok\tbad",
+                      "/%2Fevil.test",
+                      "/%5Cevil.test",
+                      "/%255cevil.test",
+                      "/ok%23fragment",
+                      "/ok%0Abad",
+                      "/ok%250Abad",
+                      "/ok%00bad",
+                      "/ok%7Fbad",
+                  ] {
+                      assert_eq!(sanitize_return_to(invalid), "/");
+                  }
+              }
+
+              #[test]
+              fn authentication_failures_never_log_upstream_response_bodies() {
+                  let source = include_str!("browser_auth.rs");
+                  assert!(!source.contains("body = %body"));
+                  assert!(!source.contains("response.text().await"));
+              }
+          '''
+
+          replacements = [
+              (old_decode, new_decode, "decode_json"),
+              (old_sanitize, new_sanitize, "sanitize_return_to"),
+              (old_tests, new_tests, "return-target tests"),
+          ]
+          for old, new, name in replacements:
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one {name} source block, found {count}")
+              source = source.replace(old, new)
+
+          path.write_text(source, encoding="utf-8")
+          PY
+          rustfmt --edition 2024 src/browser_auth.rs
+          git diff --check
+          git config user.name "ORESoftware audit hardening"
+          git config user.email "11139560+ORESoftware@users.noreply.github.com"
+          git add src/browser_auth.rs
+          git rm .github/workflows/audit-apply-auth-hardening.yml
+          git diff --cached --check
+          git commit -m "fix(auth): reject ambiguous returns and redact upstream bodies"
+          git push origin HEAD:audit/harden-auth-redirects-20260809
