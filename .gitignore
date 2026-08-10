@@ -20,3 +20,4 @@ tmp
 temp
 tmp/worktrees
 temp/worktrees
+/.vendor/.zed/

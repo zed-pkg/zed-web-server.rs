@@ -149,6 +149,11 @@ fn browser_auth_config(
     }))
 }
 
+/// Open and verify one Postgres pool through the canonical opaque read seam.
+///
+/// The `zed-orm-core` boundary applies `default_transaction_read_only=on` to
+/// every connection and verifies that PostgreSQL accepted the setting before
+/// returning a `ReadContext` to application state.
 async fn try_connect(url: &str, policy: DatabaseStartupPolicy) -> Result<ReadContext> {
     let connect_policy = ConnectPolicy::default()
         .with_max_connections(policy.max_connections)
@@ -157,6 +162,11 @@ async fn try_connect(url: &str, policy: DatabaseStartupPolicy) -> Result<ReadCon
     Ok(zed_orm_core::connect_read_only_with_policy(url, connect_policy).await?)
 }
 
+/// Retry the initial read-only Postgres connection until the bounded deadline.
+///
+/// An unavailable database or a failed read-only verification both preserve
+/// the existing registry-offline behavior: availability may degrade, but the
+/// browser-facing process never widens itself into a writer.
 async fn connect_with_retry(url: &str, policy: DatabaseStartupPolicy) -> Option<ReadContext> {
     let started = Instant::now();
     let mut attempt = 0_u32;
@@ -165,7 +175,7 @@ async fn connect_with_retry(url: &str, policy: DatabaseStartupPolicy) -> Option<
         match try_connect(url, policy).await {
             Ok(database) => {
                 if attempt > 1 {
-                    tracing::info!(attempt, "connected to Postgres after retry");
+                    tracing::info!(attempt, "connected to read-only Postgres after retry");
                 }
                 return Some(database);
             }
@@ -174,12 +184,16 @@ async fn connect_with_retry(url: &str, policy: DatabaseStartupPolicy) -> Option<
                     %error,
                     attempts = attempt,
                     elapsed_s = started.elapsed().as_secs(),
-                    "Postgres unreachable within DB_CONNECT_MAX_WAIT_SECS; serving in offline mode"
+                    "read-only Postgres unavailable or misconfigured within DB_CONNECT_MAX_WAIT_SECS; serving in offline mode"
                 );
                 return None;
             }
             Err(error) => {
-                tracing::warn!(%error, attempt, "Postgres not ready yet; retrying in 2s");
+                tracing::warn!(
+                    %error,
+                    attempt,
+                    "read-only Postgres not ready or not read-only; retrying in 2s"
+                );
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
         }
