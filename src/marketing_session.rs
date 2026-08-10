@@ -50,19 +50,18 @@ pub async fn status(State(state): State<Arc<WebState>>, headers: HeaderMap) -> R
         );
     };
     if !marketing_origin_allowed(&headers, config) {
-        return error_json(
-            StatusCode::FORBIDDEN,
-            "cross-origin session probe rejected",
-        );
+        return error_json(StatusCode::FORBIDDEN, "cross-origin session probe rejected");
     }
 
     let cookie_present = cookie_value(&headers, &config.session_cookie_name).is_some();
-    let authenticated =
-        read_signed_cookie::<BrowserSession>(&headers, &config.session_cookie_name, config)
-            .as_ref()
-            .is_some_and(session_is_current);
-    let mut response =
-        marketing_status_response(config, &headers, StatusCode::OK, authenticated);
+    let authenticated = read_signed_cookie::<BrowserSession>(
+        &headers,
+        &config.session_cookie_name,
+        config,
+    )
+    .as_ref()
+    .is_some_and(session_is_current);
+    let mut response = marketing_status_response(config, &headers, StatusCode::OK, authenticated);
     if cookie_present && !authenticated {
         append_cookie(
             &mut response,
@@ -89,12 +88,14 @@ pub async fn refresh(State(state): State<Arc<WebState>>, headers: HeaderMap) -> 
     }
 
     let cookie_present = cookie_value(&headers, &config.session_cookie_name).is_some();
-    let Some(session) =
-        read_signed_cookie::<BrowserSession>(&headers, &config.session_cookie_name, config)
-            .filter(session_is_current)
+    let Some(session) = read_signed_cookie::<BrowserSession>(
+        &headers,
+        &config.session_cookie_name,
+        config,
+    )
+    .filter(session_is_current)
     else {
-        let mut response =
-            marketing_status_response(config, &headers, StatusCode::OK, false);
+        let mut response = marketing_status_response(config, &headers, StatusCode::OK, false);
         if cookie_present {
             append_cookie(
                 &mut response,
@@ -130,8 +131,7 @@ pub async fn refresh(State(state): State<Arc<WebState>>, headers: HeaderMap) -> 
             StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
         ) {
             tracing::warn!(status = %upstream_status, "Shared Auth session refresh rejected");
-            let mut response =
-                marketing_status_response(config, &headers, StatusCode::OK, false);
+            let mut response = marketing_status_response(config, &headers, StatusCode::OK, false);
             append_cookie(
                 &mut response,
                 clear_cookie(&config.session_cookie_name, config),
@@ -139,12 +139,7 @@ pub async fn refresh(State(state): State<Arc<WebState>>, headers: HeaderMap) -> 
             return response;
         }
         tracing::warn!(status = %upstream_status, "Shared Auth session refresh unavailable");
-        return marketing_status_response(
-            config,
-            &headers,
-            StatusCode::SERVICE_UNAVAILABLE,
-            false,
-        );
+        return marketing_status_response(config, &headers, StatusCode::SERVICE_UNAVAILABLE, false);
     }
 
     let refreshed = match upstream.json::<RefreshResponse>().await {
@@ -388,13 +383,7 @@ fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
 
 fn sha256(input: &[u8]) -> [u8; 32] {
     const INITIAL: [u32; 8] = [
-        0x6a09e667,
-        0xbb67ae85,
-        0x3c6ef372,
-        0xa54ff53a,
-        0x510e527f,
-        0x9b05688c,
-        0x1f83d9ab,
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
         0x5be0cd19,
     ];
     const K: [u32; 64] = [
