@@ -773,15 +773,15 @@ fn percent_decode_once(value: &str) -> (Vec<u8>, bool) {
     let mut index = 0;
     let mut changed = false;
     while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let (Some(high), Some(low)) =
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) =
                 (hex_nibble(bytes[index + 1]), hex_nibble(bytes[index + 2]))
-            {
-                output.push((high << 4) | low);
-                index += 3;
-                changed = true;
-                continue;
-            }
+        {
+            output.push((high << 4) | low);
+            index += 3;
+            changed = true;
+            continue;
         }
         output.push(bytes[index]);
         index += 1;
