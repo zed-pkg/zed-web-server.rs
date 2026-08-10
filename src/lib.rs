@@ -9,6 +9,7 @@
 //! Shared Auth session and forwards the operation to the write-enabled API.
 
 mod browser_auth;
+mod marketing_session;
 mod proxy;
 mod routes;
 pub mod server;
