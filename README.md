@@ -89,6 +89,11 @@ cargo run
 `static/htmx.min.js` is vendored (htmx 2) so the UI has zero CDN
 dependencies at runtime.
 
+The dependency-graph Web Component and styles are reviewable in `assets/`.
+`node scripts/build-graph-assets.mjs` deterministically produces the Brotli
+files embedded by Axum; `--check` is the CI freshness gate. The browser never
+loads Claritas or another external visualization runtime.
+
 ## Development
 
 Clone side by side with `zed-interfaces` and `zed-lib-core`, then run the

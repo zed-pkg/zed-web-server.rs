@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     paths:
+      - 'assets/**'
+      - 'scripts/build-graph-assets.mjs'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
@@ -14,6 +16,8 @@ on:
       - '.github/workflows/publish-container.yml'
   pull_request:
     paths:
+      - 'assets/**'
+      - 'scripts/build-graph-assets.mjs'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'

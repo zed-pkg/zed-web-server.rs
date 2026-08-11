@@ -18,6 +18,14 @@ age_key := env_var_or_default("SOPS_AGE_KEY_FILE", env_var("HOME") / ".config/so
 _default:
     @just --list --unsorted
 
+# Rebuild the immutable Brotli assets from their reviewable source files.
+graph-assets:
+    node scripts/build-graph-assets.mjs
+
+# CI freshness gate: committed source and served bytes must be identical.
+graph-assets-check:
+    node scripts/build-graph-assets.mjs --check
+
 # ---------------------------------------------------------------------------
 # Environment secrets — delegated to `ores-sops`
 #
