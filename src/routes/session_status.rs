@@ -32,16 +32,13 @@ fn origin_is_allowed(headers: &HeaderMap) -> bool {
 }
 
 fn add_non_cacheable_headers(response: &mut Response, preflight: bool) {
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, max-age=0"),
+    );
     response
         .headers_mut()
-        .insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("no-store, max-age=0"),
-        );
-    response.headers_mut().insert(
-        cors_header("pragma"),
-        HeaderValue::from_static("no-cache"),
-    );
+        .insert(cors_header("pragma"), HeaderValue::from_static("no-cache"));
     response.headers_mut().insert(
         cors_header("cross-origin-resource-policy"),
         HeaderValue::from_static("same-site"),
@@ -240,8 +237,14 @@ mod tests {
             "no-store, max-age=0"
         );
         assert_eq!(response.headers()[header::VARY], "Origin");
-        assert_eq!(response.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
-        assert_eq!(response.headers()["cross-origin-resource-policy"], "same-site");
+        assert_eq!(
+            response.headers()[header::X_CONTENT_TYPE_OPTIONS],
+            "nosniff"
+        );
+        assert_eq!(
+            response.headers()["cross-origin-resource-policy"],
+            "same-site"
+        );
         assert_eq!(
             response.headers()["access-control-allow-origin"],
             MARKETING_ORIGIN

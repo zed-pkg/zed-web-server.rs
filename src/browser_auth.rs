@@ -187,9 +187,8 @@ pub(crate) async fn verify_session_continuity(
     let Some(session) =
         read_signed_cookie::<BrowserSession>(headers, &config.session_cookie_name, config)
     else {
-        let update = cookie_present.then(|| {
-            RotatedSession(clear_cookie(&config.session_cookie_name, config))
-        });
+        let update = cookie_present
+            .then(|| RotatedSession(clear_cookie(&config.session_cookie_name, config)));
         return SessionContinuity::Anonymous(update);
     };
 
@@ -1316,9 +1315,7 @@ mod tests {
     }
 
     async fn spawn_auth_stub(app: Router) -> String {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         format!("http://{address}")
@@ -1391,10 +1388,7 @@ mod tests {
     #[tokio::test]
     async fn revoked_or_wrong_audience_sessions_fail_closed_and_clear_cookie() {
         for app in [
-            Router::new().route(
-                "/auth/refresh",
-                post(|| async { StatusCode::UNAUTHORIZED }),
-            ),
+            Router::new().route("/auth/refresh", post(|| async { StatusCode::UNAUTHORIZED })),
             Router::new()
                 .route(
                     "/auth/refresh",
@@ -1436,7 +1430,10 @@ mod tests {
 
     #[tokio::test]
     async fn shared_auth_outage_is_explicit_and_does_not_destroy_cookie() {
-        for status in [StatusCode::INTERNAL_SERVER_ERROR, StatusCode::TOO_MANY_REQUESTS] {
+        for status in [
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::TOO_MANY_REQUESTS,
+        ] {
             let app = Router::new().route("/auth/refresh", post(move || async move { status }));
             let mut config = config();
             config.shared_auth_url = spawn_auth_stub(app).await;
