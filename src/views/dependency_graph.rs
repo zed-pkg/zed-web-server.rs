@@ -125,8 +125,8 @@ mod tests {
                 latest: None,
             },
         ];
-        let markup = scope_workspace("organization", "Topology", "Description", &packages)
-            .into_string();
+        let markup =
+            scope_workspace("organization", "Topology", "Description", &packages).into_string();
         assert!(markup.contains("&quot;name&quot;:&quot;a&quot;"));
         assert!(!markup.contains("&quot;name&quot;:&quot;empty&quot;"));
     }
