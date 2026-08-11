@@ -5,7 +5,7 @@ The `app.zpkg.net` web server is compiled against reviewed, immutable source rev
 | Dependency | Revision | Role |
 | --- | --- | --- |
 | `zed-pkg/zed-lib-core` | `18fd49ba4d73689a941eaa56ef20a12a6c90a993` | Canonical `zed-orm-core` read-only data plane |
-| `zed-pkg/zed-interfaces` | `4d40ae96f5ce6240356ad4fa5e455d0310b1c97d` | Polyglot package and API contract workspace |
+| `zed-pkg/zed-interfaces` | `15577e17a820c3b2b1a39ee178d4645185309a05` | Polyglot package and API contract workspace |
 
 `Cargo.toml` and `Cargo.lock` must agree on both exact revisions. The web process uses only the default read-only ORM surface; it does not enable `read-write` or `migrate`. Mutations are sent to the API tier, and database credentials supplied to this service must map to the SELECT-only registry role.
 
