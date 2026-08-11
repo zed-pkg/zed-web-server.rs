@@ -5,6 +5,7 @@ const SCOPE_LIMIT = 80;
 const FORCE_LIMIT = 260;
 const MAX_GRAPH_NODES = 3000;
 const MAX_GRAPH_EDGES = 12000;
+const MAX_PROJECTION_DIMENSION = 4096;
 const HTMLElementBase = globalThis.HTMLElement || class {};
 
 const KIND_LABELS = {
@@ -144,7 +145,7 @@ class ZedDependencyGraph extends HTMLElementBase {
           </div>
           <button type="button" class="dg-icon-button" data-action="fit" title="Fit graph">Fit</button>
           <button type="button" class="dg-icon-button" data-action="reset" title="Reset filters and focus">Reset</button>
-          ${this.mode === "package" ? this.exportMenu() : ""}
+          ${this.exportMenu()}
         </div>
 
         <div class="dg-querybar" role="toolbar" aria-label="Common dependency queries">
@@ -238,10 +239,16 @@ class ZedDependencyGraph extends HTMLElementBase {
     return `<details class="dg-export-menu">
       <summary>Download</summary>
       <div>
-        ${EXPORT_FORMATS.map(
-          ([format, label]) =>
-            `<a data-export="${format}" href="#" download>${escapeHtml(label)}</a>`
-        ).join("")}
+        ${
+          this.mode === "package"
+            ? EXPORT_FORMATS.map(
+                ([format, label]) =>
+                  `<a data-export="${format}" href="#" download>${escapeHtml(label)}</a>`
+              ).join("")
+            : ""
+        }
+        <button type="button" data-projection-export="svg">SVG visible projection</button>
+        <button type="button" data-projection-export="png">PNG visible projection</button>
       </div>
     </details>`;
   }
@@ -294,6 +301,19 @@ class ZedDependencyGraph extends HTMLElementBase {
     this.$('[data-control="optional"]').addEventListener("change", (event) => {
       this.includeOptional = event.target.checked;
       this.renderGraph();
+    });
+
+    this.$$('[data-projection-export]').forEach((button) => {
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          await this.exportProjection(button.dataset.projectionExport);
+        } catch (error) {
+          this.fail(error);
+        } finally {
+          button.disabled = false;
+        }
+      });
     });
 
     this.svg.addEventListener("wheel", (event) => this.onWheel(event), { passive: false });
@@ -1328,6 +1348,57 @@ class ZedDependencyGraph extends HTMLElementBase {
     });
   }
 
+  projectionDocument() {
+    const edges = this.filteredEdges(true);
+    const visibleNodes = this.visibleNodeSet(edges);
+    return projectionSvgDocument({
+      nodes: [...visibleNodes].map((id) => this.nodes.get(id)).filter(Boolean),
+      edges: edges.filter(
+        (edge) => visibleNodes.has(edge.from) && visibleNodes.has(edge.to)
+      ),
+      positions: this.positions,
+      roots: this.roots,
+      selectedId: this.selectedId,
+      title: this.dataset.scopeTitle || "Dependency graph visible projection",
+    });
+  }
+
+  async exportProjection(format) {
+    const projection = this.projectionDocument();
+    if (!projection) {
+      throw new Error("Load at least one package before exporting the visible projection.");
+    }
+    const nameParts =
+      this.mode === "package"
+        ? [this.dataset.org, this.dataset.package, this.dataset.version]
+        : [this.dataset.scopeKind, this.dataset.scopeTitle];
+    const filename = projectionFilename(nameParts, format);
+    if (format === "svg") {
+      downloadBlob(new Blob([projection.svg], { type: "image/svg+xml;charset=utf-8" }), filename);
+      this.setStatus("Downloaded the visible graph projection as SVG.", "ready");
+      return;
+    }
+    if (format !== "png") throw new Error("That visible projection format is not supported.");
+
+    const image = new Image();
+    const source = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(projection.svg)}`;
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error("The browser could not rasterize this graph projection."));
+      image.src = source;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = projection.width;
+    canvas.height = projection.height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("The browser does not provide a PNG export canvas.");
+    context.drawImage(image, 0, 0, projection.width, projection.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) throw new Error("The browser could not encode this graph projection as PNG.");
+    downloadBlob(blob, filename);
+    this.setStatus("Downloaded the visible graph projection as PNG.", "ready");
+  }
+
   fitGraph() {
     const visible = [...this.nodeLayer.querySelectorAll(".dg-node:not(.is-dimmed)")];
     if (!visible.length) return;
@@ -1548,6 +1619,104 @@ function graphBounds(positions) {
   };
 }
 
+function projectionSvgDocument({
+  nodes,
+  edges,
+  positions,
+  roots = new Set(),
+  selectedId = null,
+  title = "Dependency graph visible projection",
+}) {
+  const positionedNodes = nodes
+    .filter((node) => {
+      const position = positions.get(node.id);
+      return position && Number.isFinite(position.x) && Number.isFinite(position.y);
+    })
+    .sort((left, right) => left.id.localeCompare(right.id));
+  if (!positionedNodes.length) return null;
+
+  const included = new Set(positionedNodes.map((node) => node.id));
+  const nodesById = new Map(positionedNodes.map((node) => [node.id, node]));
+  const positionedEdges = edges
+    .filter(
+      (edge) =>
+        included.has(edge.from) &&
+        included.has(edge.to) &&
+        positions.has(edge.from) &&
+        positions.has(edge.to)
+    )
+    .sort((left, right) => edgeIdentity(left).localeCompare(edgeIdentity(right)));
+  const bounds = graphBounds(positionedNodes.map((node) => positions.get(node.id)));
+  const padding = 72;
+  const minX = bounds.minX - NODE_WIDTH / 2 - padding;
+  const minY = bounds.minY - NODE_HEIGHT / 2 - padding;
+  const viewWidth = Math.max(1, bounds.maxX - bounds.minX + NODE_WIDTH + padding * 2);
+  const viewHeight = Math.max(1, bounds.maxY - bounds.minY + NODE_HEIGHT + padding * 2);
+  const scale = Math.min(2, MAX_PROJECTION_DIMENSION / viewWidth, MAX_PROJECTION_DIMENSION / viewHeight);
+  const width = Math.max(1, Math.round(viewWidth * scale));
+  const height = Math.max(1, Math.round(viewHeight * scale));
+  const kindColors = {
+    runtime: "#7dd3fc",
+    build: "#fbbf24",
+    development: "#c4b5fd",
+    peer: "#5eead4",
+    tooling: "#fb7185",
+  };
+
+  const edgeMarkup = positionedEdges
+    .map((edge) => {
+      const stroke = kindColors[edge.kind] || kindColors.runtime;
+      const dash = edge.synthetic ? "2 6" : edge.optional ? "7 6" : "none";
+      return `<path d="${escapeHtml(edgePath(positions.get(edge.from), positions.get(edge.to)))}" fill="none" stroke="${stroke}" stroke-width="1.8" stroke-opacity="0.72" stroke-dasharray="${dash}" marker-end="url(#projection-arrow)"><title>${escapeHtml(
+        `${nodeLabel(nodesById.get(edge.from))} → ${nodeLabel(nodesById.get(edge.to))} · ${edge.kind}`
+      )}</title></path>`;
+    })
+    .join("");
+  const nodeMarkup = positionedNodes
+    .map((node) => {
+      const position = positions.get(node.id);
+      const selected = node.id === selectedId;
+      const root = roots.has(node.id);
+      const stroke = selected ? "#ff7a1a" : root ? "#b8662d" : "#2e3b4c";
+      const dot = node.synthetic ? "#fef08a" : selected ? "#ff7a1a" : "#8fd3f4";
+      const dash = node.synthetic ? ' stroke-dasharray="4 4"' : "";
+      return `<g transform="translate(${position.x - NODE_WIDTH / 2} ${
+        position.y - NODE_HEIGHT / 2
+      })"><rect width="${NODE_WIDTH}" height="${NODE_HEIGHT}" rx="14" fill="${
+        selected ? "#15130f" : "#0c1017"
+      }" stroke="${stroke}" stroke-width="${selected ? 2.2 : 1.2}"${dash}/><circle cx="19" cy="21" r="5" fill="${dot}"/><text x="32" y="25" fill="#f2f2f0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600">${escapeHtml(
+        truncate(nodeLabel(node), 27)
+      )}</text><text x="18" y="47" fill="#8fa1b5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10">${escapeHtml(
+        truncate(nodeMeta(node), 34)
+      )}</text>${
+        root
+          ? `<text x="${NODE_WIDTH - 12}" y="17" text-anchor="end" fill="#ff7a1a" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" font-weight="700">ROOT</text>`
+          : ""
+      }><title>${escapeHtml(`${nodeLabel(node)}\n${nodeMeta(node)}`)}</title></g>`;
+    })
+    .join("");
+  const safeTitle = escapeHtml(title);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="${minX} ${minY} ${viewWidth} ${viewHeight}" role="img" aria-labelledby="projection-title projection-description"><title id="projection-title">${safeTitle}</title><desc id="projection-description">Visible dependency graph projection with ${positionedNodes.length} packages and ${positionedEdges.length} relationships.</desc><defs><pattern id="projection-grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M 32 0 L 0 0 0 32" fill="none" stroke="#8fd3f4" stroke-opacity="0.07" stroke-width="1"/></pattern><marker id="projection-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,4.5 L0,9 z" fill="#8fa4b9"/></marker></defs><rect x="${minX}" y="${minY}" width="${viewWidth}" height="${viewHeight}" rx="18" fill="#07080c"/><rect x="${minX}" y="${minY}" width="${viewWidth}" height="${viewHeight}" rx="18" fill="url(#projection-grid)"/>${edgeMarkup}${nodeMarkup}</svg>`;
+  return { svg, width, height, viewWidth, viewHeight };
+}
+
+function projectionFilename(parts, format) {
+  const base = parts.filter(Boolean).map(safeFilename).join("_") || "dependency_graph";
+  return `${base}.dependency-graph.visible.${format}`;
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.hidden = true;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 function svg(tag, attributes = {}, text = null) {
   const element = document.createElementNS(SVG_NS, tag);
   for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, value);
@@ -1668,5 +1837,7 @@ export {
   packageExportUrl,
   packagePageUrl,
   pathEdgePairs,
+  projectionFilename,
+  projectionSvgDocument,
   scopeSourceBatches,
 };

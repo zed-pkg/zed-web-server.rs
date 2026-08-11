@@ -26,11 +26,11 @@ fn package_manifest_and_lock_pin_the_cross_repository_contracts() {
     for (repository, revision) in [
         (
             "https://github.com/zed-pkg/zed-interfaces.git",
-            "b795c92126202cd1e4bd2365eb58d8cefa2095c3",
+            "15577e17a820c3b2b1a39ee178d4645185309a05",
         ),
         (
             "https://github.com/zed-pkg/zed-lib-core.git",
-            "fc4f2677a2315d522913bef05a1c0d23f8208960",
+            "18fd49ba4d73689a941eaa56ef20a12a6c90a993",
         ),
     ] {
         assert!(

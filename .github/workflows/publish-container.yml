@@ -38,8 +38,8 @@ concurrency:
 
 env:
   # A commit-tagged web image identifies every cross-repository Rust input.
-  ZED_INTERFACES_SHA: b795c92126202cd1e4bd2365eb58d8cefa2095c3
-  ZED_LIB_CORE_SHA: fc4f2677a2315d522913bef05a1c0d23f8208960
+  ZED_INTERFACES_SHA: 15577e17a820c3b2b1a39ee178d4645185309a05
+  ZED_LIB_CORE_SHA: 18fd49ba4d73689a941eaa56ef20a12a6c90a993
 
 jobs:
   image:

@@ -113,12 +113,14 @@ pub async fn page(
     // organization listing.
     let project_slug = if can_view_org_topology {
         match package.project_id {
-            Some(project_id) => zed_orm_core::read::projects_for_org(db, org.id, &org.slug, true)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .find(|project| project.id == project_id)
-                .map(|project| project.slug),
+            Some(project_id) => match zed_orm_core::read::project_by_id(db, project_id).await {
+                Ok(Some(project)) if project.org_id == org.id => Some(project.slug),
+                Ok(_) => None,
+                Err(error) => {
+                    tracing::warn!(%error, %project_id, "package project lookup failed");
+                    None
+                }
+            },
             None => None,
         }
     } else {
