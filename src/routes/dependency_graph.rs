@@ -227,9 +227,7 @@ async fn authorize_package(
     // package-page listing, which would reject older published history.
     if let Some(requested) = requested_version {
         return match zed_orm_core::read::package_version_by_package_and_version(
-            db,
-            package.id,
-            requested,
+            db, package.id, requested,
         )
         .await
         {
@@ -263,9 +261,7 @@ async fn authorize_package(
 
     let exact_latest = match package.latest_version {
         Some(latest) => match zed_orm_core::read::package_version_by_package_and_version(
-            db,
-            package.id,
-            &latest,
+            db, package.id, &latest,
         )
         .await
         {
