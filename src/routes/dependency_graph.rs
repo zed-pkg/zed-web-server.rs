@@ -922,7 +922,282 @@ fn problem(status: StatusCode, code: &str, message: &str) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    use axum::body::Body;
+    use axum::routing::any;
+    use axum::{Router, extract::State};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
     use super::*;
+
+    #[derive(Clone, Copy)]
+    struct SocketRepresentation {
+        body: &'static [u8],
+        media_type: &'static str,
+        etag: &'static str,
+        digest: &'static str,
+        authoritative: bool,
+        disposition: &'static str,
+        contract: RepresentationContract,
+    }
+
+    fn socket_representation(format: &str) -> Option<SocketRepresentation> {
+        match format {
+            "json" => Some(SocketRepresentation {
+                body: br#"{"schema":"v1","packages":[]}"#,
+                media_type: DependencyGraphFormat::Json.media_type(),
+                etag: "\"socket-json-v1\"",
+                digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                authoritative: true,
+                disposition: "attachment; filename=\"acme_http_1.0.0.dependency-graph.json\"",
+                contract: RepresentationContract::json(),
+            }),
+            "csv" => Some(SocketRepresentation {
+                body: b"source,target\nacme/http,acme/url\n",
+                media_type: DependencyGraphExportFormat::Csv.media_type(),
+                etag: "\"socket-csv-v1\"",
+                digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+                authoritative: false,
+                disposition: "attachment; filename=\"acme_http_1.0.0.dependency-graph.csv\"",
+                contract: RepresentationContract::for_export(ExportRoute::Extended(
+                    DependencyGraphExportFormat::Csv,
+                )),
+            }),
+            _ => None,
+        }
+    }
+
+    fn socket_representation_headers(representation: SocketRepresentation) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static(representation.media_type),
+        );
+        headers.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static(representation.disposition),
+        );
+        headers.insert(
+            header::CONTENT_LENGTH,
+            HeaderValue::from_str(&representation.body.len().to_string()).unwrap(),
+        );
+        headers.insert(header::ETAG, HeaderValue::from_static(representation.etag));
+        headers.insert(
+            HeaderName::from_static(DEPENDENCY_GRAPH_DIGEST_HEADER),
+            HeaderValue::from_static(representation.digest),
+        );
+        headers.insert(
+            HeaderName::from_static(DEPENDENCY_GRAPH_AUTHORITATIVE_HEADER),
+            HeaderValue::from_static(if representation.authoritative {
+                "true"
+            } else {
+                "false"
+            }),
+        );
+        headers
+    }
+
+    async fn socket_upstream(
+        Path(format): Path<String>,
+        method: Method,
+        request_headers: HeaderMap,
+    ) -> Response {
+        let Some(representation) = socket_representation(&format) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        let headers = socket_representation_headers(representation);
+        if request_headers
+            .get_all(header::IF_NONE_MATCH)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .any(|value| value == representation.etag)
+        {
+            return super::super::not_modified_with_representation_metadata(headers);
+        }
+
+        let mut response = Response::new(if method == Method::HEAD {
+            Body::empty()
+        } else {
+            Body::from(representation.body)
+        });
+        *response.headers_mut() = headers;
+        response
+    }
+
+    #[derive(Clone)]
+    struct SocketBffState {
+        client: reqwest::Client,
+        upstream: String,
+    }
+
+    async fn socket_bff(
+        State(state): State<SocketBffState>,
+        Path(format): Path<String>,
+        method: Method,
+        request_headers: HeaderMap,
+    ) -> Response {
+        let Some(representation) = socket_representation(&format) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        let mut request = state
+            .client
+            .request(method.clone(), format!("{}/{format}", state.upstream))
+            .header(header::ACCEPT, representation.media_type)
+            .header(header::ACCEPT_ENCODING, "identity");
+        for etag in request_headers.get_all(header::IF_NONE_MATCH) {
+            request = request.header(header::IF_NONE_MATCH, etag);
+        }
+        let upstream = request.send().await.expect("mock upstream is reachable");
+        relay_response(
+            upstream,
+            method == Method::HEAD,
+            Some("1.0.0"),
+            GraphCachePolicy::PublicExact,
+            representation.contract,
+        )
+        .await
+    }
+
+    async fn spawn_socket_server(app: Router) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback listener binds");
+        let address = listener.local_addr().expect("listener has an address");
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("socket fixture serves requests");
+        });
+        (address, task)
+    }
+
+    struct RawHttpResponse {
+        status: u16,
+        headers: BTreeMap<String, String>,
+        body: Vec<u8>,
+    }
+
+    async fn raw_http_request(
+        address: SocketAddr,
+        method: &str,
+        path: &str,
+        if_none_match: Option<&str>,
+    ) -> RawHttpResponse {
+        let mut stream = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("socket fixture accepts a connection");
+        let conditional = if_none_match
+            .map(|etag| format!("If-None-Match: {etag}\r\n"))
+            .unwrap_or_default();
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n{conditional}\r\n"
+        );
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("raw request is written");
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut bytes))
+            .await
+            .expect("socket response completes")
+            .expect("socket response is readable");
+        let split = bytes
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("HTTP response has a header terminator");
+        let head = std::str::from_utf8(&bytes[..split]).expect("headers are ASCII");
+        let mut lines = head.lines();
+        let status = lines
+            .next()
+            .and_then(|line| line.split_ascii_whitespace().nth(1))
+            .and_then(|value| value.parse().ok())
+            .expect("HTTP response has a numeric status");
+        let headers = lines
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_owned()))
+            .collect();
+        RawHttpResponse {
+            status,
+            headers,
+            body: bytes[(split + 4)..].to_vec(),
+        }
+    }
+
+    #[tokio::test]
+    async fn bff_preserves_representation_metadata_on_the_http_wire() {
+        let (upstream_address, upstream_task) =
+            spawn_socket_server(Router::new().route("/{format}", any(socket_upstream))).await;
+        let bff_state = SocketBffState {
+            client: reqwest::Client::new(),
+            upstream: format!("http://{upstream_address}"),
+        };
+        let (bff_address, bff_task) = spawn_socket_server(
+            Router::new()
+                .route("/bff/{format}", any(socket_bff))
+                .with_state(bff_state),
+        )
+        .await;
+
+        for format in ["json", "csv"] {
+            let representation = socket_representation(format).unwrap();
+            let path = format!("/bff/{format}");
+            let get = raw_http_request(bff_address, "GET", &path, None).await;
+            assert_eq!(get.status, 200, "{format} GET");
+            assert_eq!(get.body, representation.body, "{format} GET bytes");
+            assert_eq!(
+                get.headers.get("content-length").unwrap(),
+                &representation.body.len().to_string()
+            );
+            assert_eq!(
+                get.headers.get(DEPENDENCY_GRAPH_AUTHORITATIVE_HEADER),
+                Some(&representation.authoritative.to_string())
+            );
+
+            let head = raw_http_request(bff_address, "HEAD", &path, None).await;
+            assert_eq!(head.status, 200, "{format} HEAD");
+            assert!(head.body.is_empty(), "{format} HEAD body");
+
+            let not_modified = raw_http_request(
+                bff_address,
+                "GET",
+                &path,
+                Some(get.headers.get("etag").unwrap()),
+            )
+            .await;
+            assert_eq!(not_modified.status, 304, "{format} conditional GET");
+            assert!(not_modified.body.is_empty(), "{format} 304 body");
+            assert!(!not_modified.headers.contains_key("transfer-encoding"));
+
+            for name in [
+                "content-type",
+                "content-disposition",
+                "content-length",
+                "cache-control",
+                "vary",
+                "etag",
+                DEPENDENCY_GRAPH_DIGEST_HEADER,
+                DEPENDENCY_GRAPH_AUTHORITATIVE_HEADER,
+                SELECTED_VERSION_HEADER,
+            ] {
+                assert_eq!(
+                    head.headers.get(name),
+                    get.headers.get(name),
+                    "{format} HEAD {name}"
+                );
+                assert_eq!(
+                    not_modified.headers.get(name),
+                    get.headers.get(name),
+                    "{format} 304 {name}"
+                );
+            }
+        }
+
+        bff_task.abort();
+        upstream_task.abort();
+    }
 
     #[test]
     fn export_aliases_are_explicit_and_bounded() {
@@ -1154,5 +1429,14 @@ mod tests {
         let response = graph_not_found();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    }
+
+    #[test]
+    fn representation_length_is_allowlisted_with_other_exact_metadata() {
+        let mut upstream = HeaderMap::new();
+        upstream.insert(header::CONTENT_LENGTH, HeaderValue::from_static("1234"));
+        let mut downstream = HeaderMap::new();
+        copy_header(&upstream, &mut downstream, header::CONTENT_LENGTH);
+        assert_eq!(downstream[header::CONTENT_LENGTH], "1234");
     }
 }
