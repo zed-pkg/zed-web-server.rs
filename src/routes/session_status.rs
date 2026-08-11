@@ -56,7 +56,8 @@ fn add_allowed_cors_headers(response: &mut Response) {
 }
 
 fn rejected(status: StatusCode, message: &'static str, preflight: bool) -> Response {
-    let mut response = (status, axum::Json(serde_json::json!({ "error": message }))).into_response();
+    let mut response =
+        (status, axum::Json(serde_json::json!({ "error": message }))).into_response();
     add_non_cacheable_headers(&mut response, preflight);
     response
 }
@@ -90,8 +91,11 @@ pub async fn get(State(state): State<Arc<WebState>>, headers: HeaderMap) -> Resp
     }
 
     let viewer = session::resolve(&state, &headers).await;
-    let mut response = axum::Json(status_document(viewer.is_signed_in(), dashboard_url(&state)))
-        .into_response();
+    let mut response = axum::Json(status_document(
+        viewer.is_signed_in(),
+        dashboard_url(&state),
+    ))
+    .into_response();
     add_non_cacheable_headers(&mut response, false);
     add_allowed_cors_headers(&mut response);
     response
@@ -137,8 +141,8 @@ pub async fn options(headers: HeaderMap) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
     use axum::Router;
+    use axum::body::Body;
     use serde_json::Value;
     use tower::util::ServiceExt;
 
@@ -201,7 +205,10 @@ mod tests {
             response.headers()["access-control-allow-origin"],
             MARKETING_ORIGIN
         );
-        assert_eq!(response.headers()["access-control-allow-credentials"], "true");
+        assert_eq!(
+            response.headers()["access-control-allow-credentials"],
+            "true"
+        );
         assert!(response.headers().get(header::SET_COOKIE).is_none());
 
         let document = json(response).await;
@@ -231,13 +238,18 @@ mod tests {
         for origin in [None, Some("https://evil.example"), Some("null")] {
             let response = app().oneshot(request(origin)).await.unwrap();
             assert_eq!(response.status(), StatusCode::FORBIDDEN, "{origin:?}");
-            assert!(response
-                .headers()
-                .get("access-control-allow-origin")
-                .is_none());
+            assert!(
+                response
+                    .headers()
+                    .get("access-control-allow-origin")
+                    .is_none()
+            );
             assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
             let document = json(response).await;
-            assert_eq!(document, serde_json::json!({ "error": "origin not allowed" }));
+            assert_eq!(
+                document,
+                serde_json::json!({ "error": "origin not allowed" })
+            );
         }
     }
 
@@ -265,10 +277,12 @@ mod tests {
             .unwrap();
         let response = app().oneshot(with_custom_header).await.unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert!(response
-            .headers()
-            .get("access-control-allow-origin")
-            .is_none());
+        assert!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .is_none()
+        );
     }
 
     #[test]
