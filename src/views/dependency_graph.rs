@@ -60,13 +60,22 @@ pub fn package_workspace(
             p class="muted" { "Loading the interactive dependency graph…" }
             noscript {
                 p class="muted" {
-                    "JavaScript is required for the interactive canvas. Downloads remain available:"
+                    "JavaScript is required for the interactive canvas. The canonical representations remain available:"
                 }
-                ul class="inline-list" aria-label="Dependency graph downloads" {
+                table class="dg-fallback-table" {
+                    caption { "Dependency graph downloads for " (org) "/" (name) "@" (selected_version) }
+                    thead {
+                        tr { th scope="col" { "Representation" } th scope="col" { "Download" } }
+                    }
+                    tbody {
                     @for (format, label) in FALLBACK_EXPORTS {
-                        li {
-                            a href=(package_export_url(org, name, selected_version, format)) download="" {
-                                (label)
+                            tr {
+                                th scope="row" { (label) }
+                                td {
+                                    a href=(package_export_url(org, name, selected_version, format)) download="" {
+                                        @if *format == "csv" { "Open semantic relationship table" } @else { "Download" }
+                                    }
+                                }
                             }
                         }
                     }
@@ -130,6 +139,29 @@ pub fn scope_workspace(
             data-scope-description=(description)
             data-sources=(sources_json) {
             p class="muted" { "Loading package topology…" }
+            noscript {
+                p class="muted" {
+                    "JavaScript is required to compose the interactive topology. Each package graph remains available independently:"
+                }
+                table class="dg-fallback-table" {
+                    caption { (title) " package sources" }
+                    thead {
+                        tr { th scope="col" { "Package" } th scope="col" { "Version" } th scope="col" { "Graph" } th scope="col" { "Relationship table" } }
+                    }
+                    tbody {
+                        @for package in packages {
+                            @if let Some(version) = &package.latest {
+                                tr {
+                                    th scope="row" { (package.org) "/" (package.name) }
+                                    td class="mono" { (version) }
+                                    td { a href=(package_export_url(&package.org, &package.name, version, "json")) download="" { "JSON" } }
+                                    td { a href=(package_export_url(&package.org, &package.name, version, "csv")) download="" { "CSV" } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -155,6 +187,8 @@ mod tests {
         assert!(markup.contains("2.0.0-beta.1"));
         assert!(markup.contains("&quot;prerelease&quot;:true"));
         assert!(markup.contains("Dependency graph downloads"));
+        assert!(markup.contains("dg-fallback-table"));
+        assert!(markup.contains("Open semantic relationship table"));
         assert!(
             markup.contains("/bff/dependency-graphs/packages/acme/http/2.0.0-beta.1/export/yaml")
         );
@@ -191,5 +225,7 @@ mod tests {
         assert!(markup.contains("&quot;name&quot;:&quot;a&quot;"));
         assert!(markup.contains("&quot;private&quot;:false"));
         assert!(!markup.contains("&quot;name&quot;:&quot;empty&quot;"));
+        assert!(markup.contains("package sources"));
+        assert!(markup.contains("/bff/dependency-graphs/packages/acme/a/1.0.0/export/csv"));
     }
 }

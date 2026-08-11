@@ -223,13 +223,30 @@ async fn authorize_package(
     }
 
     // Package authorization is sufficient for an exact immutable coordinate;
-    // the canonical API decides whether that version exists. Avoid scanning the
-    // page-oriented, bounded version listing, which would reject older history.
+    // verify it with the exact indexed read rather than scanning the bounded
+    // package-page listing, which would reject older published history.
     if let Some(requested) = requested_version {
-        return Ok(AuthorizedGraph {
-            version: requested.to_owned(),
-            is_public,
-        });
+        return match zed_orm_core::read::package_version_by_package_and_version(
+            db,
+            package.id,
+            requested,
+        )
+        .await
+        {
+            Ok(Some(_)) => Ok(AuthorizedGraph {
+                version: requested.to_owned(),
+                is_public,
+            }),
+            Ok(None) => Err(graph_not_found()),
+            Err(error) => {
+                tracing::warn!(%error, org = org_slug, package = name, version = requested, "graph version lookup failed");
+                Err(problem(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "registry_unavailable",
+                    "Dependency graph metadata is temporarily unavailable.",
+                ))
+            }
+        };
     }
 
     let versions = match zed_orm_core::read::versions_for_package(db, package.id).await {
@@ -244,13 +261,28 @@ async fn authorize_package(
         }
     };
 
-    let version = package
-        .latest_version
-        .filter(|latest| {
-            versions
-                .iter()
-                .any(|row| row.version.as_str() == latest.as_str() && !row.yanked)
-        })
+    let exact_latest = match package.latest_version {
+        Some(latest) => match zed_orm_core::read::package_version_by_package_and_version(
+            db,
+            package.id,
+            &latest,
+        )
+        .await
+        {
+            Ok(Some(row)) if !row.yanked => Some(latest),
+            Ok(_) => None,
+            Err(error) => {
+                tracing::warn!(%error, org = org_slug, package = name, version = latest, "latest graph version lookup failed");
+                return Err(problem(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "registry_unavailable",
+                    "Dependency graph metadata is temporarily unavailable.",
+                ));
+            }
+        },
+        None => None,
+    };
+    let version = exact_latest
         .or_else(|| {
             versions
                 .iter()
@@ -474,6 +506,14 @@ async fn relay_response(
         upstream.headers(),
         &mut response_headers,
         header::CONTENT_DISPOSITION,
+    );
+    // Axum strips the downstream body for the automatically supported HEAD
+    // method. Keep the upstream representation length so HEAD and 304 retain
+    // useful exact metadata without inventing a second representation.
+    copy_header(
+        upstream.headers(),
+        &mut response_headers,
+        header::CONTENT_LENGTH,
     );
     apply_cache_policy(upstream.headers(), &mut response_headers, cache_policy);
     copy_header(upstream.headers(), &mut response_headers, header::ETAG);
@@ -712,5 +752,14 @@ mod tests {
         let response = graph_not_found();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    }
+
+    #[test]
+    fn representation_length_is_allowlisted_with_other_exact_metadata() {
+        let mut upstream = HeaderMap::new();
+        upstream.insert(header::CONTENT_LENGTH, HeaderValue::from_static("1234"));
+        let mut downstream = HeaderMap::new();
+        copy_header(&upstream, &mut downstream, header::CONTENT_LENGTH);
+        assert_eq!(downstream[header::CONTENT_LENGTH], "1234");
     }
 }

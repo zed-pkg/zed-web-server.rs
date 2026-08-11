@@ -10,6 +10,8 @@ import {
   packageExportUrl,
   packagePageUrl,
   pathEdgePairs,
+  projectionFilename,
+  projectionSvgDocument,
   scopeSourceBatches,
 } from "../assets/dependency-graph.js";
 
@@ -116,5 +118,118 @@ graph.nodes = new Map(
 );
 assert.deepEqual(sorted(graph.cycleNodes(cycleOutgoing, cycleIncoming)), ["a", "b", "c", "self"]);
 assert.deepEqual(graph.longestChain("a", cycleOutgoing), { path: [], cyclic: true });
+
+function declaredDocument(name, dependencies = []) {
+  return {
+    schema: "zpkg/dependency-graph/v1",
+    view: "declared",
+    package: { registry_id: "registry:test", org: "acme", name, version: "1.0.0" },
+    dependencies,
+  };
+}
+
+const fixtures = new ZedDependencyGraph();
+fixtures.addDocument(declaredDocument("one"), { primary: true });
+assert.equal(fixtures.nodes.size, 1);
+assert.equal(fixtures.edges.length, 0);
+fixtures.layoutLayered();
+assert.deepEqual([...fixtures.positions.values()], [{ x: 0, y: 0 }]);
+
+fixtures.clearGraph();
+const duplicate = {
+  registry_id: "registry:test",
+  org: "acme",
+  name: "duplicate",
+  requirement: "^1.0.0",
+  kind: "runtime",
+};
+fixtures.addDocument(declaredDocument("root", [duplicate, duplicate]), { primary: true });
+assert.equal(fixtures.edges.length, 1);
+assert.equal(fixtures.edges[0].count, 2);
+fixtures.layoutRadial();
+const radialLayout = [...fixtures.positions].map(([id, position]) => [id, { ...position }]);
+fixtures.layoutRadial();
+assert.deepEqual([...fixtures.positions], radialLayout);
+fixtures.layoutForce();
+const forceLayout = [...fixtures.positions].map(([id, position]) => [id, { ...position }]);
+fixtures.layoutForce();
+assert.deepEqual([...fixtures.positions], forceLayout);
+
+fixtures.clearGraph();
+const wideDependencies = Array.from({ length: 400 }, (_, index) => ({
+  registry_id: "registry:test",
+  org: "acme",
+  name: `wide-${String(index).padStart(3, "0")}`,
+  requirement: "*",
+  kind: "runtime",
+}));
+fixtures.addDocument(declaredDocument("wide-root", wideDependencies), { primary: true });
+fixtures.layoutLayered();
+const firstLayout = [...fixtures.positions].map(([id, position]) => [id, { ...position }]);
+fixtures.layoutLayered();
+assert.deepEqual([...fixtures.positions], firstLayout);
+
+const projection = projectionSvgDocument({
+  nodes: [...fixtures.nodes.values()],
+  edges: fixtures.edges,
+  positions: fixtures.positions,
+  roots: fixtures.roots,
+  selectedId: [...fixtures.roots][0],
+  title: "Wide <projection>",
+});
+assert.ok(projection);
+assert.ok(projection.width <= 4096);
+assert.ok(projection.height <= 4096);
+assert.match(projection.svg, /Wide &lt;projection&gt;/);
+assert.match(projection.svg, /400 relationships/);
+assert.equal(
+  projectionFilename(["acme team", "pkg/name", "1.0.0+build"], "svg"),
+  "acme_team_pkg_name_1.0.0+build.dependency-graph.visible.svg"
+);
+
+const emptyProjection = projectionSvgDocument({
+  nodes: [],
+  edges: [],
+  positions: new Map(),
+});
+assert.equal(emptyProjection, null);
+
+const tooManyNodes = new ZedDependencyGraph();
+assert.throws(
+  () =>
+    tooManyNodes.addDocument(
+      declaredDocument(
+        "bounded-root",
+        Array.from({ length: 3000 }, (_, index) => ({
+          registry_id: "registry:test",
+          org: "acme",
+          name: `bounded-${index}`,
+        }))
+      ),
+      { primary: true }
+    ),
+  /3000-package browser limit/
+);
+assert.equal(tooManyNodes.nodes.size, 0);
+
+const tooManyEdges = new ZedDependencyGraph();
+assert.throws(
+  () =>
+    tooManyEdges.addDocument({
+      schema: "zpkg/dependency-graph/v1",
+      view: "resolved",
+      nodes: [
+        { id: { registry_id: "registry:test", org: "acme", name: "a", version: "1.0.0" } },
+        { id: { registry_id: "registry:test", org: "acme", name: "b", version: "1.0.0" } },
+      ],
+      roots: [],
+      edges: Array.from({ length: 12001 }, () => ({
+        from: { registry_id: "registry:test", org: "acme", name: "a", version: "1.0.0" },
+        to: { registry_id: "registry:test", org: "acme", name: "b", version: "1.0.0" },
+      })),
+    }),
+  /12000-relationship browser limit/
+);
+assert.equal(tooManyEdges.nodes.size, 0);
 
 console.log("dependency graph workspace tests passed");
