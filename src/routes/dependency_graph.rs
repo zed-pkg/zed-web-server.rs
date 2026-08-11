@@ -409,14 +409,8 @@ mod tests {
 
     #[test]
     fn extended_exports_use_the_dedicated_route() {
-        let url = extended_export_url(
-            "https://api.zpkg.net/",
-            "acme",
-            "http",
-            "2.1.0",
-            "protobuf",
-        )
-        .unwrap();
+        let url = extended_export_url("https://api.zpkg.net/", "acme", "http", "2.1.0", "protobuf")
+            .unwrap();
         assert_eq!(
             url.path(),
             "/v1/packages/acme/http/versions/2.1.0/dependency-graph/export/protobuf"
