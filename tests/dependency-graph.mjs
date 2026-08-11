@@ -22,13 +22,6 @@ import {
 } from "../assets/dependency-graph.js";
 
 const digest = `sha256:${"a".repeat(64)}`;
-const graphStyles = readFileSync(
-  new URL("../assets/dependency-graph.css", import.meta.url),
-  "utf8"
-);
-
-assert.match(graphStyles, /\.dg-toolbar\s*\{\s*z-index:\s*3;\s*\}/);
-assert.match(graphStyles, /\.dg-querybar\s*\{\s*z-index:\s*2;\s*\}/);
 
 function sorted(values) {
   return [...values].sort();
@@ -551,3 +544,28 @@ assert.throws(
 assert.equal(tooManyEdges.nodes.size, 0);
 
 console.log("dependency graph workspace tests passed");
+
+const workspaceCss = readFileSync(
+  new URL("../assets/dependency-graph.css", import.meta.url),
+  "utf8"
+);
+assert.match(
+  workspaceCss,
+  /\.dg-toolbar\s*\{[^}]*z-index:\s*4;[^}]*overflow:\s*visible;/s,
+  "the toolbar stacking context must remain above the graph stage"
+);
+assert.match(
+  workspaceCss,
+  /\.dg-querybar\s*\{[^}]*z-index:\s*3;[^}]*overflow:\s*visible;/s,
+  "the query bar must not clip or fall behind its menus"
+);
+assert.match(
+  workspaceCss,
+  /\.dg-stage\s*\{[^}]*z-index:\s*1;/s,
+  "the graph stage must stay below toolbar overlays"
+);
+assert.match(
+  workspaceCss,
+  /\.dg-export-menu\[open\],\s*\.dg-filter-menu\[open\]\s*\{[^}]*z-index:\s*5;/s,
+  "open menus must create their own foreground stacking context"
+);
