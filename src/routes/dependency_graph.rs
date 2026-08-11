@@ -196,17 +196,15 @@ fn declared_graph_url(
     format: Option<&str>,
 ) -> Result<Url, GraphUrlError> {
     let mut url = base_url(base)?;
-    url.path_segments_mut()
-        .map_err(|_| GraphUrlError)?
-        .extend([
-            "v1",
-            "packages",
-            org,
-            name,
-            "versions",
-            version,
-            "dependency-graph",
-        ]);
+    url.path_segments_mut().map_err(|_| GraphUrlError)?.extend([
+        "v1",
+        "packages",
+        org,
+        name,
+        "versions",
+        version,
+        "dependency-graph",
+    ]);
     {
         let mut query = url.query_pairs_mut();
         query.append_pair("view", "declared");
@@ -225,19 +223,17 @@ fn extended_export_url(
     format: &str,
 ) -> Result<Url, GraphUrlError> {
     let mut url = base_url(base)?;
-    url.path_segments_mut()
-        .map_err(|_| GraphUrlError)?
-        .extend([
-            "v1",
-            "packages",
-            org,
-            name,
-            "versions",
-            version,
-            "dependency-graph",
-            "export",
-            format,
-        ]);
+    url.path_segments_mut().map_err(|_| GraphUrlError)?.extend([
+        "v1",
+        "packages",
+        org,
+        name,
+        "versions",
+        version,
+        "dependency-graph",
+        "export",
+        format,
+    ]);
     Ok(url)
 }
 
