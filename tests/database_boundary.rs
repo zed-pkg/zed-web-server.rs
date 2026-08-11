@@ -12,7 +12,7 @@ fn read(relative: &str) -> String {
 }
 
 #[test]
-fn package_and_docs_pin_the_canonical_read_only_orm_core() {
+fn package_manifest_and_lock_pin_the_cross_repository_contracts() {
     let zpkg = read(".zpkg.toml");
     assert!(zpkg.contains("\"zed-pkg/zed-lib-core\" = \"^0.1.0\""));
     assert!(zpkg.contains("dir = \".vendor/.zed\""));
@@ -22,13 +22,28 @@ fn package_and_docs_pin_the_canonical_read_only_orm_core() {
     );
 
     let manifest = read("Cargo.toml");
-    for contract in [
-        "https://github.com/zed-pkg/zed-lib-core.git",
-        "rev = \"700f1f9578c6633a20693a5b1f52970ab845a740\"",
+    let lock = read("Cargo.lock");
+    for (repository, revision) in [
+        (
+            "https://github.com/zed-pkg/zed-interfaces.git",
+            "b795c92126202cd1e4bd2365eb58d8cefa2095c3",
+        ),
+        (
+            "https://github.com/zed-pkg/zed-lib-core.git",
+            "fc4f2677a2315d522913bef05a1c0d23f8208960",
+        ),
     ] {
         assert!(
-            manifest.contains(contract),
-            "Cargo manifest lost {contract}"
+            manifest.contains(repository),
+            "Cargo manifest lost {repository}"
+        );
+        assert!(
+            manifest.contains(&format!("rev = \"{revision}\"")),
+            "Cargo manifest lost {revision}"
+        );
+        assert!(
+            lock.contains(&format!("git+{repository}?rev={revision}#{revision}")),
+            "Cargo lock lost {repository}@{revision}"
         );
     }
 

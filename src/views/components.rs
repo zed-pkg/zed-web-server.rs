@@ -24,6 +24,7 @@ pub struct PackageRow {
     pub name: String,
     pub description: Option<String>,
     pub latest: Option<String>,
+    pub visibility: String,
 }
 
 pub fn package_rows(rows: &[PackageRow], empty_message: &str) -> Markup {

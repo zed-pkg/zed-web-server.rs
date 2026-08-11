@@ -7,15 +7,14 @@ license = "MIT"
 repository = "https://github.com/zed-pkg/zed-web-server.rs"
 
 [dependencies]
-# CI checks the exact interface repository out as a sibling. Its repository
-# root is now a virtual polyglot workspace; path consumers must select the Rust
-# package slice explicitly.
-zed-interfaces = { path = "../zed-interfaces/src/rust" }
+# Keep the shared wire contract immutable. The repository root is a virtual
+# polyglot workspace, and Cargo resolves its Rust package member directly.
+zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "b795c92126202cd1e4bd2365eb58d8cefa2095c3" }
 # Default features only: the read-only surface. Enabling `read-write` here
 # would hand this process write symbols its database identity cannot use.
 # Pin the certified canonical data-plane revision; never follow a moving branch
 # in a production server lock graph.
-zed-orm-core = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "700f1f9578c6633a20693a5b1f52970ab845a740" }
+zed-orm-core = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "fc4f2677a2315d522913bef05a1c0d23f8208960" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"

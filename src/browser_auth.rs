@@ -145,6 +145,117 @@ pub fn session_subject(state: &WebState, headers: &HeaderMap) -> Option<Uuid> {
         .then_some(session.shared_user_id)
 }
 
+/// The result of an authenticated API GET. The generated bearer token remains
+/// entirely inside this module; callers can only inspect the upstream result
+/// and apply the rotated opaque browser session.
+pub(crate) enum DelegatedGetOutcome {
+    Upstream(reqwest::Response),
+    Failed(Response),
+}
+
+pub(crate) struct RotatedSession(String);
+
+impl RotatedSession {
+    pub(crate) fn apply(self, response: &mut Response) {
+        append_cookie(response, self.0);
+    }
+}
+
+pub(crate) struct DelegatedGet {
+    outcome: DelegatedGetOutcome,
+    rotation: RotatedSession,
+}
+
+impl DelegatedGet {
+    pub(crate) fn into_parts(self) -> (DelegatedGetOutcome, RotatedSession) {
+        (self.outcome, self.rotation)
+    }
+}
+
+pub(crate) async fn delegated_get(
+    state: &WebState,
+    headers: &HeaderMap,
+    url: reqwest::Url,
+    if_none_match: Option<HeaderValue>,
+) -> Result<DelegatedGet, Response> {
+    let Some(config) = auth_config(state) else {
+        return Err(auth_unavailable());
+    };
+    if !delegated_url_allowed(config, &url) {
+        tracing::error!(%url, "refused to send delegated credentials outside the configured API");
+        return Err(error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "invalid delegated API destination",
+        ));
+    }
+    let Some(session) =
+        read_signed_cookie::<BrowserSession>(headers, &config.session_cookie_name, config)
+    else {
+        return Err(error_json(
+            StatusCode::UNAUTHORIZED,
+            "browser session is unavailable",
+        ));
+    };
+    let refreshed = refresh(state, config, &session).await?;
+    let next_session = BrowserSession {
+        refresh_token: refreshed.refresh_token,
+        shared_user_id: refreshed.shared_user_id,
+        issued_at: Utc::now().timestamp(),
+    };
+    let session_cookie = signed_cookie(
+        &config.session_cookie_name,
+        &next_session,
+        SESSION_MAX_AGE_SECONDS,
+        config,
+    );
+    let rotation = RotatedSession(session_cookie);
+    let delegated = match delegate(state, config, &refreshed.access_token).await {
+        Ok(token) => token,
+        Err(response) => {
+            return Ok(DelegatedGet {
+                outcome: DelegatedGetOutcome::Failed(response),
+                rotation,
+            });
+        }
+    };
+    let mut request = state.http.get(url).bearer_auth(delegated);
+    if let Some(etag) = if_none_match {
+        request = request.header(header::IF_NONE_MATCH, etag);
+    }
+    let outcome = match request.send().await {
+        Ok(response) => DelegatedGetOutcome::Upstream(response),
+        Err(error) => {
+            tracing::warn!(%error, "delegated registry API read failed");
+            DelegatedGetOutcome::Failed(error_json(
+                StatusCode::BAD_GATEWAY,
+                "registry API unavailable",
+            ))
+        }
+    };
+    Ok(DelegatedGet { outcome, rotation })
+}
+
+fn delegated_url_allowed(config: &BrowserAuthConfig, candidate: &reqwest::Url) -> bool {
+    let Ok(base) = reqwest::Url::parse(&format!("{}/", config.api_url.trim_end_matches('/')))
+    else {
+        return false;
+    };
+    if candidate.origin() != base.origin()
+        || !candidate.username().is_empty()
+        || candidate.password().is_some()
+        || candidate.fragment().is_some()
+    {
+        return false;
+    }
+    let base_path = base.path().trim_end_matches('/');
+    base_path.is_empty()
+        || candidate.path() == base_path
+        || candidate
+            .path()
+            .strip_prefix(base_path)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
 pub async fn sign_in(
     State(state): State<Arc<WebState>>,
     Query(query): Query<SignInQuery>,
@@ -1166,6 +1277,40 @@ mod tests {
         ] {
             assert_eq!(sanitize_return_to(invalid), "/");
         }
+    }
+
+    #[test]
+    fn delegated_reads_stay_on_the_configured_api_origin_and_base_path() {
+        let mut config = config();
+        config.api_url = "https://api.internal/base".into();
+        assert!(delegated_url_allowed(
+            &config,
+            &"https://api.internal/base/v1/packages/acme/http"
+                .parse()
+                .unwrap()
+        ));
+        assert!(!delegated_url_allowed(
+            &config,
+            &"https://api.internal/baseball/v1/packages/acme/http"
+                .parse()
+                .unwrap()
+        ));
+        assert!(!delegated_url_allowed(
+            &config,
+            &"https://evil.internal/base/v1/packages/acme/http"
+                .parse()
+                .unwrap()
+        ));
+    }
+
+    #[test]
+    fn rotated_private_read_session_is_applied_to_every_downstream_status() {
+        let mut response = StatusCode::BAD_GATEWAY.into_response();
+        RotatedSession("session=rotated; Path=/; HttpOnly".into()).apply(&mut response);
+        assert_eq!(
+            response.headers()[header::SET_COOKIE],
+            "session=rotated; Path=/; HttpOnly"
+        );
     }
 
     #[test]

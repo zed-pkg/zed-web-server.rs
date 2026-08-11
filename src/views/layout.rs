@@ -68,8 +68,10 @@ pub fn layout(
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (title) " · zed-pkg" }
                 link rel="stylesheet" href="/static/styles.css";
+                link rel="stylesheet" href="/graph-assets/dependency-graph.css";
                 link rel="icon" type="image/svg+xml" href="/static/favicon.svg";
                 script src="/static/htmx.min.js" {}
+                script type="module" src="/graph-assets/dependency-graph.js" {}
             }
             body {
                 (header(viewer, context))
@@ -331,5 +333,20 @@ mod tests {
         )
         .into_string();
         assert!(!online.contains("registry offline"));
+    }
+
+    #[test]
+    fn dependency_graph_assets_are_self_hosted() {
+        let markup = layout(
+            "t",
+            true,
+            &Viewer::Anonymous,
+            &PageContext::none(),
+            html! {},
+        )
+        .into_string();
+        assert!(markup.contains("/graph-assets/dependency-graph.css"));
+        assert!(markup.contains("/graph-assets/dependency-graph.js"));
+        assert!(!markup.contains("claritas-viz"));
     }
 }

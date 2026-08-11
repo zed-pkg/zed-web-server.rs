@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     paths:
+      - 'assets/**'
+      - 'scripts/build-graph-assets.mjs'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
@@ -14,6 +16,8 @@ on:
       - '.github/workflows/publish-container.yml'
   pull_request:
     paths:
+      - 'assets/**'
+      - 'scripts/build-graph-assets.mjs'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
@@ -33,8 +37,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # A commit-tagged web image must identify the complete path-dependency graph.
-  ZED_INTERFACES_SHA: 5394b2e7b070354ee79a4c6ac79c26d6264970cd
+  # A commit-tagged web image identifies every cross-repository Rust input.
+  ZED_INTERFACES_SHA: b795c92126202cd1e4bd2365eb58d8cefa2095c3
+  ZED_LIB_CORE_SHA: fc4f2677a2315d522913bef05a1c0d23f8208960
 
 jobs:
   image:
@@ -69,12 +74,47 @@ jobs:
           path: zed-interfaces
           persist-credentials: false
 
+      - name: Checkout pinned registry core
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: zed-pkg/zed-lib-core
+          ref: ${{ env.ZED_LIB_CORE_SHA }}
+          path: zed-lib-core
+          persist-credentials: false
+
       - name: Verify the complete source graph
         shell: bash
         run: |
           set -euo pipefail
           test "$(git -C zed-web-server.rs rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git -C zed-interfaces rev-parse HEAD)" = "$ZED_INTERFACES_SHA"
+          test "$(git -C zed-lib-core rev-parse HEAD)" = "$ZED_LIB_CORE_SHA"
+          cd zed-web-server.rs
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import tomllib
+
+          manifest = tomllib.loads(Path("Cargo.toml").read_text())
+          lock = Path("Cargo.lock").read_text()
+          pins = {
+              "zed-interfaces": (
+                  "https://github.com/zed-pkg/zed-interfaces.git",
+                  os.environ["ZED_INTERFACES_SHA"],
+              ),
+              "zed-orm-core": (
+                  "https://github.com/zed-pkg/zed-lib-core.git",
+                  os.environ["ZED_LIB_CORE_SHA"],
+              ),
+          }
+          for package, (repository, revision) in pins.items():
+              spec = manifest["dependencies"][package]
+              assert "path" not in spec, spec
+              assert spec["git"] == repository, spec
+              assert spec["rev"] == revision, spec
+              source = f"git+{repository}?rev={revision}#{revision}"
+              assert source in lock, f"Cargo.lock does not pin {package} at {revision}"
+          PY
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
@@ -97,6 +137,7 @@ jobs:
           build-args: |
             ZED_WEB_REVISION=${{ github.sha }}
             ZED_INTERFACES_REVISION=${{ env.ZED_INTERFACES_SHA }}
+            ZED_LIB_CORE_REVISION=${{ env.ZED_LIB_CORE_SHA }}
           tags: |
             ghcr.io/zed-pkg/zed-web-server:${{ github.sha }}
             ghcr.io/zed-pkg/zed-web-server:main
@@ -110,6 +151,7 @@ jobs:
           image="ghcr.io/zed-pkg/zed-web-server:${GITHUB_SHA}"
           test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
           test "$(docker image inspect "$image" --format '{{ index .Config.Labels "io.zpkg.interfaces.revision" }}')" = "$ZED_INTERFACES_SHA"
+          test "$(docker image inspect "$image" --format '{{ index .Config.Labels "io.zpkg.core.revision" }}')" = "$ZED_LIB_CORE_SHA"
 
       - name: Start the read-only UI image
         shell: bash
@@ -149,8 +191,8 @@ jobs:
           docker image inspect "ghcr.io/zed-pkg/zed-web-server:${GITHUB_SHA}" \
             > smoke-diagnostics/image-inspect.json 2>&1
           docker ps -a > smoke-diagnostics/docker-ps.txt 2>&1
-          printf 'web_revision=%s\ninterfaces_revision=%s\n' \
-            "$GITHUB_SHA" "$ZED_INTERFACES_SHA" \
+          printf 'web_revision=%s\ninterfaces_revision=%s\ncore_revision=%s\n' \
+            "$GITHUB_SHA" "$ZED_INTERFACES_SHA" "$ZED_LIB_CORE_SHA" \
             > smoke-diagnostics/source-revisions.txt
           sed -n '1,240p' smoke-diagnostics/container.log
 
@@ -169,8 +211,8 @@ jobs:
           digest="$(awk '$2 == "digest:" && $3 ~ /^sha256:/ {print $3}' <<<"$push_output" | tail -n 1)"
           [[ "$digest" == sha256:* ]] || { echo 'could not recover pushed image digest' >&2; exit 1; }
           docker push ghcr.io/zed-pkg/zed-web-server:main
-          printf 'image=%s@%s\nweb_revision=%s\ninterfaces_revision=%s\n' \
-            'ghcr.io/zed-pkg/zed-web-server' "$digest" "$GITHUB_SHA" "$ZED_INTERFACES_SHA" \
+          printf 'image=%s@%s\nweb_revision=%s\ninterfaces_revision=%s\ncore_revision=%s\n' \
+            'ghcr.io/zed-pkg/zed-web-server' "$digest" "$GITHUB_SHA" "$ZED_INTERFACES_SHA" "$ZED_LIB_CORE_SHA" \
             > smoke-diagnostics/published-image.txt
 
       - name: Upload web smoke and provenance evidence
