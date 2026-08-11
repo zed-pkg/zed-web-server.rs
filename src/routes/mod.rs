@@ -24,6 +24,7 @@ mod health;
 mod home;
 mod package;
 mod search;
+mod session_status;
 
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
      img-src 'self' data: https:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; \
@@ -132,6 +133,12 @@ pub fn router(state: Arc<WebState>) -> Router {
             get(console::package_settings),
         )
         .route("/settings", get(console::user_settings))
+        // Exact, credentialed CORS surface for the static marketing header.
+        // It returns only a boolean, dashboard URL, and coarse recheck hint.
+        .route(
+            "/auth/session/status",
+            get(session_status::get).options(session_status::options),
+        )
         // Exact-client Shared Auth handoff. The callback is backend-only; the
         // browser never receives the delegated zed-pkg API token.
         .route("/auth/sign-in", get(browser_auth::sign_in))
