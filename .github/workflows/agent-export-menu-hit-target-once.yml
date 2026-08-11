@@ -1,0 +1,116 @@
+name: agent export menu hit-target repair once
+
+on:
+  push:
+    branches:
+      - fix/den-3472-export-menu-hit-target
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-export-menu-hit-target-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Apply the bounded stacking-context repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          css_path = Path("assets/dependency-graph.css")
+          css = css_path.read_text()
+          marker = "/* Export and filter menus must remain above the graph stage. */"
+          assert marker not in css, "stacking repair already present"
+          css += """
+
+          /* Export and filter menus must remain above the graph stage. */
+          .dg-toolbar {
+            z-index: 4;
+            overflow: visible;
+          }
+
+          .dg-querybar {
+            z-index: 3;
+            overflow: visible;
+          }
+
+          .dg-stage { z-index: 1; }
+
+          .dg-export-menu[open],
+          .dg-filter-menu[open] { z-index: 5; }
+          """
+          css_path.write_text(css)
+
+          test_path = Path("tests/dependency-graph.mjs")
+          test = test_path.read_text()
+          test = test.replace(
+              'import assert from "node:assert/strict";\n',
+              'import assert from "node:assert/strict";\nimport { readFileSync } from "node:fs";\n',
+              1,
+          )
+          assertion_marker = "const workspaceCss = readFileSync("
+          assert assertion_marker not in test, "stacking regression assertion already present"
+          test += r'''
+
+          const workspaceCss = readFileSync(
+            new URL("../assets/dependency-graph.css", import.meta.url),
+            "utf8"
+          );
+          assert.match(
+            workspaceCss,
+            /\.dg-toolbar\s*\{[^}]*z-index:\s*4;[^}]*overflow:\s*visible;/s,
+            "the toolbar stacking context must remain above the graph stage"
+          );
+          assert.match(
+            workspaceCss,
+            /\.dg-querybar\s*\{[^}]*z-index:\s*3;[^}]*overflow:\s*visible;/s,
+            "the query bar must not clip or fall behind its menus"
+          );
+          assert.match(
+            workspaceCss,
+            /\.dg-stage\s*\{[^}]*z-index:\s*1;/s,
+            "the graph stage must stay below toolbar overlays"
+          );
+          assert.match(
+            workspaceCss,
+            /\.dg-export-menu\[open\],\s*\.dg-filter-menu\[open\]\s*\{[^}]*z-index:\s*5;/s,
+            "open menus must create their own foreground stacking context"
+          );
+          '''
+          test_path.write_text(test)
+          PY
+          node scripts/build-graph-assets.mjs
+          node --check assets/dependency-graph.js
+          node tests/dependency-graph.mjs
+          node scripts/build-graph-assets.mjs --check
+          git diff --check
+          mapfile -t changed < <(git diff --name-only)
+          printf 'changed: %s\n' "${changed[*]}"
+          test "${#changed[@]}" -eq 3
+          test "${changed[0]}" = "assets/dependency-graph.css"
+          test "${changed[1]}" = "static/dependency-graph.css.br"
+          test "${changed[2]}" = "tests/dependency-graph.mjs"
+      - name: Commit the focused product repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/dependency-graph.css static/dependency-graph.css.br tests/dependency-graph.mjs
+          git commit -m "fix(graph): keep export menus above the inspector"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
