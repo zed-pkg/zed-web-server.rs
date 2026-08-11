@@ -67,10 +67,7 @@ fn compressed_graph_asset(content_type: &'static str, bytes: &'static [u8]) -> R
 }
 
 async fn dependency_graph_js() -> Response {
-    compressed_graph_asset(
-        "text/javascript; charset=utf-8",
-        DEPENDENCY_GRAPH_JS_BR,
-    )
+    compressed_graph_asset("text/javascript; charset=utf-8", DEPENDENCY_GRAPH_JS_BR)
 }
 
 async fn dependency_graph_css() -> Response {
@@ -327,11 +324,12 @@ mod tests {
 
     #[test]
     fn graph_assets_are_immutable_brotli_responses() {
-        let response = compressed_graph_asset(
-            "text/javascript; charset=utf-8",
-            DEPENDENCY_GRAPH_JS_BR,
+        let response =
+            compressed_graph_asset("text/javascript; charset=utf-8", DEPENDENCY_GRAPH_JS_BR);
+        assert_eq!(
+            response.headers().get(header::CONTENT_ENCODING).unwrap(),
+            "br"
         );
-        assert_eq!(response.headers().get(header::CONTENT_ENCODING).unwrap(), "br");
         assert_eq!(
             response.headers().get(header::CACHE_CONTROL).unwrap(),
             IMMUTABLE_ASSET_CACHE
