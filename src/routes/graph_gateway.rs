@@ -128,11 +128,17 @@ pub async fn declared(
         return error_json(StatusCode::NOT_ACCEPTABLE, "unsupported graph format");
     }
     let Some(base) = upstream_base(&state) else {
-        return error_json(StatusCode::SERVICE_UNAVAILABLE, "graph API upstream not configured");
+        return error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "graph API upstream not configured",
+        );
     };
     let Ok(target) = declared_graph_url(&base, &org, &name, &version, query.format.as_deref())
     else {
-        return error_json(StatusCode::SERVICE_UNAVAILABLE, "graph API upstream is invalid");
+        return error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "graph API upstream is invalid",
+        );
     };
 
     let upstream = match state
@@ -277,8 +283,14 @@ mod tests {
         let response = app(upstream).oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers()[header::CONTENT_TYPE], "text/vnd.graphviz; charset=utf-8");
-        assert_eq!(response.headers()[header::CONTENT_DISPOSITION], "attachment; filename=graph.dot");
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/vnd.graphviz; charset=utf-8"
+        );
+        assert_eq!(
+            response.headers()[header::CONTENT_DISPOSITION],
+            "attachment; filename=graph.dot"
+        );
         assert_eq!(response.headers()[header::ETAG], "\"graph-etag\"");
         assert_eq!(response.headers()[DIGEST_HEADER], "sha256:semantic");
         assert!(response.headers().get(header::SET_COOKIE).is_none());
