@@ -12,6 +12,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
+use crate::browser_auth::{self, SessionContinuity};
 use crate::session;
 use crate::state::WebState;
 
@@ -33,7 +34,22 @@ fn origin_is_allowed(headers: &HeaderMap) -> bool {
 fn add_non_cacheable_headers(response: &mut Response, preflight: bool) {
     response
         .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        .insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store, max-age=0"),
+        );
+    response.headers_mut().insert(
+        cors_header("pragma"),
+        HeaderValue::from_static("no-cache"),
+    );
+    response.headers_mut().insert(
+        cors_header("cross-origin-resource-policy"),
+        HeaderValue::from_static("same-site"),
+    );
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
     response.headers_mut().insert(
         header::VARY,
         HeaderValue::from_static(if preflight {
@@ -90,14 +106,34 @@ pub async fn get(State(state): State<Arc<WebState>>, headers: HeaderMap) -> Resp
         return rejected(StatusCode::FORBIDDEN, "origin not allowed", false);
     }
 
-    let viewer = session::resolve(&state, &headers).await;
-    let mut response = axum::Json(status_document(
-        viewer.is_signed_in(),
-        dashboard_url(&state),
-    ))
-    .into_response();
+    let continuity =
+        browser_auth::verify_session_continuity(&state, &headers, CHECK_AFTER_SECONDS as i64).await;
+    let (may_be_authenticated, status, cookie_update) = match continuity {
+        SessionContinuity::Anonymous(update) => (false, StatusCode::OK, update),
+        SessionContinuity::Authenticated(update) => (true, StatusCode::OK, update),
+        SessionContinuity::Unavailable => (false, StatusCode::SERVICE_UNAVAILABLE, None),
+    };
+    let database_unavailable = may_be_authenticated && state.db.is_none();
+    let authenticated = if may_be_authenticated && !database_unavailable {
+        session::resolve(&state, &headers).await.is_signed_in()
+    } else {
+        false
+    };
+    let response_status = if database_unavailable {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        status
+    };
+    let mut response = (
+        response_status,
+        axum::Json(status_document(authenticated, dashboard_url(&state))),
+    )
+        .into_response();
     add_non_cacheable_headers(&mut response, false);
     add_allowed_cors_headers(&mut response);
+    if let Some(update) = cookie_update {
+        update.apply(&mut response);
+    }
     response
 }
 
@@ -199,8 +235,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "no-store, max-age=0"
+        );
         assert_eq!(response.headers()[header::VARY], "Origin");
+        assert_eq!(response.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(response.headers()["cross-origin-resource-policy"], "same-site");
         assert_eq!(
             response.headers()["access-control-allow-origin"],
             MARKETING_ORIGIN
@@ -244,7 +285,10 @@ mod tests {
                     .get("access-control-allow-origin")
                     .is_none()
             );
-            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                "no-store, max-age=0"
+            );
             let document = json(response).await;
             assert_eq!(
                 document,
@@ -283,6 +327,24 @@ mod tests {
                 .get("access-control-allow-origin")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn malformed_session_cookie_is_cleared_without_identity_disclosure() {
+        let request = axum::http::Request::builder()
+            .uri("/auth/session/status")
+            .header(header::ORIGIN, MARKETING_ORIGIN)
+            .header(header::COOKIE, "__Host-zpkg_session=malformed")
+            .body(Body::empty())
+            .unwrap();
+        let response = app().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let clear = response.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(clear.starts_with("__Host-zpkg_session=;"));
+        assert!(clear.contains("Max-Age=0"));
+        let document = json(response).await;
+        assert_eq!(document["authenticated"], false);
+        assert_eq!(document.as_object().unwrap().len(), 3);
     }
 
     #[test]
