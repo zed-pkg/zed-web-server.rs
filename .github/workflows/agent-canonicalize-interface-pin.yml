@@ -22,18 +22,17 @@ jobs:
         with:
           persist-credentials: true
           fetch-depth: 0
-      - name: Replace the pre-squash contract revision
+      - name: Replace the pre-squash contract revision outside workflows
         shell: bash
         run: |
           set -euo pipefail
           old='4d40ae96f5ce6240356ad4fa5e455d0310b1c97d'
           new='15577e17a820c3b2b1a39ee178d4645185309a05'
-          helper='.github/workflows/agent-canonicalize-interface-pin.yml'
-          mapfile -t files < <(git grep -l "$old" -- . ":(exclude)$helper")
-          printf 'canonicalizing interface pin in: %s\n' "${files[*]}"
+          mapfile -t files < <(git grep -l "$old" -- . ':(exclude).github/workflows/**')
+          printf 'canonicalizing non-workflow interface pin in: %s\n' "${files[*]}"
           test "${#files[@]}" -gt 0
           sed -i "s/$old/$new/g" "${files[@]}"
-          ! git grep -q "$old" -- . ":(exclude)$helper"
+          ! git grep -q "$old" -- . ':(exclude).github/workflows/**'
           git diff --check
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
