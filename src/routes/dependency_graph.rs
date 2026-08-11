@@ -28,6 +28,9 @@ enum ExportRoute {
     Extended(&'static str),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GraphUrlError;
+
 impl ExportRoute {
     fn parse(value: &str) -> Option<Self> {
         Some(match value.to_ascii_lowercase().as_str() {
@@ -56,7 +59,7 @@ pub async fn package_document(
     }
     let url = match declared_graph_url(api_base(&state), &org, &name, &version, Some("json")) {
         Ok(url) => url,
-        Err(response) => return response,
+        Err(_) => return upstream_configuration_error(),
     };
     relay(&state, &headers, url, None).await
 }
@@ -72,7 +75,7 @@ pub async fn latest_package_document(
     };
     let url = match declared_graph_url(api_base(&state), &org, &name, &version, Some("json")) {
         Ok(url) => url,
-        Err(response) => return response,
+        Err(_) => return upstream_configuration_error(),
     };
     relay(&state, &headers, url, Some(&version)).await
 }
@@ -102,7 +105,7 @@ pub async fn package_export(
     };
     let url = match url {
         Ok(url) => url,
-        Err(response) => return response,
+        Err(_) => return upstream_configuration_error(),
     };
     relay(&state, &headers, url, None).await
 }
@@ -191,10 +194,10 @@ fn declared_graph_url(
     name: &str,
     version: &str,
     format: Option<&str>,
-) -> Result<Url, Response> {
+) -> Result<Url, GraphUrlError> {
     let mut url = base_url(base)?;
     url.path_segments_mut()
-        .map_err(|_| upstream_configuration_error())?
+        .map_err(|_| GraphUrlError)?
         .extend([
             "v1",
             "packages",
@@ -220,10 +223,10 @@ fn extended_export_url(
     name: &str,
     version: &str,
     format: &str,
-) -> Result<Url, Response> {
+) -> Result<Url, GraphUrlError> {
     let mut url = base_url(base)?;
     url.path_segments_mut()
-        .map_err(|_| upstream_configuration_error())?
+        .map_err(|_| GraphUrlError)?
         .extend([
             "v1",
             "packages",
@@ -238,11 +241,11 @@ fn extended_export_url(
     Ok(url)
 }
 
-fn base_url(base: &str) -> Result<Url, Response> {
+fn base_url(base: &str) -> Result<Url, GraphUrlError> {
     let normalized = format!("{}/", base.trim_end_matches('/'));
     Url::parse(&normalized).map_err(|error| {
         tracing::error!(%error, "ZED_API_URL is not a valid absolute URL");
-        upstream_configuration_error()
+        GraphUrlError
     })
 }
 
