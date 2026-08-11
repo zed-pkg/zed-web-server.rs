@@ -44,7 +44,7 @@ pin is:
 ```toml
 zed-orm-core = {
   git = "https://github.com/zed-pkg/zed-lib-core.git",
-  rev = "18fd49ba4d73689a941eaa56ef20a12a6c90a993"
+  rev = "38ef3f50638614a14170d5c677173e040e916a6d"
 }
 ```
 

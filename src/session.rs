@@ -6,7 +6,9 @@
 //! then resolve that id through the read-only `zed-orm-core` boundary.
 
 use axum::http::HeaderMap;
+use uuid::Uuid;
 use zed_orm_core::models::{OrgSummary, UserSummary};
+use zed_orm_core::{OrmError, ReadContext};
 
 use crate::state::WebState;
 
@@ -70,6 +72,38 @@ impl Viewer {
     pub fn visible_org_ids(&self) -> Vec<uuid::Uuid> {
         self.orgs().iter().map(|org| org.id).collect()
     }
+}
+
+/// Recheck one organization membership by its exact composite key.
+///
+/// `Viewer::orgs` remains the bounded header/switcher projection. It is useful
+/// presentation data, but authorization for an addressed private resource must
+/// not depend on whether a membership happened to fit inside that page.
+pub async fn exact_org_role(
+    db: &ReadContext,
+    viewer: &Viewer,
+    org_id: Uuid,
+) -> Result<Option<String>, OrmError> {
+    let Some(user) = viewer.user() else {
+        return Ok(None);
+    };
+    zed_orm_core::read::org_role_for_user(db, org_id, user.id).await
+}
+
+/// Recheck one direct project membership by its exact composite key.
+///
+/// Organization and project membership are separate authorities. Callers that
+/// accept either scope combine this result with [`exact_org_role`] rather than
+/// scanning either page-oriented membership listing.
+pub async fn exact_project_role(
+    db: &ReadContext,
+    viewer: &Viewer,
+    project_id: Uuid,
+) -> Result<Option<String>, OrmError> {
+    let Some(user) = viewer.user() else {
+        return Ok(None);
+    };
+    zed_orm_core::read::project_role_for_user(db, project_id, user.id).await
 }
 
 const CUSTOMER_REALM: &str = "customer";

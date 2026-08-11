@@ -5,14 +5,19 @@
 //! terminate at same-origin BFF routes, which rotate/delegate Shared Auth
 //! credentials and forward canonical JSON requests to the write-enabled API.
 
+use std::convert::Infallible;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::Router;
+use axum::body::{Body, Bytes, HttpBody};
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{any, get, post};
+use http_body::Frame;
 use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::browser_auth;
@@ -40,6 +45,34 @@ const DEPENDENCY_GRAPH_JS: &[u8] = include_bytes!("../../assets/dependency-graph
 const DEPENDENCY_GRAPH_JS_BR: &[u8] = include_bytes!("../../static/dependency-graph.js.br");
 const DEPENDENCY_GRAPH_CSS: &[u8] = include_bytes!("../../assets/dependency-graph.css");
 const DEPENDENCY_GRAPH_CSS_BR: &[u8] = include_bytes!("../../static/dependency-graph.css.br");
+
+/// An empty response body whose size is deliberately unknown to Hyper.
+///
+/// Hyper strips an explicit `Content-Length` from a known-empty 304 response,
+/// even though that field describes the selected representation rather than a
+/// message body for this status. Keeping the size hint unknown preserves that
+/// metadata on the wire while `poll_frame` guarantees no bytes are emitted.
+#[derive(Debug)]
+struct MetadataOnlyBody;
+
+impl HttpBody for MetadataOnlyBody {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        Poll::Ready(None)
+    }
+}
+
+fn not_modified_with_representation_metadata(headers: HeaderMap) -> Response {
+    let mut response = Response::new(Body::new(MetadataOnlyBody));
+    *response.status_mut() = StatusCode::NOT_MODIFIED;
+    *response.headers_mut() = headers;
+    response
+}
 
 fn security_header(
     name: header::HeaderName,
@@ -78,7 +111,37 @@ fn graph_asset(
     } else {
         source
     };
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&bytes.len().to_string())
+            .expect("a static asset length is a valid Content-Length"),
+    );
+    let etag = format!("\"{:016x}\"", fnv1a(bytes));
+    if let Ok(value) = HeaderValue::from_str(&etag) {
+        headers.insert(header::ETAG, value);
+    }
+    if if_none_match_matches(request_headers, &etag) {
+        return not_modified_with_representation_metadata(headers);
+    }
     (headers, bytes).into_response()
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    })
+}
+
+fn if_none_match_matches(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .any(|candidate| {
+            candidate == "*" || candidate.strip_prefix("W/").unwrap_or(candidate) == etag
+        })
 }
 
 fn accepts_brotli(headers: &HeaderMap) -> bool {
@@ -418,6 +481,53 @@ mod tests {
             DEPENDENCY_GRAPH_JS_BR,
         );
         assert_eq!(response.headers()[header::CONTENT_ENCODING], "br");
+    }
+
+    #[tokio::test]
+    async fn graph_assets_revalidate_each_content_encoding_with_a_strong_etag() {
+        let first = graph_asset(
+            &HeaderMap::new(),
+            "text/javascript; charset=utf-8",
+            DEPENDENCY_GRAPH_JS,
+            DEPENDENCY_GRAPH_JS_BR,
+        );
+        let source_etag = first.headers()[header::ETAG].clone();
+        assert!(!source_etag.as_bytes().starts_with(b"W/"));
+
+        let mut conditional = HeaderMap::new();
+        conditional.insert(header::IF_NONE_MATCH, source_etag.clone());
+        let not_modified = graph_asset(
+            &conditional,
+            "text/javascript; charset=utf-8",
+            DEPENDENCY_GRAPH_JS,
+            DEPENDENCY_GRAPH_JS_BR,
+        );
+        assert_eq!(not_modified.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(not_modified.headers()[header::ETAG], source_etag);
+        assert_eq!(
+            not_modified.headers()[header::CONTENT_LENGTH],
+            DEPENDENCY_GRAPH_JS.len().to_string()
+        );
+        assert!(not_modified.body().size_hint().upper().is_none());
+        let body = axum::body::to_bytes(not_modified.into_body(), 1)
+            .await
+            .expect("metadata-only body is readable");
+        assert!(body.is_empty());
+
+        conditional.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("br"));
+        let compressed = graph_asset(
+            &conditional,
+            "text/javascript; charset=utf-8",
+            DEPENDENCY_GRAPH_JS,
+            DEPENDENCY_GRAPH_JS_BR,
+        );
+        assert_eq!(compressed.status(), StatusCode::OK);
+        assert_ne!(compressed.headers()[header::ETAG], source_etag);
+        assert_eq!(compressed.headers()[header::CONTENT_ENCODING], "br");
+        assert_eq!(
+            compressed.headers()[header::CONTENT_LENGTH],
+            DEPENDENCY_GRAPH_JS_BR.len().to_string()
+        );
     }
 
     #[test]
