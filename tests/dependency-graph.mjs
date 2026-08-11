@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   ZedDependencyGraph,
@@ -428,5 +429,94 @@ for (let index = 0; index < 120; index += 1) {
 }
 assert.equal(serialized.cache.size, 4, "document cache remains bounded");
 assert.ok(!serialized.cache.has("graph-0"), "the oldest cached graph is evicted first");
+
+function declaredDocument(name, dependencies = []) {
+  return {
+    schema: "zpkg/dependency-graph/v1",
+    view: "declared",
+    package: { registry_id: "registry:test", org: "acme", name, version: "1.0.0" },
+    dependencies,
+  };
+}
+
+const fixtures = new ZedDependencyGraph();
+fixtures.addDocument(declaredDocument("one"), { primary: true });
+assert.equal(fixtures.nodes.size, 1);
+assert.equal(fixtures.edges.length, 0);
+fixtures.layoutLayered();
+assert.deepEqual([...fixtures.positions.values()], [{ x: 0, y: 0 }]);
+
+fixtures.clearGraph();
+const duplicate = {
+  registry_id: "registry:test",
+  org: "acme",
+  name: "duplicate",
+  requirement: "^1.0.0",
+  kind: "runtime",
+};
+fixtures.addDocument(declaredDocument("root", [duplicate, duplicate]), { primary: true });
+assert.equal(fixtures.edges.length, 1);
+assert.equal(fixtures.edges[0].count, 2);
+fixtures.layoutRadial();
+const radialLayout = [...fixtures.positions].map(([id, position]) => [id, { ...position }]);
+fixtures.layoutRadial();
+assert.deepEqual([...fixtures.positions], radialLayout);
+fixtures.layoutForce();
+const forceLayout = [...fixtures.positions].map(([id, position]) => [id, { ...position }]);
+fixtures.layoutForce();
+assert.deepEqual([...fixtures.positions], forceLayout);
+
+fixtures.clearGraph();
+const wideDependencies = Array.from({ length: 400 }, (_, index) => ({
+  registry_id: "registry:test",
+  org: "acme",
+  name: `wide-${String(index).padStart(3, "0")}`,
+  requirement: "*",
+  kind: "runtime",
+}));
+fixtures.addDocument(declaredDocument("wide-root", wideDependencies), { primary: true });
+fixtures.layoutLayered();
+const firstLayout = [...fixtures.positions].map(([id, position]) => [id, { ...position }]);
+fixtures.layoutLayered();
+assert.deepEqual([...fixtures.positions], firstLayout);
+
+const wideProjection = projectionSvgDocument({
+  nodes: [...fixtures.nodes.values()],
+  edges: fixtures.edges,
+  positions: fixtures.positions,
+  roots: fixtures.roots,
+  selectedId: [...fixtures.roots][0],
+  title: "Wide <projection>",
+});
+assert.ok(wideProjection);
+assert.ok(wideProjection.width <= 4096);
+assert.ok(wideProjection.height <= 4096);
+assert.match(wideProjection.svg, /Wide &lt;projection&gt;/);
+assert.match(wideProjection.svg, /400 relationships/);
+
+const workspaceCss = readFileSync(
+  new URL("../assets/dependency-graph.css", import.meta.url),
+  "utf8"
+);
+assert.match(
+  workspaceCss,
+  /\.dg-toolbar\s*\{[^}]*z-index:\s*4;[^}]*overflow:\s*visible;/s,
+  "the toolbar stacking context must remain above the graph stage"
+);
+assert.match(
+  workspaceCss,
+  /\.dg-querybar\s*\{[^}]*z-index:\s*3;[^}]*overflow:\s*visible;/s,
+  "the query bar must not clip or fall behind its menus"
+);
+assert.match(
+  workspaceCss,
+  /\.dg-stage\s*\{[^}]*z-index:\s*1;/s,
+  "the graph stage must stay below toolbar overlays"
+);
+assert.match(
+  workspaceCss,
+  /\.dg-export-menu\[open\],\s*\.dg-filter-menu\[open\]\s*\{[^}]*z-index:\s*5;/s,
+  "open menus must create their own foreground stacking context"
+);
 
 console.log("dependency graph workspace tests passed");

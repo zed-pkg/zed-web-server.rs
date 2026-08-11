@@ -599,3 +599,19 @@ zed-dependency-graph noscript {
   .dg-querybar summary { transition: none; }
   .dg-status[data-state="loading"]::before { animation: none; }
 }
+
+/* Export and filter menus must remain above the graph stage. */
+.dg-toolbar {
+  z-index: 4;
+  overflow: visible;
+}
+
+.dg-querybar {
+  z-index: 3;
+  overflow: visible;
+}
+
+.dg-stage { z-index: 1; }
+
+.dg-export-menu[open],
+.dg-filter-menu[open] { z-index: 5; }

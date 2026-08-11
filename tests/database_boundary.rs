@@ -26,11 +26,11 @@ fn package_manifest_and_lock_pin_the_cross_repository_contracts() {
     for (repository, revision) in [
         (
             "https://github.com/zed-pkg/zed-interfaces.git",
-            "15577e17a820c3b2b1a39ee178d4645185309a05",
+            "7d31f80dd8a310f218931165a3ad636a2f32b932",
         ),
         (
             "https://github.com/zed-pkg/zed-lib-core.git",
-            "38ef3f50638614a14170d5c677173e040e916a6d",
+            "c3d486a1519381276fbec02aa25247f542924443",
         ),
     ] {
         assert!(
@@ -68,8 +68,8 @@ fn package_manifest_and_lock_pin_the_cross_repository_contracts() {
 
 #[test]
 fn ci_and_container_publisher_verify_the_exact_source_graph() {
-    let interfaces = "15577e17a820c3b2b1a39ee178d4645185309a05";
-    let core = "38ef3f50638614a14170d5c677173e040e916a6d";
+    let interfaces = "7d31f80dd8a310f218931165a3ad636a2f32b932";
+    let core = "c3d486a1519381276fbec02aa25247f542924443";
     for workflow in [
         read(".github/workflows/ci.yml"),
         read(".github/workflows/publish-container.yml"),
