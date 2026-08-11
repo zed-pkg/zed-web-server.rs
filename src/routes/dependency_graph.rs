@@ -417,11 +417,7 @@ mod tests {
     #[test]
     fn graph_api_origin_works_without_shared_auth() {
         assert_eq!(
-            configured_api_base(
-                None,
-                None,
-                Some(" http://127.0.0.1:49152/ ")
-            ),
+            configured_api_base(None, None, Some(" http://127.0.0.1:49152/ ")),
             "http://127.0.0.1:49152"
         );
         assert_eq!(
@@ -440,7 +436,10 @@ mod tests {
             ),
             "https://delegated.internal"
         );
-        assert_eq!(configured_api_base(None, Some("  "), None), DEFAULT_API_BASE);
+        assert_eq!(
+            configured_api_base(None, Some("  "), None),
+            DEFAULT_API_BASE
+        );
     }
 
     #[test]
