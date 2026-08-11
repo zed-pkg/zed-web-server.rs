@@ -30,8 +30,15 @@ jobs:
         run: |
           set -euo pipefail
           cargo fmt --all
-          changed="$(git diff --name-only)"
-          test "$changed" = "src/routes/dependency_graph.rs"
+          mapfile -t changed < <(git diff --name-only)
+          printf 'rustfmt changed: %s\n' "${changed[*]}"
+          test "${#changed[@]}" -gt 0
+          for path in "${changed[@]}"; do
+            case "$path" in
+              *.rs) ;;
+              *) echo "unexpected non-Rust rustfmt delta: $path" >&2; exit 1 ;;
+            esac
+          done
           git diff --check
       - name: Commit exact formatting repair
         shell: bash
@@ -39,6 +46,6 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/routes/dependency_graph.rs
-          git commit -m "style(graph): apply rustfmt to exact version reads"
+          git add -- '*.rs'
+          git commit -m "style(graph): apply rustfmt to projection hardening"
           git push origin "HEAD:${GITHUB_REF_NAME}"
