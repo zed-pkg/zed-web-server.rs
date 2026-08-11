@@ -31,10 +31,8 @@ pub async fn organization(
     let packages = zed_orm_core::read::packages_for_org(db, org.id, &org.slug, true)
         .await
         .unwrap_or_default();
-    let rows: Vec<components::PackageRow> = packages
-        .iter()
-        .map(super::package::summary_row)
-        .collect();
+    let rows: Vec<components::PackageRow> =
+        packages.iter().map(super::package::summary_row).collect();
 
     let content = html! {
         div class="pkg-head" {
@@ -97,10 +95,8 @@ pub async fn project(
     let packages = zed_orm_core::read::packages_for_project(db, project.id, &org.slug)
         .await
         .unwrap_or_default();
-    let rows: Vec<components::PackageRow> = packages
-        .iter()
-        .map(super::package::summary_row)
-        .collect();
+    let rows: Vec<components::PackageRow> =
+        packages.iter().map(super::package::summary_row).collect();
 
     let content = html! {
         div class="pkg-head" {
