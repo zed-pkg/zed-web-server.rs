@@ -141,6 +141,10 @@ zed-dependency-graph noscript {
   backdrop-filter: blur(12px);
 }
 
+/* Keep both popup menus above the later graph stage stacking context. */
+.dg-toolbar { z-index: 3; }
+.dg-querybar { z-index: 2; }
+
 .dg-querybar {
   align-items: center;
   padding-top: 9px;

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   ZedDependencyGraph,
@@ -21,6 +22,13 @@ import {
 } from "../assets/dependency-graph.js";
 
 const digest = `sha256:${"a".repeat(64)}`;
+const graphStyles = readFileSync(
+  new URL("../assets/dependency-graph.css", import.meta.url),
+  "utf8"
+);
+
+assert.match(graphStyles, /\.dg-toolbar\s*\{\s*z-index:\s*3;\s*\}/);
+assert.match(graphStyles, /\.dg-querybar\s*\{\s*z-index:\s*2;\s*\}/);
 
 function sorted(values) {
   return [...values].sort();
