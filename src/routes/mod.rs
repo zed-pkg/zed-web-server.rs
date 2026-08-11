@@ -33,8 +33,12 @@ const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; st
 const STRICT_TRANSPORT_SECURITY: &str = "max-age=63072000; includeSubDomains";
 const SHARED_AUTH_UI_PREFIX: &str = "/shared-auth-ui";
 const MARKETING_AUTH_ENTRY: &str = "/auth/sign-in?return_to=%2Fdashboard";
-const IMMUTABLE_ASSET_CACHE: &str = "public, max-age=31536000, immutable";
+// These routes are stable rather than content-hashed. Revalidation prevents a
+// deployment from being hidden behind a year-long cached copy of an older UI.
+const GRAPH_ASSET_CACHE: &str = "public, max-age=300, must-revalidate";
+const DEPENDENCY_GRAPH_JS: &[u8] = include_bytes!("../../assets/dependency-graph.js");
 const DEPENDENCY_GRAPH_JS_BR: &[u8] = include_bytes!("../../static/dependency-graph.js.br");
+const DEPENDENCY_GRAPH_CSS: &[u8] = include_bytes!("../../assets/dependency-graph.css");
 const DEPENDENCY_GRAPH_CSS_BR: &[u8] = include_bytes!("../../static/dependency-graph.css.br");
 
 fn security_header(
@@ -52,26 +56,88 @@ async fn marketing_auth_entry() -> Redirect {
     Redirect::temporary(MARKETING_AUTH_ENTRY)
 }
 
-/// Serve the dependency graph assets without a JavaScript package manager or
-/// external CDN. The committed Brotli bytes are content-addressed by each
-/// deployment and may be cached indefinitely.
-fn compressed_graph_asset(content_type: &'static str, bytes: &'static [u8]) -> Response {
+/// Serve inspectable source assets without a JavaScript package manager or an
+/// external CDN. The checked-in Brotli files are reproducible build outputs;
+/// clients that do not advertise Brotli receive the authoritative source.
+fn graph_asset(
+    request_headers: &HeaderMap,
+    content_type: &'static str,
+    source: &'static [u8],
+    brotli: &'static [u8],
+) -> Response {
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
-    headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("br"));
     headers.insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_static(IMMUTABLE_ASSET_CACHE),
+        HeaderValue::from_static(GRAPH_ASSET_CACHE),
     );
+    headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+    let bytes = if accepts_brotli(request_headers) {
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("br"));
+        brotli
+    } else {
+        source
+    };
     (headers, bytes).into_response()
 }
 
-async fn dependency_graph_js() -> Response {
-    compressed_graph_asset("text/javascript; charset=utf-8", DEPENDENCY_GRAPH_JS_BR)
+fn accepts_brotli(headers: &HeaderMap) -> bool {
+    let mut explicit = None::<f32>;
+    let mut wildcard = None::<f32>;
+    for value in headers
+        .get_all(header::ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+    {
+        for coding in value.split(',') {
+            let mut parts = coding.split(';');
+            let name = parts.next().unwrap_or_default().trim();
+            let mut quality = 1.0;
+            for parameter in parts {
+                let Some((key, value)) = parameter.trim().split_once('=') else {
+                    quality = 0.0;
+                    continue;
+                };
+                if key.trim().eq_ignore_ascii_case("q") {
+                    quality = value
+                        .trim()
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|value| (0.0..=1.0).contains(value))
+                        .unwrap_or(0.0);
+                }
+            }
+            let destination = if name.eq_ignore_ascii_case("br") {
+                Some(&mut explicit)
+            } else if name == "*" {
+                Some(&mut wildcard)
+            } else {
+                None
+            };
+            if let Some(destination) = destination {
+                *destination = Some(destination.unwrap_or(0.0).max(quality));
+            }
+        }
+    }
+    explicit.or(wildcard).is_some_and(|quality| quality > 0.0)
 }
 
-async fn dependency_graph_css() -> Response {
-    compressed_graph_asset("text/css; charset=utf-8", DEPENDENCY_GRAPH_CSS_BR)
+async fn dependency_graph_js(headers: HeaderMap) -> Response {
+    graph_asset(
+        &headers,
+        "text/javascript; charset=utf-8",
+        DEPENDENCY_GRAPH_JS,
+        DEPENDENCY_GRAPH_JS_BR,
+    )
+}
+
+async fn dependency_graph_css(headers: HeaderMap) -> Response {
+    graph_asset(
+        &headers,
+        "text/css; charset=utf-8",
+        DEPENDENCY_GRAPH_CSS,
+        DEPENDENCY_GRAPH_CSS_BR,
+    )
 }
 
 /// `/dashboard` is intentionally organization-neutral. Resolve the product
@@ -323,16 +389,49 @@ mod tests {
     }
 
     #[test]
-    fn graph_assets_are_immutable_brotli_responses() {
-        let response =
-            compressed_graph_asset("text/javascript; charset=utf-8", DEPENDENCY_GRAPH_JS_BR);
-        assert_eq!(
-            response.headers().get(header::CONTENT_ENCODING).unwrap(),
-            "br"
+    fn graph_assets_negotiate_brotli_with_a_source_fallback() {
+        let response = graph_asset(
+            &HeaderMap::new(),
+            "text/javascript; charset=utf-8",
+            DEPENDENCY_GRAPH_JS,
+            DEPENDENCY_GRAPH_JS_BR,
         );
+        assert!(response.headers().get(header::CONTENT_ENCODING).is_none());
         assert_eq!(
             response.headers().get(header::CACHE_CONTROL).unwrap(),
-            IMMUTABLE_ASSET_CACHE
+            GRAPH_ASSET_CACHE
         );
+        assert_eq!(
+            response.headers().get(header::VARY).unwrap(),
+            "Accept-Encoding"
+        );
+
+        let mut accepts = HeaderMap::new();
+        accepts.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip, br;q=0.8"),
+        );
+        let response = graph_asset(
+            &accepts,
+            "text/javascript; charset=utf-8",
+            DEPENDENCY_GRAPH_JS,
+            DEPENDENCY_GRAPH_JS_BR,
+        );
+        assert_eq!(response.headers()[header::CONTENT_ENCODING], "br");
+    }
+
+    #[test]
+    fn explicit_brotli_rejection_overrides_the_wildcard() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("*;q=1, br;q=0"),
+        );
+        assert!(!accepts_brotli(&headers));
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("BR;Q=0.5"),
+        );
+        assert!(accepts_brotli(&headers));
     }
 }

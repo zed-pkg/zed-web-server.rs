@@ -521,6 +521,7 @@ zed-dependency-graph {
 }
 .dg-accessible > div { overflow-x: auto; padding: 0 18px 18px; }
 .dg-accessible table { width: 100%; border-collapse: collapse; font-size: 0.72rem; }
+.dg-accessible caption { padding: 0 0 8px; color: var(--muted); text-align: left; }
 .dg-accessible th,
 .dg-accessible td { padding: 7px 8px; border-bottom: 1px solid var(--border); text-align: left; }
 .dg-accessible th { color: var(--muted); font-weight: 500; }
@@ -543,6 +544,12 @@ zed-dependency-graph {
   .dg-querybar { padding-inline: 10px; }
   .dg-field,
   .dg-version-field select { width: 100%; }
+  .dg-field select,
+  .dg-field input,
+  .dg-toolbar button,
+  .dg-querybar button,
+  .dg-toolbar summary,
+  .dg-querybar summary { min-height: 42px; }
   .dg-segmented { order: 6; width: 100%; }
   .dg-segmented button { flex: 1; }
   .dg-export-menu { margin-left: 0; }

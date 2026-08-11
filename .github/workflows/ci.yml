@@ -17,7 +17,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  ZED_INTERFACES_SHA: 5394b2e7b070354ee79a4c6ac79c26d6264970cd
+  ZED_INTERFACES_SHA: b795c92126202cd1e4bd2365eb58d8cefa2095c3
+  ZED_LIB_CORE_SHA: fc4f2677a2315d522913bef05a1c0d23f8208960
 
 jobs:
   test:
@@ -34,16 +35,49 @@ jobs:
           ref: ${{ env.ZED_INTERFACES_SHA }}
           path: zed-interfaces
           persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: zed-pkg/zed-lib-core
+          ref: ${{ env.ZED_LIB_CORE_SHA }}
+          path: zed-lib-core
+          persist-credentials: false
       - name: Verify the complete source graph
         shell: bash
         run: |
           set -euo pipefail
           test "$(git -C zed-web-server.rs rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git -C zed-interfaces rev-parse HEAD)" = "$ZED_INTERFACES_SHA"
+          test "$(git -C zed-lib-core rev-parse HEAD)" = "$ZED_LIB_CORE_SHA"
+          cd zed-web-server.rs
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import tomllib
+
+          manifest = tomllib.loads(Path("Cargo.toml").read_text())
+          lock = Path("Cargo.lock").read_text()
+          pins = {
+              "zed-interfaces": (
+                  "https://github.com/zed-pkg/zed-interfaces.git",
+                  os.environ["ZED_INTERFACES_SHA"],
+              ),
+              "zed-orm-core": (
+                  "https://github.com/zed-pkg/zed-lib-core.git",
+                  os.environ["ZED_LIB_CORE_SHA"],
+              ),
+          }
+          for package, (repository, revision) in pins.items():
+              spec = manifest["dependencies"][package]
+              assert "path" not in spec, spec
+              assert spec["git"] == repository, spec
+              assert spec["rev"] == revision, spec
+              source = f"git+{repository}?rev={revision}#{revision}"
+              assert source in lock, f"Cargo.lock does not pin {package} at {revision}"
+          PY
       - name: Validate workflow syntax
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
         with:
-          args: zed-web-server.rs/.github/workflows/ci.yml
+          args: zed-web-server.rs/.github/workflows/ci.yml zed-web-server.rs/.github/workflows/publish-container.yml
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: rustfmt, clippy
@@ -65,6 +99,11 @@ jobs:
       - name: Format
         working-directory: zed-web-server.rs
         run: cargo fmt --all -- --check
+      - name: Test self-hosted dependency graph workspace
+        working-directory: zed-web-server.rs
+        run: |
+          node --check assets/dependency-graph.js
+          node tests/dependency-graph.mjs
       - name: Check all targets
         working-directory: zed-web-server.rs
         run: cargo check --locked --all-targets

@@ -3,6 +3,9 @@ const NODE_WIDTH = 224;
 const NODE_HEIGHT = 64;
 const SCOPE_LIMIT = 80;
 const FORCE_LIMIT = 260;
+const MAX_GRAPH_NODES = 3000;
+const MAX_GRAPH_EDGES = 12000;
+const HTMLElementBase = globalThis.HTMLElement || class {};
 
 const KIND_LABELS = {
   runtime: "Runtime",
@@ -25,17 +28,21 @@ const EXPORT_FORMATS = [
   ["mermaid", "Mermaid"],
 ];
 
-class ZedDependencyGraph extends HTMLElement {
+class ZedDependencyGraph extends HTMLElementBase {
   constructor() {
     super();
     this.mode = "package";
     this.nodes = new Map();
     this.edges = [];
+    this.edgeByKey = new Map();
+    this.renderedNodeElements = new Map();
+    this.renderedEdgesByNode = new Map();
     this.roots = new Set();
     this.positions = new Map();
     this.selectedId = null;
     this.pathStartId = null;
     this.focusNodes = null;
+    this.focusEdges = null;
     this.focusLabel = "";
     this.searchTerm = "";
     this.layoutName = "layered";
@@ -51,6 +58,7 @@ class ZedDependencyGraph extends HTMLElement {
     this.handleWindowPointerMove = (event) => this.onPointerMove(event);
     this.handleWindowPointerUp = (event) => this.onPointerUp(event);
     this.handleHashChange = () => this.restoreSelectionFromHash();
+    this.searchFrame = null;
   }
 
   connectedCallback() {
@@ -73,7 +81,9 @@ class ZedDependencyGraph extends HTMLElement {
     window.removeEventListener("pointerup", this.handleWindowPointerUp);
     window.removeEventListener("hashchange", this.handleHashChange);
     this.resizeObserver?.disconnect();
+    if (this.searchFrame !== null) cancelAnimationFrame(this.searchFrame);
     this.resizeObserver = null;
+    this.searchFrame = null;
     delete this.dataset.ready;
   }
 
@@ -167,7 +177,7 @@ class ZedDependencyGraph extends HTMLElement {
 
         <div class="dg-stage">
           <div class="dg-viewport" data-role="viewport">
-            <svg data-role="svg" role="img" aria-label="Package dependency graph" tabindex="0">
+            <svg data-role="svg" role="group" aria-label="Interactive package dependency graph" tabindex="0">
               <defs>
                 <marker id="dg-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="strokeWidth">
                   <path d="M0,0 L9,4.5 L0,9 z"></path>
@@ -189,7 +199,7 @@ class ZedDependencyGraph extends HTMLElement {
             <div class="dg-zoom-readout" data-role="zoom">100%</div>
           </div>
 
-          <aside class="dg-inspector" data-role="inspector" aria-label="Selected package details">
+          <aside class="dg-inspector" data-role="inspector" aria-label="Selected package details" aria-live="polite">
             <div class="dg-inspector-empty">
               <div class="dg-orbit" aria-hidden="true"></div>
               <h3>Select a package</h3>
@@ -244,7 +254,11 @@ class ZedDependencyGraph extends HTMLElement {
 
     this.$('[data-control="search"]').addEventListener("input", (event) => {
       this.searchTerm = event.target.value.trim().toLowerCase();
-      this.renderGraph();
+      if (this.searchFrame !== null) cancelAnimationFrame(this.searchFrame);
+      this.searchFrame = requestAnimationFrame(() => {
+        this.searchFrame = null;
+        this.renderGraph();
+      });
     });
 
     this.$$('[data-layout]').forEach((button) => {
@@ -293,10 +307,12 @@ class ZedDependencyGraph extends HTMLElement {
       if (event.key === "0") this.fitGraph();
     });
 
-    this.resizeObserver = new ResizeObserver(() => {
-      if (this.nodes.size && !this.drag) this.updateTransform();
-    });
-    this.resizeObserver.observe(this.viewport);
+    if (globalThis.ResizeObserver) {
+      this.resizeObserver = new ResizeObserver(() => {
+        if (this.nodes.size && !this.drag) this.updateTransform();
+      });
+      this.resizeObserver.observe(this.viewport);
+    }
   }
 
   async loadInitial() {
@@ -339,19 +355,41 @@ class ZedDependencyGraph extends HTMLElement {
       return;
     }
     this.setStatus(`Loading ${sources.length} package graphs…`, "loading");
-    await mapLimit(sources, 6, async (source, index) => {
+    let completed = 0;
+    const loaded = new Array(sources.length);
+    const { publicSources, privateSources } = scopeSourceBatches(sources);
+    const loadSource = async ({ source, index }) => {
       try {
         const url = packageDocumentUrl(source.org, source.name, source.version);
         const { document } = await this.fetchDocument(url);
-        this.addDocument(document, { primary: index === 0, synthetic: false, scopeRoot: true });
+        loaded[index] = document;
       } catch (error) {
         this.sourceFailures += 1;
         console.warn("Dependency graph source failed", source, error);
       }
+      completed += 1;
       this.setStatus(
-        `Loaded ${Math.min(index + 1, sources.length)} of ${sources.length} package graphs…`,
+        `Loaded ${completed} of ${sources.length} package graphs…`,
         "loading"
       );
+    };
+    // Private graph reads rotate the opaque browser refresh handle. Keep those
+    // requests serial while loading public, anonymous graphs concurrently.
+    await Promise.all([
+      mapLimit(publicSources, 6, loadSource),
+      mapLimit(privateSources, 1, loadSource),
+    ]);
+    // Apply successful documents in source order. Fetch completion order must
+    // not change layout, keyboard order, or the accessible edge table.
+    loaded.forEach((document, index) => {
+      if (document) {
+        try {
+          this.addDocument(document, { primary: index === 0, synthetic: false, scopeRoot: true });
+        } catch (error) {
+          this.sourceFailures += 1;
+          console.warn("Dependency graph source exceeded workspace limits", sources[index], error);
+        }
+      }
     });
     const clipped = this.sources.length > SCOPE_LIMIT;
     const notes = [];
@@ -368,11 +406,13 @@ class ZedDependencyGraph extends HTMLElement {
   clearGraph() {
     this.nodes.clear();
     this.edges = [];
+    this.edgeByKey.clear();
     this.roots.clear();
     this.positions.clear();
     this.selectedId = null;
     this.pathStartId = null;
     this.focusNodes = null;
+    this.focusEdges = null;
     this.focusLabel = "";
   }
 
@@ -380,13 +420,16 @@ class ZedDependencyGraph extends HTMLElement {
     if (!document || document.schema !== "zpkg/dependency-graph/v1") {
       throw new Error("The server returned an unsupported dependency graph schema.");
     }
+    this.assertDocumentCapacity(document);
     if (document.view === "declared") {
+      const loadedRoot = Boolean(options.primary || options.scopeRoot);
       const root = this.upsertDeclaredNode(document.package, {
         version: document.package.version,
-        root: true,
+        root: loadedRoot,
+        expanded: true,
         synthetic: Boolean(options.synthetic),
       });
-      if (options.primary || options.scopeRoot) this.roots.add(root.id);
+      if (loadedRoot) this.roots.add(root.id);
       for (const dependency of document.dependencies || []) {
         const target = this.upsertDeclaredNode(dependency, {
           requirement: dependency.requirement,
@@ -430,6 +473,30 @@ class ZedDependencyGraph extends HTMLElement {
     throw new Error("The server returned an unknown dependency graph view.");
   }
 
+  assertDocumentCapacity(document) {
+    let incomingNodes = 0;
+    let incomingEdges = 0;
+    if (document.view === "declared") {
+      incomingNodes = 1 + (Array.isArray(document.dependencies) ? document.dependencies.length : 0);
+      incomingEdges = Array.isArray(document.dependencies) ? document.dependencies.length : 0;
+    } else if (document.view === "resolved") {
+      incomingNodes = Array.isArray(document.nodes) ? document.nodes.length : 0;
+      incomingEdges = Array.isArray(document.edges) ? document.edges.length : 0;
+    } else {
+      return;
+    }
+    // Conservative before-mutation accounting prevents a rejected source from
+    // leaving a partial graph behind. Duplicate coordinates may make the
+    // estimate larger than the eventual graph, which is preferable to an
+    // unresponsive browser workspace.
+    if (this.nodes.size + incomingNodes > MAX_GRAPH_NODES) {
+      throw new Error(`The loaded topology exceeds the ${MAX_GRAPH_NODES}-package browser limit.`);
+    }
+    if (this.edges.length + incomingEdges > MAX_GRAPH_EDGES) {
+      throw new Error(`The loaded topology exceeds the ${MAX_GRAPH_EDGES}-relationship browser limit.`);
+    }
+  }
+
   upsertDeclaredNode(identity, attributes = {}) {
     const id = coordinateKey(identity);
     const existing = this.nodes.get(id) || {
@@ -449,6 +516,7 @@ class ZedDependencyGraph extends HTMLElement {
     if (attributes.version) existing.version = attributes.version;
     if (attributes.requirement) existing.requirements.add(attributes.requirement);
     existing.root ||= Boolean(attributes.root);
+    existing.expanded ||= Boolean(attributes.expanded);
     existing.synthetic ||= Boolean(attributes.synthetic);
     this.nodes.set(id, existing);
     return existing;
@@ -477,8 +545,8 @@ class ZedDependencyGraph extends HTMLElement {
   }
 
   upsertEdge(edge) {
-    const key = [edge.from, edge.to, edge.kind, edge.requirement, edge.target, edge.optional].join("\u0000");
-    const existing = this.edges.find((item) => item.key === key);
+    const key = edgeIdentity(edge);
+    const existing = this.edgeByKey.get(key);
     if (existing) {
       existing.count += 1;
       existing.synthetic ||= edge.synthetic;
@@ -492,6 +560,7 @@ class ZedDependencyGraph extends HTMLElement {
       features: new Set(edge.features || []),
     };
     this.edges.push(created);
+    this.edgeByKey.set(key, created);
     return created;
   }
 
@@ -500,16 +569,46 @@ class ZedDependencyGraph extends HTMLElement {
     const headers = { Accept: "application/vnd.zpkg.dependency-graph.v1+json" };
     if (cached?.etag) headers["If-None-Match"] = cached.etag;
     const response = await fetch(url, { headers, credentials: "same-origin" });
-    if (response.status === 304 && cached) return cached;
+    if (response.status === 304 && cached) {
+      const responseEtag = response.headers.get("etag") || "";
+      const responseDigest = response.headers.get("x-zpkg-graph-digest") || "";
+      if (!isStrongGraphEtag(responseEtag) || responseEtag !== cached.etag) {
+        throw new Error("The dependency graph cache validator was missing or changed.");
+      }
+      if (!isGraphDigest(responseDigest) || responseDigest !== cached.digest) {
+        throw new Error("The cached dependency graph semantic identity was missing or changed.");
+      }
+      return cached;
+    }
+    if (response.status === 304) {
+      throw new Error("The dependency graph cache validator had no local representation.");
+    }
     if (!response.ok) {
       const problem = await response.json().catch(() => ({}));
       throw new Error(problem.message || `Dependency graph request failed (${response.status}).`);
     }
+    const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim() || "";
+    if (contentType !== "application/vnd.zpkg.dependency-graph.v1+json") {
+      throw new Error("The server returned the wrong dependency graph representation type.");
+    }
     const document = await response.json();
+    const etag = response.headers.get("etag") || "";
+    const headerDigest = response.headers.get("x-zpkg-graph-digest") || "";
+    const documentDigest = document.graph_digest || "";
+    if (!isStrongGraphEtag(etag)) {
+      throw new Error("The dependency graph response did not carry a strong representation validator.");
+    }
+    if (
+      !isGraphDigest(headerDigest) ||
+      !isGraphDigest(documentDigest) ||
+      headerDigest !== documentDigest
+    ) {
+      throw new Error("The dependency graph response carried missing or inconsistent semantic identity.");
+    }
     const result = {
       document,
-      etag: response.headers.get("etag") || "",
-      digest: response.headers.get("x-zpkg-graph-digest") || document.graph_digest || "",
+      etag,
+      digest: headerDigest,
       selectedVersion: response.headers.get("x-zpkg-selected-version") || "",
     };
     this.cache.set(url, result);
@@ -604,6 +703,10 @@ class ZedDependencyGraph extends HTMLElement {
         "warning"
       );
       this.layoutName = "layered";
+      safeStorageSet("zpkg.graph.layout", this.layoutName);
+      this.$$('[data-layout]').forEach((button) =>
+        button.setAttribute("aria-pressed", String(button.dataset.layout === this.layoutName))
+      );
       return;
     }
     this.layoutLayered();
@@ -667,19 +770,18 @@ class ZedDependencyGraph extends HTMLElement {
       levels.set(root, 0);
       queue.push(root);
     }
-    while (queue.length) {
-      const id = queue.shift();
+    for (let cursor = 0; cursor < queue.length; cursor += 1) {
+      const id = queue[cursor];
       const nextLevel = levels.get(id) + 1;
       for (const next of outgoing.get(id) || []) {
-        if (!levels.has(next) || nextLevel < levels.get(next)) {
-          levels.set(next, nextLevel);
-          queue.push(next);
-        }
+        if (levels.has(next)) continue;
+        levels.set(next, nextLevel);
+        queue.push(next);
       }
     }
-    let fallback = Math.max(0, ...levels.values()) + 1;
+    const fallback = Math.max(0, ...levels.values()) + 1;
     for (const id of this.nodes.keys()) {
-      if (!levels.has(id)) levels.set(id, fallback++);
+      if (!levels.has(id)) levels.set(id, fallback);
     }
     return levels;
   }
@@ -694,9 +796,14 @@ class ZedDependencyGraph extends HTMLElement {
   renderGraph() {
     this.edgeLayer.replaceChildren();
     this.nodeLayer.replaceChildren();
+    this.renderedNodeElements.clear();
+    this.renderedEdgesByNode.clear();
     const edges = this.filteredEdges(true);
     const visibleNodes = this.visibleNodeSet(edges);
     this.$('[data-role="empty"]').hidden = visibleNodes.size > 0;
+    const keyboardNode = visibleNodes.has(this.selectedId)
+      ? this.selectedId
+      : [...this.roots].find((id) => visibleNodes.has(id)) || visibleNodes.values().next().value;
 
     for (const edge of edges) {
       if (!visibleNodes.has(edge.from) || !visibleNodes.has(edge.to)) continue;
@@ -714,6 +821,11 @@ class ZedDependencyGraph extends HTMLElement {
         svg("title", {}, `${nodeLabel(this.nodes.get(edge.from))} → ${nodeLabel(this.nodes.get(edge.to))} · ${edge.kind}`)
       );
       this.edgeLayer.appendChild(path);
+      const renderedEdge = { edge, path };
+      for (const nodeId of [edge.from, edge.to]) {
+        if (!this.renderedEdgesByNode.has(nodeId)) this.renderedEdgesByNode.set(nodeId, []);
+        this.renderedEdgesByNode.get(nodeId).push(renderedEdge);
+      }
     }
 
     const matches = this.searchMatches();
@@ -729,7 +841,7 @@ class ZedDependencyGraph extends HTMLElement {
           node.synthetic ? " is-synthetic" : ""
         }${focused ? " is-focused" : " is-dimmed"}${searchMatch ? " is-search-match" : ""}`,
         transform: `translate(${position.x - NODE_WIDTH / 2} ${position.y - NODE_HEIGHT / 2})`,
-        tabindex: "0",
+        tabindex: id === keyboardNode ? "0" : "-1",
         role: "button",
         "aria-label": `${nodeLabel(node)}${node.version ? ` version ${node.version}` : ""}`,
         "data-node-id": id,
@@ -757,10 +869,20 @@ class ZedDependencyGraph extends HTMLElement {
         else if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           this.selectNode(id, true);
+        } else if (["ArrowRight", "ArrowDown"].includes(event.key)) {
+          event.preventDefault();
+          this.focusAdjacentNode(id, 1);
+        } else if (["ArrowLeft", "ArrowUp"].includes(event.key)) {
+          event.preventDefault();
+          this.focusAdjacentNode(id, -1);
+        } else if (event.key === "Home" || event.key === "End") {
+          event.preventDefault();
+          this.focusBoundaryNode(event.key === "Home");
         }
       });
       group.addEventListener("pointerdown", (event) => this.onNodePointerDown(event, id));
       this.nodeLayer.appendChild(group);
+      this.renderedNodeElements.set(id, group);
     }
     this.updateTransform();
     this.renderInspector();
@@ -771,6 +893,9 @@ class ZedDependencyGraph extends HTMLElement {
     return this.edges.filter((edge) => {
       if (!this.enabledKinds.has(edge.kind)) return false;
       if (!this.includeOptional && edge.optional) return false;
+      if (applyFocus && this.focusEdges && !this.focusEdges.has(edgePairIdentity(edge.from, edge.to))) {
+        return false;
+      }
       if (applyFocus && this.focusNodes && !(this.focusNodes.has(edge.from) && this.focusNodes.has(edge.to))) {
         return false;
       }
@@ -786,6 +911,9 @@ class ZedDependencyGraph extends HTMLElement {
     }
     for (const root of this.roots) visible.add(root);
     if (this.focusNodes) {
+      for (const id of this.focusNodes) {
+        if (this.nodes.has(id)) visible.add(id);
+      }
       for (const id of [...visible]) if (!this.focusNodes.has(id)) visible.delete(id);
     }
     if (!edges.length && !this.focusNodes) {
@@ -813,6 +941,11 @@ class ZedDependencyGraph extends HTMLElement {
   }
 
   selectNode(id, updateHash) {
+    if (id === null) {
+      this.selectedId = null;
+      this.renderGraph();
+      return;
+    }
     if (!this.nodes.has(id)) return;
     this.selectedId = id;
     if (updateHash) {
@@ -820,11 +953,39 @@ class ZedDependencyGraph extends HTMLElement {
       history.replaceState(null, "", `#dependency-graph=${encodeURIComponent(`${node.org}/${node.name}`)}`);
     }
     this.renderGraph();
+    if (updateHash) {
+      requestAnimationFrame(() => {
+        const selected = [...this.nodeLayer.querySelectorAll("[data-node-id]")].find(
+          (element) => element.dataset.nodeId === id
+        );
+        selected?.focus({ preventScroll: true });
+      });
+    }
+  }
+
+  focusAdjacentNode(id, direction) {
+    const ids = [...this.renderedNodeElements.keys()];
+    if (ids.length < 2) return;
+    const current = Math.max(0, ids.indexOf(id));
+    const next = (current + direction + ids.length) % ids.length;
+    this.selectNode(ids[next], true);
+  }
+
+  focusBoundaryNode(first) {
+    const ids = [...this.renderedNodeElements.keys()];
+    if (ids.length) this.selectNode(first ? ids[0] : ids[ids.length - 1], true);
   }
 
   renderInspector() {
     const node = this.nodes.get(this.selectedId);
-    if (!node) return;
+    if (!node) {
+      this.inspector.innerHTML = `<div class="dg-inspector-empty">
+        <div class="dg-orbit" aria-hidden="true"></div>
+        <h3>Select a package</h3>
+        <p>Inspect identity, requirements, features, incoming impact, and outgoing dependencies.</p>
+      </div>`;
+      return;
+    }
     const outgoing = this.edges.filter((edge) => edge.from === node.id);
     const incoming = this.edges.filter((edge) => edge.to === node.id);
     const requirements = [...node.requirements];
@@ -907,6 +1068,7 @@ class ZedDependencyGraph extends HTMLElement {
   runQuery(query) {
     if (query === "clear") {
       this.focusNodes = null;
+      this.focusEdges = null;
       this.focusLabel = "";
       this.setStatus("Query focus cleared.", "ready");
       this.renderGraph();
@@ -924,31 +1086,52 @@ class ZedDependencyGraph extends HTMLElement {
       return;
     }
 
+    const queryEdges = this.filteredEdges(false);
+    const outgoing = adjacency(queryEdges, "from", "to");
+    const incoming = adjacency(queryEdges, "to", "from");
     let result = null;
     let label = "";
+    const previousFocusEdges = this.focusEdges;
+    this.focusEdges = null;
     if (query === "direct") {
-      result = new Set([selected, ...this.neighbors(selected, "out")]);
+      result = new Set([selected, ...(outgoing.get(selected) || [])]);
+      this.focusEdges = new Set(
+        queryEdges
+          .filter((edge) => edge.from === selected)
+          .map((edge) => edgePairIdentity(edge.from, edge.to))
+      );
       label = `Direct dependencies of ${nodeLabel(this.nodes.get(selected))}`;
     } else if (query === "transitive") {
-      result = this.walk(selected, "out");
+      result = this.walk(selected, outgoing);
       label = `Transitive dependencies of ${nodeLabel(this.nodes.get(selected))}`;
     } else if (query === "dependents") {
-      result = this.walk(selected, "in");
+      result = this.walk(selected, incoming);
       label = `Reverse impact of ${nodeLabel(this.nodes.get(selected))}`;
     } else if (query === "cycles") {
-      result = this.cycleNodes();
+      result = this.cycleNodes(outgoing, incoming);
       label = result.size ? "Packages participating in dependency cycles" : "No cycles detected";
     } else if (query === "longest") {
-      const path = this.longestChain(selected);
+      const { path, cyclic } = this.longestChain(selected, outgoing);
+      if (cyclic) {
+        this.focusEdges = previousFocusEdges;
+        this.setStatus(
+          "An exact longest chain is undefined for a graph with reachable cycles. Run Cycles or filter those edges first.",
+          "error"
+        );
+        return;
+      }
       result = new Set(path);
+      this.focusEdges = pathEdgePairs(path);
       label = path.length > 1 ? `Longest loaded chain (${path.length - 1} edges)` : "No outgoing chain found";
     } else if (query === "shortest") {
       if (!this.pathStartId) {
+        this.focusEdges = previousFocusEdges;
         this.setStatus("Pin a path start first, then select the endpoint.", "error");
         return;
       }
-      const path = this.shortestPath(this.pathStartId, selected);
+      const path = this.shortestPath(this.pathStartId, selected, outgoing);
       result = new Set(path);
+      this.focusEdges = pathEdgePairs(path);
       label = path.length ? `Shortest directed path (${path.length - 1} edges)` : "No directed path found";
     }
     if (!result) return;
@@ -959,21 +1142,12 @@ class ZedDependencyGraph extends HTMLElement {
     requestAnimationFrame(() => this.fitGraph());
   }
 
-  neighbors(id, direction) {
-    const values = [];
-    for (const edge of this.filteredEdges(false)) {
-      if (direction === "out" && edge.from === id) values.push(edge.to);
-      if (direction === "in" && edge.to === id) values.push(edge.from);
-    }
-    return [...new Set(values)];
-  }
-
-  walk(start, direction) {
+  walk(start, neighbors) {
     const visited = new Set([start]);
     const queue = [start];
-    while (queue.length) {
-      const current = queue.shift();
-      for (const next of this.neighbors(current, direction)) {
+    for (let cursor = 0; cursor < queue.length; cursor += 1) {
+      const current = queue[cursor];
+      for (const next of neighbors.get(current) || []) {
         if (visited.has(next)) continue;
         visited.add(next);
         queue.push(next);
@@ -982,13 +1156,13 @@ class ZedDependencyGraph extends HTMLElement {
     return visited;
   }
 
-  shortestPath(start, end) {
+  shortestPath(start, end, outgoing) {
     if (start === end) return [start];
     const queue = [start];
     const previous = new Map([[start, null]]);
-    while (queue.length) {
-      const current = queue.shift();
-      for (const next of this.neighbors(current, "out")) {
+    for (let cursorIndex = 0; cursorIndex < queue.length; cursorIndex += 1) {
+      const current = queue[cursorIndex];
+      for (const next of outgoing.get(current) || []) {
         if (previous.has(next)) continue;
         previous.set(next, current);
         if (next === end) {
@@ -1006,65 +1180,105 @@ class ZedDependencyGraph extends HTMLElement {
     return [];
   }
 
-  longestChain(start) {
-    if (this.nodes.size > 5000) return [start];
-    const memo = new Map();
-    const visit = (id, active) => {
-      if (memo.has(id)) return memo.get(id);
-      if (active.has(id)) return [id];
-      const nextActive = new Set(active).add(id);
-      let best = [id];
-      for (const next of this.neighbors(id, "out")) {
-        const candidate = [id, ...visit(next, nextActive)];
-        if (candidate.length > best.length) best = candidate;
-      }
-      memo.set(id, best);
-      return best;
-    };
-    return visit(start, new Set());
-  }
-
-  cycleNodes() {
-    const outgoing = adjacency(this.filteredEdges(false), "from", "to");
-    let index = 0;
-    const stack = [];
-    const onStack = new Set();
-    const indices = new Map();
-    const low = new Map();
-    const cycles = new Set();
-
-    const strongConnect = (id) => {
-      indices.set(id, index);
-      low.set(id, index);
-      index += 1;
-      stack.push(id);
-      onStack.add(id);
+  longestChain(start, outgoing) {
+    const reachable = this.walk(start, outgoing);
+    const indegree = new Map([...reachable].map((id) => [id, 0]));
+    for (const id of reachable) {
       for (const next of outgoing.get(id) || []) {
-        if (!indices.has(next)) {
-          strongConnect(next);
-          low.set(id, Math.min(low.get(id), low.get(next)));
-        } else if (onStack.has(next)) {
-          low.set(id, Math.min(low.get(id), indices.get(next)));
+        if (reachable.has(next)) indegree.set(next, indegree.get(next) + 1);
+      }
+    }
+
+    const queue = [...indegree].filter(([, count]) => count === 0).map(([id]) => id);
+    const ordered = [];
+    for (let cursor = 0; cursor < queue.length; cursor += 1) {
+      const id = queue[cursor];
+      ordered.push(id);
+      for (const next of outgoing.get(id) || []) {
+        if (!indegree.has(next)) continue;
+        const remaining = indegree.get(next) - 1;
+        indegree.set(next, remaining);
+        if (remaining === 0) queue.push(next);
+      }
+    }
+    if (ordered.length !== reachable.size) return { path: [], cyclic: true };
+
+    const distance = new Map([[start, 0]]);
+    const previous = new Map();
+    for (const id of ordered) {
+      const currentDistance = distance.get(id);
+      if (currentDistance === undefined) continue;
+      for (const next of outgoing.get(id) || []) {
+        if (!reachable.has(next)) continue;
+        const candidate = currentDistance + 1;
+        if (candidate > (distance.get(next) ?? -1)) {
+          distance.set(next, candidate);
+          previous.set(next, id);
         }
       }
-      if (low.get(id) === indices.get(id)) {
-        const component = [];
-        let current;
-        do {
-          current = stack.pop();
-          onStack.delete(current);
-          component.push(current);
-        } while (current !== id);
-        const selfLoop = component.length === 1 && (outgoing.get(id) || new Set()).has(id);
-        if (component.length > 1 || selfLoop) component.forEach((item) => cycles.add(item));
+    }
+
+    let end = start;
+    for (const [id, value] of distance) {
+      if (value > (distance.get(end) ?? -1)) end = id;
+    }
+    const path = [end];
+    while (previous.has(path[path.length - 1])) {
+      path.push(previous.get(path[path.length - 1]));
+    }
+    path.reverse();
+    return { path, cyclic: false };
+  }
+
+  cycleNodes(outgoing, incoming) {
+    const visited = new Set();
+    const finishOrder = [];
+    const cycles = new Set();
+
+    for (const start of this.nodes.keys()) {
+      if (visited.has(start)) continue;
+      const stack = [[start, false]];
+      while (stack.length) {
+        const [id, expanded] = stack.pop();
+        if (expanded) {
+          finishOrder.push(id);
+          continue;
+        }
+        if (visited.has(id)) continue;
+        visited.add(id);
+        stack.push([id, true]);
+        const nextNodes = [...(outgoing.get(id) || [])];
+        for (let index = nextNodes.length - 1; index >= 0; index -= 1) {
+          if (!visited.has(nextNodes[index])) stack.push([nextNodes[index], false]);
+        }
       }
-    };
-    for (const id of this.nodes.keys()) if (!indices.has(id)) strongConnect(id);
+    }
+
+    const assigned = new Set();
+    for (let orderIndex = finishOrder.length - 1; orderIndex >= 0; orderIndex -= 1) {
+      const start = finishOrder[orderIndex];
+      if (assigned.has(start)) continue;
+      const component = [];
+      const stack = [start];
+      assigned.add(start);
+      while (stack.length) {
+        const id = stack.pop();
+        component.push(id);
+        for (const next of incoming.get(id) || []) {
+          if (assigned.has(next)) continue;
+          assigned.add(next);
+          stack.push(next);
+        }
+      }
+      const selfLoop = component.length === 1 && (outgoing.get(start) || new Set()).has(start);
+      if (component.length > 1 || selfLoop) component.forEach((id) => cycles.add(id));
+    }
     return cycles;
   }
 
   resetView() {
     this.focusNodes = null;
+    this.focusEdges = null;
     this.focusLabel = "";
     this.pathStartId = null;
     this.searchTerm = "";
@@ -1101,7 +1315,7 @@ class ZedDependencyGraph extends HTMLElement {
       })
       .join("");
     this.$('[data-role="table"]').innerHTML = this.edges.length
-      ? `<table><thead><tr><th>From</th><th>To</th><th>Kind</th><th>Requirement</th><th>Optional</th></tr></thead><tbody>${rows}</tbody></table>`
+      ? `<table><caption>Loaded dependency relationships</caption><thead><tr><th scope="col">From</th><th scope="col">To</th><th scope="col">Kind</th><th scope="col">Requirement</th><th scope="col">Optional</th></tr></thead><tbody>${rows}</tbody></table>`
       : `<p>No dependency relationships are loaded.</p>`;
   }
 
@@ -1198,7 +1412,22 @@ class ZedDependencyGraph extends HTMLElement {
       const position = this.positions.get(this.drag.id);
       position.x = this.drag.originX + dx / this.transform.k;
       position.y = this.drag.originY + dy / this.transform.k;
-      this.renderGraph();
+      this.updateDraggedNode(this.drag.id);
+    }
+  }
+
+  updateDraggedNode(id) {
+    const position = this.positions.get(id);
+    const element = this.renderedNodeElements.get(id);
+    if (!position || !element) return;
+    element.setAttribute(
+      "transform",
+      `translate(${position.x - NODE_WIDTH / 2} ${position.y - NODE_HEIGHT / 2})`
+    );
+    for (const { edge, path } of this.renderedEdgesByNode.get(id) || []) {
+      const from = this.positions.get(edge.from);
+      const to = this.positions.get(edge.to);
+      if (from && to) path.setAttribute("d", edgePath(from, to));
     }
   }
 
@@ -1292,6 +1521,22 @@ function adjacency(edges, fromKey, toKey) {
   return map;
 }
 
+function edgeIdentity(edge) {
+  return [edge.from, edge.to, edge.kind, edge.requirement, edge.target, edge.optional].join("\u0000");
+}
+
+function edgePairIdentity(from, to) {
+  return `${from}\u0000${to}`;
+}
+
+function pathEdgePairs(path) {
+  const pairs = new Set();
+  for (let index = 1; index < path.length; index += 1) {
+    pairs.add(edgePairIdentity(path[index - 1], path[index]));
+  }
+  return pairs;
+}
+
 function graphBounds(positions) {
   const xs = positions.map((position) => position.x);
   const ys = positions.map((position) => position.y);
@@ -1319,6 +1564,14 @@ async function mapLimit(values, limit, worker) {
     }
   });
   await Promise.all(runners);
+}
+
+function scopeSourceBatches(sources) {
+  const indexed = sources.map((source, index) => ({ source, index }));
+  return {
+    publicSources: indexed.filter(({ source }) => !source.private),
+    privateSources: indexed.filter(({ source }) => source.private),
+  };
 }
 
 function parseJson(value, fallback) {
@@ -1351,6 +1604,16 @@ function safeFilename(value) {
 function shortDigest(value) {
   if (!value) return "";
   return value.length > 24 ? `${value.slice(0, 21)}…` : value;
+}
+
+function isStrongGraphEtag(value) {
+  // RFC 9110 strong entity-tag: quoted opaque tag, without the W/ prefix.
+  // The graph digest has a separate canonical sha256 shape; an ETag need not.
+  return /^"(?:[\x21\x23-\x7e]|[\u0080-\u00ff])*"$/.test(value);
+}
+
+function isGraphDigest(value) {
+  return /^sha256:[0-9a-f]{64}$/.test(value);
 }
 
 function truncate(value, length) {
@@ -1391,6 +1654,19 @@ function safeStorageSet(key, value) {
   }
 }
 
-if (!customElements.get("zed-dependency-graph")) {
+if (globalThis.customElements && !customElements.get("zed-dependency-graph")) {
   customElements.define("zed-dependency-graph", ZedDependencyGraph);
 }
+
+export {
+  ZedDependencyGraph,
+  adjacency,
+  edgePairIdentity,
+  isGraphDigest,
+  isStrongGraphEtag,
+  packageDocumentUrl,
+  packageExportUrl,
+  packagePageUrl,
+  pathEdgePairs,
+  scopeSourceBatches,
+};

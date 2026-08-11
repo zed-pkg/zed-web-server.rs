@@ -96,8 +96,8 @@ loads Claritas or another external visualization runtime.
 
 ## Development
 
-Clone side by side with `zed-interfaces` and `zed-lib-core`, then run the
-repository checks:
+Cargo fetches the exact reviewed `zed-interfaces` and `zed-lib-core` revisions
+recorded in the manifest and lockfile. Run the repository checks with:
 
 ```sh
 cargo fmt --all -- --check

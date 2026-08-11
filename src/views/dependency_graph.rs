@@ -1,5 +1,7 @@
 //! Shared Maud components for package, project, and organization graph views.
 
+use std::fmt::Write as _;
+
 use maud::{Markup, html};
 use serde_json::json;
 
@@ -11,6 +13,19 @@ pub struct GraphVersion {
     pub prerelease: bool,
     pub yanked: bool,
 }
+
+const FALLBACK_EXPORTS: &[(&str, &str)] = &[
+    ("json", "JSON"),
+    ("yaml", "YAML"),
+    ("toml", "TOML"),
+    ("json5", "JSON5"),
+    ("xml", "XML"),
+    ("csv", "CSV"),
+    ("msgpack", "MessagePack"),
+    ("protobuf", "Protocol Buffers"),
+    ("dot", "Graphviz DOT"),
+    ("mermaid", "Mermaid"),
+];
 
 pub fn package_workspace(
     org: &str,
@@ -45,11 +60,42 @@ pub fn package_workspace(
             p class="muted" { "Loading the interactive dependency graph…" }
             noscript {
                 p class="muted" {
-                    "JavaScript is required for the interactive canvas. Dependency graph downloads remain available from the registry API."
+                    "JavaScript is required for the interactive canvas. Downloads remain available:"
+                }
+                ul class="inline-list" aria-label="Dependency graph downloads" {
+                    @for (format, label) in FALLBACK_EXPORTS {
+                        li {
+                            a href=(package_export_url(org, name, selected_version, format)) download="" {
+                                (label)
+                            }
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+fn package_export_url(org: &str, name: &str, version: &str, format: &str) -> String {
+    format!(
+        "/bff/dependency-graphs/packages/{}/{}/{}/export/{}",
+        uri_segment(org),
+        uri_segment(name),
+        uri_segment(version),
+        uri_segment(format),
+    )
+}
+
+fn uri_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            write!(&mut encoded, "%{byte:02X}").expect("writing to a String cannot fail");
+        }
+    }
+    encoded
 }
 
 pub fn scope_workspace(
@@ -67,6 +113,7 @@ pub fn scope_workspace(
                         "org": package.org,
                         "name": package.name,
                         "version": version,
+                        "private": package.visibility != "public",
                     })
                 })
             })
@@ -107,6 +154,18 @@ mod tests {
         assert!(markup.contains("zed-dependency-graph"));
         assert!(markup.contains("2.0.0-beta.1"));
         assert!(markup.contains("&quot;prerelease&quot;:true"));
+        assert!(markup.contains("Dependency graph downloads"));
+        assert!(
+            markup.contains("/bff/dependency-graphs/packages/acme/http/2.0.0-beta.1/export/yaml")
+        );
+    }
+
+    #[test]
+    fn fallback_exports_encode_every_route_segment() {
+        assert_eq!(
+            package_export_url("acme tools", "http/client", "1.0.0+build", "json"),
+            "/bff/dependency-graphs/packages/acme%20tools/http%2Fclient/1.0.0%2Bbuild/export/json"
+        );
     }
 
     #[test]
@@ -117,17 +176,20 @@ mod tests {
                 name: "a".into(),
                 description: None,
                 latest: Some("1.0.0".into()),
+                visibility: "public".into(),
             },
             PackageRow {
                 org: "acme".into(),
                 name: "empty".into(),
                 description: None,
                 latest: None,
+                visibility: "private".into(),
             },
         ];
         let markup =
             scope_workspace("organization", "Topology", "Description", &packages).into_string();
         assert!(markup.contains("&quot;name&quot;:&quot;a&quot;"));
+        assert!(markup.contains("&quot;private&quot;:false"));
         assert!(!markup.contains("&quot;name&quot;:&quot;empty&quot;"));
     }
 }

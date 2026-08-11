@@ -14,14 +14,39 @@ use axum::response::{IntoResponse, Response};
 use reqwest::Url;
 use serde_json::json;
 
-use crate::session;
 use crate::state::WebState;
+use crate::{browser_auth, session};
 
 const MAX_GRAPH_BYTES: usize = 32 * 1024 * 1024;
 const GRAPH_DIGEST_HEADER: &str = "x-zpkg-graph-digest";
 const GRAPH_AUTHORITY_HEADER: &str = "x-zpkg-graph-authoritative";
 const SELECTED_VERSION_HEADER: &str = "x-zpkg-selected-version";
 const DEFAULT_API_BASE: &str = "http://127.0.0.1:8080";
+const PRIVATE_GRAPH_CACHE: &str = "private, no-store";
+const LATEST_GRAPH_CACHE: &str = "public, max-age=60, must-revalidate";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AuthorizedGraph {
+    version: String,
+    is_public: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GraphCachePolicy {
+    PublicExact,
+    PublicLatest,
+    Private,
+}
+
+impl GraphCachePolicy {
+    const fn for_package(is_public: bool, is_latest_route: bool) -> Self {
+        match (is_public, is_latest_route) {
+            (false, _) => Self::Private,
+            (true, true) => Self::PublicLatest,
+            (true, false) => Self::PublicExact,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExportRoute {
@@ -55,24 +80,8 @@ pub async fn package_document(
     headers: HeaderMap,
     Path((org, name, version)): Path<(String, String, String)>,
 ) -> Response {
-    if let Err(response) = authorize_package(&state, &headers, &org, &name, Some(&version)).await {
-        return response;
-    }
-    let api_base = api_base(&state);
-    let url = match declared_graph_url(&api_base, &org, &name, &version, Some("json")) {
-        Ok(url) => url,
-        Err(_) => return upstream_configuration_error(),
-    };
-    relay(&state, &headers, url, None).await
-}
-
-pub async fn latest_package_document(
-    State(state): State<Arc<WebState>>,
-    headers: HeaderMap,
-    Path((org, name)): Path<(String, String)>,
-) -> Response {
-    let version = match authorize_package(&state, &headers, &org, &name, None).await {
-        Ok(version) => version,
+    let authorized = match authorize_package(&state, &headers, &org, &name, Some(&version)).await {
+        Ok(authorized) => authorized,
         Err(response) => return response,
     };
     let api_base = api_base(&state);
@@ -80,7 +89,39 @@ pub async fn latest_package_document(
         Ok(url) => url,
         Err(_) => return upstream_configuration_error(),
     };
-    relay(&state, &headers, url, Some(&version)).await
+    relay(
+        &state,
+        &headers,
+        url,
+        None,
+        GraphCachePolicy::for_package(authorized.is_public, false),
+    )
+    .await
+}
+
+pub async fn latest_package_document(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Path((org, name)): Path<(String, String)>,
+) -> Response {
+    let authorized = match authorize_package(&state, &headers, &org, &name, None).await {
+        Ok(authorized) => authorized,
+        Err(response) => return response,
+    };
+    let version = authorized.version;
+    let api_base = api_base(&state);
+    let url = match declared_graph_url(&api_base, &org, &name, &version, Some("json")) {
+        Ok(url) => url,
+        Err(_) => return upstream_configuration_error(),
+    };
+    relay(
+        &state,
+        &headers,
+        url,
+        Some(&version),
+        GraphCachePolicy::for_package(authorized.is_public, true),
+    )
+    .await
 }
 
 pub async fn package_export(
@@ -88,9 +129,10 @@ pub async fn package_export(
     headers: HeaderMap,
     Path((org, name, version, requested_format)): Path<(String, String, String, String)>,
 ) -> Response {
-    if let Err(response) = authorize_package(&state, &headers, &org, &name, Some(&version)).await {
-        return response;
-    }
+    let authorized = match authorize_package(&state, &headers, &org, &name, Some(&version)).await {
+        Ok(authorized) => authorized,
+        Err(response) => return response,
+    };
     let Some(format) = ExportRoute::parse(&requested_format) else {
         return problem(
             StatusCode::NOT_ACCEPTABLE,
@@ -111,7 +153,14 @@ pub async fn package_export(
         Ok(url) => url,
         Err(_) => return upstream_configuration_error(),
     };
-    relay(&state, &headers, url, None).await
+    relay(
+        &state,
+        &headers,
+        url,
+        None,
+        GraphCachePolicy::for_package(authorized.is_public, false),
+    )
+    .await
 }
 
 async fn authorize_package(
@@ -120,7 +169,7 @@ async fn authorize_package(
     org_slug: &str,
     name: &str,
     requested_version: Option<&str>,
-) -> Result<String, Response> {
+) -> Result<AuthorizedGraph, Response> {
     let viewer = session::resolve(state, headers).await;
     let Some(db) = &state.db else {
         return Err(problem(
@@ -144,8 +193,43 @@ async fn authorize_package(
     let Some((package, org)) = found else {
         return Err(graph_not_found());
     };
-    if package.visibility != "public" && !viewer.can_see_private(&org.slug) {
+    let is_public = package.visibility == "public";
+    let mut can_read_private = viewer.can_see_private(&org.slug);
+    if !is_public
+        && !can_read_private
+        && let (Some(user), Some(project_id)) = (viewer.user(), package.project_id)
+    {
+        let project_role =
+            match zed_orm_core::read::project_role_for_user(db, project_id, user.id).await {
+                Ok(role) => role,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        org = org_slug,
+                        package = name,
+                        "graph project membership lookup failed"
+                    );
+                    return Err(problem(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "registry_unavailable",
+                        "Dependency graph metadata is temporarily unavailable.",
+                    ));
+                }
+            };
+        can_read_private = project_role.is_some();
+    }
+    if !is_public && !can_read_private {
         return Err(graph_not_found());
+    }
+
+    // Package authorization is sufficient for an exact immutable coordinate;
+    // the canonical API decides whether that version exists. Avoid scanning the
+    // page-oriented, bounded version listing, which would reject older history.
+    if let Some(requested) = requested_version {
+        return Ok(AuthorizedGraph {
+            version: requested.to_owned(),
+            is_public,
+        });
     }
 
     let versions = match zed_orm_core::read::versions_for_package(db, package.id).await {
@@ -160,20 +244,12 @@ async fn authorize_package(
         }
     };
 
-    if let Some(requested) = requested_version {
-        return versions
-            .iter()
-            .any(|row| row.version == requested)
-            .then_some(requested.to_owned())
-            .ok_or_else(graph_not_found);
-    }
-
-    package
+    let version = package
         .latest_version
         .filter(|latest| {
             versions
                 .iter()
-                .any(|row| row.version.as_str() == latest.as_str())
+                .any(|row| row.version.as_str() == latest.as_str() && !row.yanked)
         })
         .or_else(|| {
             versions
@@ -181,7 +257,8 @@ async fn authorize_package(
                 .find(|row| !row.yanked)
                 .map(|row| row.version.clone())
         })
-        .ok_or_else(graph_not_found)
+        .ok_or_else(graph_not_found)?;
+    Ok(AuthorizedGraph { version, is_public })
 }
 
 fn api_base(state: &WebState) -> String {
@@ -264,10 +341,23 @@ fn extended_export_url(
 
 fn base_url(base: &str) -> Result<Url, GraphUrlError> {
     let normalized = format!("{}/", base.trim_end_matches('/'));
-    Url::parse(&normalized).map_err(|error| {
+    let url = Url::parse(&normalized).map_err(|error| {
         tracing::error!(%error, "ZED_API_URL is not a valid absolute URL");
         GraphUrlError
-    })
+    })?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        tracing::error!(
+            "ZED_API_URL must be an HTTP(S) base URL without credentials or query data"
+        );
+        return Err(GraphUrlError);
+    }
+    Ok(url)
 }
 
 async fn relay(
@@ -275,27 +365,95 @@ async fn relay(
     request_headers: &HeaderMap,
     url: Url,
     selected_version: Option<&str>,
+    cache_policy: GraphCachePolicy,
 ) -> Response {
+    if cache_policy == GraphCachePolicy::Private {
+        let delegated = match browser_auth::delegated_get(
+            state,
+            request_headers,
+            url,
+            request_headers.get(header::IF_NONE_MATCH).cloned(),
+        )
+        .await
+        {
+            Ok(delegated) => delegated,
+            Err(response) => return private_auth_error(response),
+        };
+        let (outcome, rotation) = delegated.into_parts();
+        let mut response = match outcome {
+            browser_auth::DelegatedGetOutcome::Upstream(upstream) => {
+                relay_response(upstream, selected_version, cache_policy).await
+            }
+            browser_auth::DelegatedGetOutcome::Failed(response) => private_auth_error(response),
+        };
+        rotation.apply(&mut response);
+        return response;
+    }
+
     let mut request = state.http.get(url);
     if let Some(etag) = request_headers.get(header::IF_NONE_MATCH) {
         request = request.header(header::IF_NONE_MATCH, etag.clone());
     }
-    let upstream = match request.send().await {
-        Ok(response) => response,
+    match request.send().await {
+        Ok(upstream) => relay_response(upstream, selected_version, cache_policy).await,
         Err(error) => {
             tracing::warn!(%error, "dependency graph API request failed");
-            return problem(
+            problem(
                 StatusCode::BAD_GATEWAY,
                 "graph_upstream_unavailable",
                 "The dependency graph API is temporarily unavailable.",
-            );
+            )
         }
-    };
+    }
+}
 
+fn private_auth_error(response: Response) -> Response {
+    if matches!(
+        response.status(),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+    ) {
+        graph_not_found()
+    } else {
+        tracing::warn!(
+            upstream_status = %response.status(),
+            "private dependency graph delegation failed"
+        );
+        problem(
+            StatusCode::BAD_GATEWAY,
+            "graph_auth_unavailable",
+            "Private dependency graph authentication is temporarily unavailable.",
+        )
+    }
+}
+
+async fn relay_response(
+    mut upstream: reqwest::Response,
+    selected_version: Option<&str>,
+    cache_policy: GraphCachePolicy,
+) -> Response {
     let status =
         StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    if status == StatusCode::NOT_FOUND {
+    if matches!(
+        status,
+        StatusCode::NOT_FOUND | StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+    ) {
         return graph_not_found();
+    }
+    if status == StatusCode::PAYLOAD_TOO_LARGE {
+        return graph_too_large();
+    }
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        let mut response = problem(
+            StatusCode::TOO_MANY_REQUESTS,
+            "graph_rate_limited",
+            "The dependency graph API is temporarily rate limited.",
+        );
+        copy_header(
+            upstream.headers(),
+            response.headers_mut(),
+            header::RETRY_AFTER,
+        );
+        return response;
     }
     if status != StatusCode::OK && status != StatusCode::NOT_MODIFIED {
         tracing::warn!(upstream_status = %status, "dependency graph API rejected request");
@@ -317,11 +475,7 @@ async fn relay(
         &mut response_headers,
         header::CONTENT_DISPOSITION,
     );
-    copy_header(
-        upstream.headers(),
-        &mut response_headers,
-        header::CACHE_CONTROL,
-    );
+    apply_cache_policy(upstream.headers(), &mut response_headers, cache_policy);
     copy_header(upstream.headers(), &mut response_headers, header::ETAG);
     copy_named_header(
         upstream.headers(),
@@ -341,25 +495,58 @@ async fn relay(
         return (status, response_headers).into_response();
     }
 
-    let body = match upstream.bytes().await {
-        Ok(bytes) if bytes.len() <= MAX_GRAPH_BYTES => bytes,
-        Ok(_) => {
-            return problem(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "graph_too_large",
-                "The dependency graph exceeds the browser workspace limit.",
-            );
+    if upstream
+        .content_length()
+        .is_some_and(|length| length > MAX_GRAPH_BYTES as u64)
+    {
+        return graph_too_large();
+    }
+    let mut body = Vec::with_capacity(
+        upstream
+            .content_length()
+            .and_then(|length| usize::try_from(length).ok())
+            .unwrap_or(0)
+            .min(MAX_GRAPH_BYTES),
+    );
+    loop {
+        match upstream.chunk().await {
+            Ok(Some(chunk)) if chunk.len() <= MAX_GRAPH_BYTES.saturating_sub(body.len()) => {
+                body.extend_from_slice(&chunk);
+            }
+            Ok(Some(_)) => return graph_too_large(),
+            Ok(None) => break,
+            Err(error) => {
+                tracing::warn!(%error, "reading dependency graph API response failed");
+                return problem(
+                    StatusCode::BAD_GATEWAY,
+                    "graph_upstream_unavailable",
+                    "The dependency graph API response was interrupted.",
+                );
+            }
         }
-        Err(error) => {
-            tracing::warn!(%error, "reading dependency graph API response failed");
-            return problem(
-                StatusCode::BAD_GATEWAY,
-                "graph_upstream_unavailable",
-                "The dependency graph API response was interrupted.",
-            );
-        }
-    };
+    }
     (status, response_headers, body).into_response()
+}
+
+fn apply_cache_policy(upstream: &HeaderMap, downstream: &mut HeaderMap, policy: GraphCachePolicy) {
+    match policy {
+        GraphCachePolicy::PublicExact => {
+            copy_header(upstream, downstream, header::CACHE_CONTROL);
+        }
+        GraphCachePolicy::PublicLatest => {
+            downstream.insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static(LATEST_GRAPH_CACHE),
+            );
+        }
+        GraphCachePolicy::Private => {
+            downstream.insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static(PRIVATE_GRAPH_CACHE),
+            );
+            downstream.insert(header::VARY, HeaderValue::from_static("Cookie"));
+        }
+    }
 }
 
 fn copy_header(source: &HeaderMap, target: &mut HeaderMap, name: HeaderName) {
@@ -381,6 +568,14 @@ fn graph_not_found() -> Response {
     )
 }
 
+fn graph_too_large() -> Response {
+    problem(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "graph_too_large",
+        "The dependency graph exceeds the browser workspace limit.",
+    )
+}
+
 fn upstream_configuration_error() -> Response {
     problem(
         StatusCode::SERVICE_UNAVAILABLE,
@@ -390,7 +585,11 @@ fn upstream_configuration_error() -> Response {
 }
 
 fn problem(status: StatusCode, code: &str, message: &str) -> Response {
-    (status, Json(json!({ "code": code, "message": message }))).into_response()
+    let mut response = (status, Json(json!({ "code": code, "message": message }))).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 #[cfg(test)]
@@ -468,5 +667,50 @@ mod tests {
             "/v1/packages/acme/http/versions/2.1.0/dependency-graph/export/protobuf"
         );
         assert!(url.query().is_none());
+    }
+
+    #[test]
+    fn graph_api_base_rejects_non_http_and_credential_bearing_urls() {
+        for invalid in [
+            "file:///tmp/registry",
+            "https://user:secret@api.zpkg.net",
+            "https://api.zpkg.net?token=secret",
+            "https://api.zpkg.net#fragment",
+        ] {
+            assert!(base_url(invalid).is_err(), "{invalid}");
+        }
+        assert!(base_url("https://api.zpkg.net/internal/v1").is_ok());
+    }
+
+    #[test]
+    fn authorization_sensitive_cache_policies_override_public_upstream_headers() {
+        let mut upstream = HeaderMap::new();
+        upstream.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=31536000, immutable"),
+        );
+
+        let mut private = HeaderMap::new();
+        apply_cache_policy(&upstream, &mut private, GraphCachePolicy::Private);
+        assert_eq!(private[header::CACHE_CONTROL], PRIVATE_GRAPH_CACHE);
+        assert_eq!(private[header::VARY], "Cookie");
+
+        let mut latest = HeaderMap::new();
+        apply_cache_policy(&upstream, &mut latest, GraphCachePolicy::PublicLatest);
+        assert_eq!(latest[header::CACHE_CONTROL], LATEST_GRAPH_CACHE);
+
+        let mut exact = HeaderMap::new();
+        apply_cache_policy(&upstream, &mut exact, GraphCachePolicy::PublicExact);
+        assert_eq!(
+            exact[header::CACHE_CONTROL],
+            upstream[header::CACHE_CONTROL]
+        );
+    }
+
+    #[test]
+    fn graph_problem_responses_are_never_shared_cacheable() {
+        let response = graph_not_found();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
     }
 }

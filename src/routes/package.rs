@@ -19,6 +19,7 @@ pub fn summary_row(summary: &PackageSummary) -> components::PackageRow {
         name: summary.name.clone(),
         description: summary.description.clone(),
         latest: summary.latest_version.clone(),
+        visibility: summary.visibility.clone(),
     }
 }
 
@@ -28,10 +29,12 @@ fn is_linkable_url(url: &str) -> bool {
     url.starts_with("https://") || url.starts_with("http://")
 }
 
-fn is_prerelease(version: &str) -> bool {
-    semver::Version::parse(version)
-        .map(|parsed| !parsed.pre.is_empty())
-        .unwrap_or_else(|_| version.contains('-'))
+fn is_prerelease(version: &str, scheme: &str) -> bool {
+    let scheme = zed_interfaces::version::VersionScheme::from_str_lenient(scheme);
+    if scheme == zed_interfaces::version::VersionScheme::Opaque {
+        return false;
+    }
+    zed_interfaces::version::parse_version(version).is_some_and(|parsed| !parsed.pre.is_empty())
 }
 
 pub async fn page(
@@ -82,7 +85,7 @@ pub async fn page(
         .iter()
         .map(|version| dependency_graph::GraphVersion {
             version: version.version.clone(),
-            prerelease: is_prerelease(&version.version),
+            prerelease: is_prerelease(&version.version, &version.version_scheme),
             yanked: version.yanked,
         })
         .collect();
@@ -92,7 +95,7 @@ pub async fn page(
         .filter(|latest| {
             versions
                 .iter()
-                .any(|version| version.version.as_str() == *latest)
+                .any(|version| version.version.as_str() == *latest && !version.yanked)
         })
         .or_else(|| {
             versions
@@ -159,7 +162,10 @@ pub async fn page(
                 dt { "latest" }
                 dd class="mono" {
                     (latest)
-                    @if is_prerelease(latest) {
+                    @if versions
+                        .iter()
+                        .find(|version| version.version == *latest)
+                        .is_some_and(|version| is_prerelease(&version.version, &version.version_scheme)) {
                         " " span class="badge" { "pre-release" }
                     }
                 }
@@ -280,9 +286,10 @@ mod tests {
     }
 
     #[test]
-    fn semver_prereleases_are_detected_without_a_second_database_flag() {
-        assert!(is_prerelease("2.0.0-beta.1"));
-        assert!(!is_prerelease("2.0.0"));
-        assert!(is_prerelease("calendar-preview"));
+    fn prerelease_detection_respects_the_declared_version_scheme() {
+        assert!(is_prerelease("2.0.0-beta.1", "semver"));
+        assert!(!is_prerelease("2.0.0", "semver"));
+        assert!(is_prerelease("2026.08-preview.1", "calver"));
+        assert!(!is_prerelease("release-candidate-1", "opaque"));
     }
 }
