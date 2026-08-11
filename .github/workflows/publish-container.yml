@@ -38,8 +38,8 @@ concurrency:
 
 env:
   # A commit-tagged web image identifies every cross-repository Rust input.
-  ZED_INTERFACES_SHA: 15577e17a820c3b2b1a39ee178d4645185309a05
-  ZED_LIB_CORE_SHA: 18fd49ba4d73689a941eaa56ef20a12a6c90a993
+  ZED_INTERFACES_SHA: 7d31f80dd8a310f218931165a3ad636a2f32b932
+  ZED_LIB_CORE_SHA: c3d486a1519381276fbec02aa25247f542924443
 
 jobs:
   image:
@@ -116,6 +116,13 @@ jobs:
               assert source in lock, f"Cargo.lock does not pin {package} at {revision}"
           PY
 
+      - name: Verify dependency-graph release inputs
+        working-directory: zed-web-server.rs
+        run: |
+          node scripts/build-graph-assets.mjs --check
+          node --check assets/dependency-graph.js
+          node tests/dependency-graph.mjs
+
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GHCR
@@ -179,6 +186,77 @@ jobs:
           done
           echo 'web image never became healthy' >&2
           exit 1
+
+      - name: Verify embedded dependency-graph representations
+        working-directory: zed-web-server.rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="../smoke-diagnostics/graph-assets"
+          mkdir -p "$evidence"
+          for asset in js css; do
+            for encoding in identity br; do
+              prefix="$evidence/dependency-graph-${asset}-${encoding}"
+              curl -fsS \
+                -H "Accept-Encoding: ${encoding}" \
+                -D "${prefix}.get.headers" \
+                -o "${prefix}.body" \
+                "http://127.0.0.1:48081/graph-assets/dependency-graph.${asset}"
+              curl -fsS -I \
+                -H "Accept-Encoding: ${encoding}" \
+                -D "${prefix}.head.headers" \
+                -o /dev/null \
+                "http://127.0.0.1:48081/graph-assets/dependency-graph.${asset}"
+              etag="$(sed -n 's/^[Ee][Tt][Aa][Gg]:[[:space:]]*//p' "${prefix}.get.headers" | tr -d '\r' | tail -n 1)"
+              test -n "$etag"
+              status="$(curl -sS \
+                -H "Accept-Encoding: ${encoding}" \
+                -H "If-None-Match: ${etag}" \
+                -D "${prefix}.304.headers" \
+                -o /dev/null \
+                -w '%{http_code}' \
+                "http://127.0.0.1:48081/graph-assets/dependency-graph.${asset}")"
+              test "$status" = 304
+            done
+            cmp "assets/dependency-graph.${asset}" \
+              "$evidence/dependency-graph-${asset}-identity.body"
+            cmp "static/dependency-graph.${asset}.br" \
+              "$evidence/dependency-graph-${asset}-br.body"
+          done
+          python3 - <<'PY'
+          from pathlib import Path
+
+          evidence = Path("../smoke-diagnostics/graph-assets")
+
+          def headers(path: Path) -> dict[str, str]:
+              result = {}
+              for line in path.read_text().splitlines():
+                  if ":" in line:
+                      name, value = line.split(":", 1)
+                      result[name.lower()] = value.strip()
+              return result
+
+          for asset in ("js", "css"):
+              for encoding in ("identity", "br"):
+                  prefix = evidence / f"dependency-graph-{asset}-{encoding}"
+                  body = prefix.with_suffix(".body").read_bytes()
+                  get = headers(Path(f"{prefix}.get.headers"))
+                  head = headers(Path(f"{prefix}.head.headers"))
+                  not_modified = headers(Path(f"{prefix}.304.headers"))
+                  expected_length = str(len(body))
+                  assert get["content-length"] == expected_length
+                  assert head["content-length"] == expected_length
+                  assert not_modified["content-length"] == expected_length
+                  assert get["etag"] == head["etag"] == not_modified["etag"]
+                  assert get["etag"].startswith('"') and get["etag"].endswith('"')
+                  assert get["vary"].lower() == "accept-encoding"
+                  if encoding == "br":
+                      assert get["content-encoding"].lower() == "br"
+                      assert head["content-encoding"].lower() == "br"
+                  else:
+                      assert "content-encoding" not in get
+                      assert "content-encoding" not in head
+          PY
 
       - name: Capture web smoke and provenance diagnostics
         if: always()

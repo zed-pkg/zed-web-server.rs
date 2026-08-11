@@ -15,6 +15,23 @@ zed-dependency-graph {
   --dg-tooling: #fb7185;
 }
 
+zed-dependency-graph noscript {
+  display: block;
+  overflow-x: auto;
+}
+
+.dg-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .dg-shell {
   position: relative;
   overflow: hidden;
@@ -582,7 +599,6 @@ zed-dependency-graph {
   .dg-querybar summary { transition: none; }
   .dg-status[data-state="loading"]::before { animation: none; }
 }
-
 
 /* Export and filter menus must remain above the graph stage. */
 .dg-toolbar {

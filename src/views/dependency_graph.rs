@@ -32,6 +32,7 @@ pub fn package_workspace(
     name: &str,
     selected_version: &str,
     versions: &[GraphVersion],
+    is_private: bool,
 ) -> Markup {
     let versions_json = serde_json::to_string(
         &versions
@@ -54,6 +55,7 @@ pub fn package_workspace(
             data-org=(org)
             data-package=(name)
             data-version=(selected_version)
+            data-private=(is_private)
             data-versions=(versions_json)
             data-scope-title="Package dependency graph"
             data-scope-description="Explore declared dependencies, expand neighboring package manifests, run graph queries, and download the same semantic graph in every supported representation." {
@@ -68,7 +70,7 @@ pub fn package_workspace(
                         tr { th scope="col" { "Representation" } th scope="col" { "Download" } }
                     }
                     tbody {
-                    @for (format, label) in FALLBACK_EXPORTS {
+                        @for (format, label) in FALLBACK_EXPORTS {
                             tr {
                                 th scope="row" { (label) }
                                 td {
@@ -181,11 +183,13 @@ mod tests {
                 prerelease: true,
                 yanked: false,
             }],
+            true,
         )
         .into_string();
         assert!(markup.contains("zed-dependency-graph"));
         assert!(markup.contains("2.0.0-beta.1"));
         assert!(markup.contains("&quot;prerelease&quot;:true"));
+        assert!(markup.contains("data-private=\"true\""));
         assert!(markup.contains("Dependency graph downloads"));
         assert!(markup.contains("dg-fallback-table"));
         assert!(markup.contains("Open semantic relationship table"));

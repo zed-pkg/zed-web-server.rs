@@ -9,17 +9,18 @@ repository = "https://github.com/zed-pkg/zed-web-server.rs"
 [dependencies]
 # Keep the shared wire contract immutable. The repository root is a virtual
 # polyglot workspace, and Cargo resolves its Rust package member directly.
-zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "15577e17a820c3b2b1a39ee178d4645185309a05" }
+zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "7d31f80dd8a310f218931165a3ad636a2f32b932" }
 # Default features only: the read-only surface. Enabling `read-write` here
 # would hand this process write symbols its database identity cannot use.
 # Pin the certified canonical data-plane revision; never follow a moving branch
 # in a production server lock graph.
-zed-orm-core = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "18fd49ba4d73689a941eaa56ef20a12a6c90a993" }
+zed-orm-core = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "c3d486a1519381276fbec02aa25247f542924443" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 axum = "0.8"
 dotenvy = "0.15"
+http-body = "1"
 maud = "0.27"
 # No default features: no auto-redirects wanted (policy is set to none at
 # construction anyway) and auth pages must pass through byte-for-byte, so no

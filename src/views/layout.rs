@@ -66,6 +66,8 @@ pub fn layout(
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
+                meta name="htmx-config"
+                    content=r#"{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"selfRequestsOnly":true}"#;
                 title { (title) " · zed-pkg" }
                 link rel="stylesheet" href="/static/styles.css";
                 link rel="stylesheet" href="/graph-assets/dependency-graph.css";
@@ -347,6 +349,8 @@ mod tests {
         .into_string();
         assert!(markup.contains("/graph-assets/dependency-graph.css"));
         assert!(markup.contains("/graph-assets/dependency-graph.js"));
+        assert!(markup.contains("&quot;allowEval&quot;:false"));
+        assert!(markup.contains("&quot;allowScriptTags&quot;:false"));
         assert!(!markup.contains("claritas-viz"));
     }
 }

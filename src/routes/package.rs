@@ -26,7 +26,12 @@ pub fn summary_row(summary: &PackageSummary) -> components::PackageRow {
 /// Only http(s) links are turned into anchors; anything else renders as text so
 /// a stored `javascript:` or `data:` URL cannot become a live link.
 fn is_linkable_url(url: &str) -> bool {
-    url.starts_with("https://") || url.starts_with("http://")
+    reqwest::Url::parse(url).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+    })
 }
 
 fn is_prerelease(version: &str, scheme: &str) -> bool {
@@ -48,27 +53,77 @@ pub async fn page(
         return offline(&state, &viewer, &org_slug, &name);
     };
 
-    let found = zed_orm_core::read::package_by_org_and_name(db, &org_slug, &name)
-        .await
-        .unwrap_or(None);
+    let found = match zed_orm_core::read::package_by_org_and_name(db, &org_slug, &name).await {
+        Ok(found) => found,
+        Err(error) => {
+            tracing::warn!(%error, org = org_slug, package = name, "package lookup failed");
+            return unavailable(&state, &viewer, &org_slug, &name);
+        }
+    };
 
     let Some((package, org)) = found else {
         return not_found(&state, &viewer, &org_slug, &name);
     };
 
-    // A private package is visible only to members of its org. Anonymous and
-    // non-member viewers get the same 404 as a package that does not exist, so
-    // the page cannot be used to probe for private names.
-    if package.visibility != "public" && !viewer.can_see_private(&org.slug) {
+    let org_role = match session::exact_org_role(db, &viewer, org.id).await {
+        Ok(role) => role,
+        Err(error) => {
+            tracing::warn!(%error, org = %org.slug, package = %package.name, "package organization membership lookup failed");
+            return unavailable(&state, &viewer, &org_slug, &name);
+        }
+    };
+    let project_role = if org_role.is_none() {
+        match package.project_id {
+            Some(project_id) => match session::exact_project_role(db, &viewer, project_id).await {
+                Ok(role) => role,
+                Err(error) => {
+                    tracing::warn!(%error, org = %org.slug, package = %package.name, "package project membership lookup failed");
+                    return unavailable(&state, &viewer, &org_slug, &name);
+                }
+            },
+            None => None,
+        }
+    } else {
+        None
+    };
+
+    // Private package reads accept the same exact org/project memberships as
+    // the API and graph BFF. Missing and unauthorized coordinates collapse to
+    // one 404 so this page cannot enumerate private package names.
+    if package.visibility != "public" && org_role.is_none() && project_role.is_none() {
         return not_found(&state, &viewer, &org_slug, &name);
     }
 
-    let versions = zed_orm_core::read::versions_for_package(db, package.id)
-        .await
-        .unwrap_or_default();
-    let licenses = zed_orm_core::read::licenses_for_package(db, package.id)
-        .await
-        .unwrap_or_default();
+    let versions = match zed_orm_core::read::versions_for_package(db, package.id).await {
+        Ok(versions) => versions,
+        Err(error) => {
+            tracing::warn!(%error, org = %org.slug, package = %package.name, "package version listing failed");
+            return unavailable(&state, &viewer, &org_slug, &name);
+        }
+    };
+    let licenses = match zed_orm_core::read::licenses_for_package(db, package.id).await {
+        Ok(licenses) => licenses,
+        Err(error) => {
+            tracing::warn!(%error, org = %org.slug, package = %package.name, "package license listing failed");
+            return unavailable(&state, &viewer, &org_slug, &name);
+        }
+    };
+
+    let latest_graph_version = match package.latest_version.as_deref() {
+        Some(latest) => {
+            match zed_orm_core::read::package_version_by_package_and_version(db, package.id, latest)
+                .await
+            {
+                Ok(Some(version)) if !version.yanked => Some(version),
+                Ok(_) => None,
+                Err(error) => {
+                    tracing::warn!(%error, org = %org.slug, package = %package.name, version = latest, "exact latest package version lookup failed");
+                    return unavailable(&state, &viewer, &org_slug, &name);
+                }
+            }
+        }
+        None => None,
+    };
 
     let rows: Vec<components::VersionRow> = versions
         .iter()
@@ -81,7 +136,7 @@ pub async fn page(
             yanked: version.yanked,
         })
         .collect();
-    let graph_versions: Vec<dependency_graph::GraphVersion> = versions
+    let mut graph_versions: Vec<dependency_graph::GraphVersion> = versions
         .iter()
         .map(|version| dependency_graph::GraphVersion {
             version: version.version.clone(),
@@ -89,36 +144,34 @@ pub async fn page(
             yanked: version.yanked,
         })
         .collect();
-    let selected_graph_version = package
-        .latest_version
-        .as_deref()
-        .filter(|latest| {
-            versions
-                .iter()
-                .any(|version| version.version.as_str() == *latest && !version.yanked)
-        })
-        .or_else(|| {
-            versions
-                .iter()
-                .find(|version| !version.yanked)
-                .map(|version| version.version.as_str())
-        })
-        .or_else(|| versions.first().map(|version| version.version.as_str()));
+    if let Some(latest) = &latest_graph_version
+        && !graph_versions
+            .iter()
+            .any(|version| version.version == latest.version)
+    {
+        graph_versions.push(dependency_graph::GraphVersion {
+            version: latest.version.clone(),
+            prerelease: is_prerelease(&latest.version, &latest.version_scheme),
+            yanked: false,
+        });
+    }
+    let selected_graph_version = latest_graph_version
+        .as_ref()
+        .map(|version| version.version.as_str());
 
-    let can_manage = viewer.can_administer(&org.slug);
-    let can_view_org_topology = viewer.can_see_private(&org.slug);
-    // The package entity stores the project UUID, not its URL slug. Resolve the
-    // slug only for an authorized org member before rendering the optional
-    // project-topology link; public package visitors do not need this private
-    // organization listing.
-    let project_slug = if can_view_org_topology {
+    let can_manage = matches!(org_role.as_deref(), Some("owner" | "admin"));
+    let can_view_org_topology = org_role.is_some();
+    let can_view_project_topology = org_role.is_some() || project_role.is_some();
+    // Resolve the one attached project by its exact UUID. This avoids both a
+    // bounded organization listing and disclosure of sibling private projects.
+    let project_slug = if can_view_project_topology {
         match package.project_id {
             Some(project_id) => match zed_orm_core::read::project_by_id(db, project_id).await {
                 Ok(Some(project)) if project.org_id == org.id => Some(project.slug),
                 Ok(_) => None,
                 Err(error) => {
-                    tracing::warn!(%error, %project_id, "package project lookup failed");
-                    None
+                    tracing::warn!(%error, org = %org.slug, package = %package.name, "package project lookup failed");
+                    return unavailable(&state, &viewer, &org_slug, &name);
                 }
             },
             None => None,
@@ -133,13 +186,13 @@ pub async fn page(
             @if package.visibility != "public" {
                 span class="badge badge-private" { (package.visibility) }
             }
-            @if can_view_org_topology {
-                @if let Some(project_slug) = &project_slug {
-                    a class="button"
-                      href={ "/orgs/" (org.slug) "/projects/" (project_slug) "/dependency-graph" } {
-                        "Project graph"
-                    }
+            @if let Some(project_slug) = &project_slug {
+                a class="button"
+                  href={ "/orgs/" (org.slug) "/projects/" (project_slug) "/dependency-graph" } {
+                    "Project graph"
                 }
+            }
+            @if can_view_org_topology {
                 a class="button" href={ "/dashboard/" (org.slug) "/dependency-graph" } {
                     "Org graph"
                 }
@@ -160,14 +213,11 @@ pub async fn page(
         dl class="facts" {
             dt { "downloads" } dd { (package.download_count) }
             dt { "versions" } dd { (package.version_count) }
-            @if let Some(latest) = &package.latest_version {
+            @if let Some(latest) = &latest_graph_version {
                 dt { "latest" }
                 dd class="mono" {
-                    (latest)
-                    @if versions
-                        .iter()
-                        .find(|version| version.version == *latest)
-                        .is_some_and(|version| is_prerelease(&version.version, &version.version_scheme)) {
+                    (&latest.version)
+                    @if is_prerelease(&latest.version, &latest.version_scheme) {
                         " " span class="badge" { "pre-release" }
                     }
                 }
@@ -204,6 +254,7 @@ pub async fn page(
                 &package.name,
                 selected_version,
                 &graph_versions,
+                package.visibility != "public",
             ))
         } @else {
             section class="card" id="dependency-graph" {
@@ -259,17 +310,41 @@ fn offline(state: &WebState, viewer: &Viewer, org: &str, name: &str) -> Response
         h1 { (org) "/" (name) }
         p class="muted" { "The registry database is unavailable; package details cannot be shown." }
     };
-    Html(
-        layout(
-            &format!("{org}/{name}"),
-            state.db.is_some(),
-            viewer,
-            &PageContext::none(),
-            content,
-        )
-        .into_string(),
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Html(
+            layout(
+                &format!("{org}/{name}"),
+                state.db.is_some(),
+                viewer,
+                &PageContext::none(),
+                content,
+            )
+            .into_string(),
+        ),
     )
-    .into_response()
+        .into_response()
+}
+
+fn unavailable(state: &WebState, viewer: &Viewer, org: &str, name: &str) -> Response {
+    let content = html! {
+        h1 { (org) "/" (name) }
+        p class="muted" { "Package details are temporarily unavailable." }
+    };
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Html(
+            layout(
+                &format!("{org}/{name}"),
+                state.db.is_some(),
+                viewer,
+                &PageContext::none(),
+                content,
+            )
+            .into_string(),
+        ),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -284,6 +359,8 @@ mod tests {
         assert!(!is_linkable_url("javascript:alert(1)"));
         assert!(!is_linkable_url("data:text/html,<script>"));
         assert!(!is_linkable_url("git@github.com:zed-pkg/zed-cli.git"));
+        assert!(!is_linkable_url("https://user:secret@example.com/repo"));
+        assert!(!is_linkable_url("https://"));
         assert!(!is_linkable_url(""));
     }
 

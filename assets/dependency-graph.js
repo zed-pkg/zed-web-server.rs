@@ -2,10 +2,16 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const NODE_WIDTH = 224;
 const NODE_HEIGHT = 64;
 const SCOPE_LIMIT = 80;
+const SCOPE_BATCH_SIZE = 4;
 const FORCE_LIMIT = 260;
 const MAX_GRAPH_NODES = 3000;
 const MAX_GRAPH_EDGES = 12000;
 const MAX_PROJECTION_DIMENSION = 4096;
+const MAX_GRAPH_DOCUMENT_BYTES = 32 * 1024 * 1024;
+const MAX_DOCUMENT_CACHE_ENTRIES = 4;
+const FETCH_TIMEOUT_MS = 12000;
+const MAX_GRAPH_TEXT_LENGTH = 2048;
+const MAX_EDGE_FEATURES = 256;
 const HTMLElementBase = globalThis.HTMLElement || class {};
 
 const KIND_LABELS = {
@@ -52,6 +58,9 @@ class ZedDependencyGraph extends HTMLElementBase {
     this.transform = { x: 0, y: 0, k: 1 };
     this.drag = null;
     this.cache = new Map();
+    this.serialFetchTail = Promise.resolve();
+    this.fetchControllers = new Set();
+    this.fetchGeneration = 0;
     this.loadSequence = 0;
     this.sourceFailures = 0;
     this.syntheticTraversal = false;
@@ -78,6 +87,11 @@ class ZedDependencyGraph extends HTMLElementBase {
   }
 
   disconnectedCallback() {
+    this.loadSequence += 1;
+    this.fetchGeneration += 1;
+    for (const controller of this.fetchControllers) controller.abort();
+    this.fetchControllers.clear();
+    this.cache.clear();
     window.removeEventListener("pointermove", this.handleWindowPointerMove);
     window.removeEventListener("pointerup", this.handleWindowPointerUp);
     window.removeEventListener("hashchange", this.handleHashChange);
@@ -174,11 +188,14 @@ class ZedDependencyGraph extends HTMLElementBase {
         </div>
 
         <div class="dg-notice" data-role="notice" hidden></div>
-        <div class="dg-status" data-role="status" aria-live="polite">Preparing graph workspace…</div>
+        <div class="dg-status" data-role="status" role="status" aria-live="polite">Preparing graph workspace…</div>
 
         <div class="dg-stage">
           <div class="dg-viewport" data-role="viewport">
-            <svg data-role="svg" role="group" aria-label="Interactive package dependency graph" tabindex="0">
+            <p id="dg-keyboard-instructions" class="dg-sr-only">Use arrow keys to move between packages, Enter to select, Shift plus Enter to open a package, plus and minus to zoom, and zero to fit the graph.</p>
+            <svg data-role="svg" role="group" aria-labelledby="dg-svg-title dg-svg-description" aria-describedby="dg-keyboard-instructions" tabindex="0">
+              <title id="dg-svg-title">Interactive package dependency graph</title>
+              <desc id="dg-svg-description">Package nodes and directed dependency relationships. A text relationship table follows the canvas.</desc>
               <defs>
                 <marker id="dg-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="strokeWidth">
                   <path d="M0,0 L9,4.5 L0,9 z"></path>
@@ -351,8 +368,17 @@ class ZedDependencyGraph extends HTMLElementBase {
     this.notice.hidden = true;
     try {
       const url = packageDocumentUrl(this.dataset.org, this.dataset.package, version);
-      const { document } = await this.fetchDocument(url);
+      const { document } = await this.fetchDocument(url, {
+        serialized: this.dataset.private === "true",
+        noStore: this.dataset.private === "true",
+      });
       if (sequence !== this.loadSequence) return;
+      assertDeclaredDocumentCoordinate(
+        document,
+        this.dataset.org,
+        this.dataset.package,
+        version
+      );
       this.clearGraph();
       this.addDocument(document, { primary: true, synthetic: false });
       this.dataset.version = version;
@@ -366,6 +392,7 @@ class ZedDependencyGraph extends HTMLElementBase {
   }
 
   async loadScope() {
+    const sequence = ++this.loadSequence;
     const sources = this.sources.filter((source) => source.version).slice(0, SCOPE_LIMIT);
     this.clearGraph();
     this.sourceFailures = 0;
@@ -376,41 +403,67 @@ class ZedDependencyGraph extends HTMLElementBase {
     }
     this.setStatus(`Loading ${sources.length} package graphs…`, "loading");
     let completed = 0;
-    const loaded = new Array(sources.length);
-    const { publicSources, privateSources } = scopeSourceBatches(sources);
-    const loadSource = async ({ source, index }) => {
-      try {
-        const url = packageDocumentUrl(source.org, source.name, source.version);
-        const { document } = await this.fetchDocument(url);
-        loaded[index] = document;
-      } catch (error) {
-        this.sourceFailures += 1;
-        console.warn("Dependency graph source failed", source, error);
-      }
-      completed += 1;
-      this.setStatus(
-        `Loaded ${completed} of ${sources.length} package graphs…`,
-        "loading"
-      );
-    };
-    // Private graph reads rotate the opaque browser refresh handle. Keep those
-    // requests serial while loading public, anonymous graphs concurrently.
-    await Promise.all([
-      mapLimit(publicSources, 6, loadSource),
-      mapLimit(privateSources, 1, loadSource),
-    ]);
-    // Apply successful documents in source order. Fetch completion order must
-    // not change layout, keyboard order, or the accessible edge table.
-    loaded.forEach((document, index) => {
-      if (document) {
+    // Fetch and apply bounded batches in source order. This keeps at most four
+    // wire documents resident at once instead of retaining every graph in a
+    // large organization before the node/edge cap can reject excess input.
+    for (let offset = 0; offset < sources.length; offset += SCOPE_BATCH_SIZE) {
+      if (sequence !== this.loadSequence) return;
+      const batch = sources.slice(offset, offset + SCOPE_BATCH_SIZE);
+      const loaded = new Array(batch.length);
+      const { publicSources, privateSources } = scopeSourceBatches(batch);
+      const loadSource = async ({ source, index }) => {
+        if (sequence !== this.loadSequence) return;
         try {
-          this.addDocument(document, { primary: index === 0, synthetic: false, scopeRoot: true });
+          const url = packageDocumentUrl(source.org, source.name, source.version);
+          const { document } = await this.fetchDocument(url, {
+            serialized: Boolean(source.private),
+            noStore: Boolean(source.private),
+          });
+          assertDeclaredDocumentCoordinate(
+            document,
+            source.org,
+            source.name,
+            source.version
+          );
+          if (sequence !== this.loadSequence) return;
+          loaded[index] = document;
+        } catch (error) {
+          if (sequence !== this.loadSequence) return;
+          this.sourceFailures += 1;
+          console.warn("Dependency graph source failed", source, error);
+        }
+        completed += 1;
+        this.setStatus(
+          `Loaded ${completed} of ${sources.length} package graphs…`,
+          "loading"
+        );
+      };
+      // Private graph reads rotate the opaque browser refresh handle. Keep
+      // those requests serial while public anonymous reads use bounded fanout.
+      await Promise.all([
+        mapLimit(publicSources, 3, loadSource),
+        mapLimit(privateSources, 1, loadSource),
+      ]);
+      if (sequence !== this.loadSequence) return;
+      loaded.forEach((document, index) => {
+        const source = batch[index];
+        if (!document) return;
+        try {
+          this.addDocument(document, {
+            primary: offset + index === 0,
+            synthetic: false,
+            scopeRoot: true,
+          });
         } catch (error) {
           this.sourceFailures += 1;
-          console.warn("Dependency graph source exceeded workspace limits", sources[index], error);
+          console.warn("Dependency graph source exceeded workspace limits", source, error);
+        } finally {
+          // The normalized graph model owns the fields the canvas needs. Do
+          // not also retain every full scope document in the component cache.
+          this.cache.delete(packageDocumentUrl(source.org, source.name, source.version));
         }
-      }
-    });
+      });
+    }
     const clipped = this.sources.length > SCOPE_LIMIT;
     const notes = [];
     if (this.sourceFailures) notes.push(`${this.sourceFailures} package graph(s) could not be loaded`);
@@ -441,6 +494,7 @@ class ZedDependencyGraph extends HTMLElementBase {
       throw new Error("The server returned an unsupported dependency graph schema.");
     }
     this.assertDocumentCapacity(document);
+    this.assertDocumentShape(document);
     if (document.view === "declared") {
       const loadedRoot = Boolean(options.primary || options.scopeRoot);
       const root = this.upsertDeclaredNode(document.package, {
@@ -487,6 +541,56 @@ class ZedDependencyGraph extends HTMLElementBase {
           features: edge.features || [],
           synthetic: Boolean(options.synthetic),
         });
+      }
+      return;
+    }
+    throw new Error("The server returned an unknown dependency graph view.");
+  }
+
+  assertDocumentShape(document) {
+    if (document.view === "declared") {
+      assertIdentity(document.package, true);
+      if (document.dependencies !== undefined && !Array.isArray(document.dependencies)) {
+        throw new Error("The declared dependency graph has an invalid dependency list.");
+      }
+      for (const dependency of document.dependencies || []) {
+        assertIdentity(dependency, false);
+        assertGraphText(dependency.requirement, "dependency requirement");
+        assertOptionalGraphText(dependency.target, "dependency target");
+        assertDependencyKind(dependency.kind);
+        assertOptionalBoolean(dependency.optional, "dependency optional marker");
+        assertStringList(dependency.features, "dependency features");
+      }
+      return;
+    }
+    if (document.view === "resolved") {
+      if (!Array.isArray(document.nodes) || !Array.isArray(document.edges) || !Array.isArray(document.roots)) {
+        throw new Error("The resolved dependency graph has invalid node or edge lists.");
+      }
+      const nodeIds = new Set();
+      for (const node of document.nodes) {
+        assertIdentity(node?.id, true);
+        assertOptionalGraphText(node.artifact_digest, "artifact digest");
+        assertStringList(node.features, "resolved node features");
+        nodeIds.add(resolvedKey(node.id));
+      }
+      for (const root of document.roots) {
+        assertIdentity(root, true);
+        if (!nodeIds.has(resolvedKey(root))) {
+          throw new Error("The resolved dependency graph names a root outside its node set.");
+        }
+      }
+      for (const edge of document.edges) {
+        assertIdentity(edge?.from, true);
+        assertIdentity(edge?.to, true);
+        assertOptionalGraphText(edge.requirement, "resolved dependency requirement");
+        assertOptionalGraphText(edge.target, "resolved dependency target");
+        assertDependencyKind(edge.kind);
+        assertOptionalBoolean(edge.optional, "resolved dependency optional marker");
+        assertStringList(edge.features, "resolved dependency features");
+        if (!nodeIds.has(resolvedKey(edge.from)) || !nodeIds.has(resolvedKey(edge.to))) {
+          throw new Error("The resolved dependency graph contains an edge outside its node set.");
+        }
       }
       return;
     }
@@ -584,20 +688,94 @@ class ZedDependencyGraph extends HTMLElementBase {
     return created;
   }
 
-  async fetchDocument(url) {
-    const cached = this.cache.get(url);
+  fetchDocument(url, options = {}) {
+    const requestOptions = { ...options, generation: this.fetchGeneration };
+    if (!options.serialized) return this.fetchDocumentNow(url, requestOptions);
+    const run = () => this.fetchDocumentNow(url, requestOptions);
+    const result = this.serialFetchTail.then(run, run);
+    this.serialFetchTail = result.catch(() => undefined);
+    return result;
+  }
+
+  async fetchDocumentNow(url, options = {}) {
+    const generation = options.generation ?? this.fetchGeneration;
+    if (generation !== this.fetchGeneration) {
+      throw new Error("The dependency graph request was cancelled.");
+    }
+    const noStore = Boolean(options.noStore);
+    if (noStore) this.cache.delete(url);
+    const cached = noStore ? null : this.cache.get(url);
     const headers = { Accept: "application/vnd.zpkg.dependency-graph.v1+json" };
     if (cached?.etag) headers["If-None-Match"] = cached.etag;
-    const response = await fetch(url, { headers, credentials: "same-origin" });
+    const controller = new AbortController();
+    this.fetchControllers.add(controller);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, FETCH_TIMEOUT_MS);
+    let response;
+    try {
+      const request = {
+        headers,
+        credentials: "same-origin",
+        signal: controller.signal,
+      };
+      if (noStore) request.cache = "no-store";
+      response = await fetch(url, request);
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        throw new Error(
+          timedOut
+            ? "The dependency graph request timed out."
+            : "The dependency graph request was cancelled."
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+      this.fetchControllers.delete(controller);
+    }
+    if (generation !== this.fetchGeneration) {
+      throw new Error("The dependency graph request was cancelled.");
+    }
+    const responseNoStore = cacheControlDisallowsStorage(
+      response.headers.get("cache-control") || ""
+    );
+    if (response.status === 304 && responseNoStore) {
+      this.cache.delete(url);
+      if (!options.retriedWithoutCache) {
+        return this.fetchDocumentNow(url, {
+          ...options,
+          generation,
+          noStore: true,
+          retriedWithoutCache: true,
+        });
+      }
+      throw new Error("The dependency graph server revalidated a non-storable response.");
+    }
     if (response.status === 304 && cached) {
       const responseEtag = response.headers.get("etag") || "";
       const responseDigest = response.headers.get("x-zpkg-graph-digest") || "";
+      const responseAuthority = response.headers.get("x-zpkg-graph-authoritative") || "";
+      const responseLength = parseContentLength(response.headers.get("content-length"));
+      const responseVersion = response.headers.get("x-zpkg-selected-version") || "";
       if (!isStrongGraphEtag(responseEtag) || responseEtag !== cached.etag) {
         throw new Error("The dependency graph cache validator was missing or changed.");
       }
       if (!isGraphDigest(responseDigest) || responseDigest !== cached.digest) {
         throw new Error("The cached dependency graph semantic identity was missing or changed.");
       }
+      if (responseAuthority !== "true" || responseAuthority !== cached.authoritative) {
+        throw new Error("The cached dependency graph authority marker was missing or changed.");
+      }
+      if (responseLength === null || responseLength !== cached.contentLength) {
+        throw new Error("The cached dependency graph representation length was missing or changed.");
+      }
+      if (responseVersion !== cached.selectedVersion) {
+        throw new Error("The cached dependency graph selected version changed unexpectedly.");
+      }
+      this.rememberDocument(url, cached);
       return cached;
     }
     if (response.status === 304) {
@@ -611,7 +789,24 @@ class ZedDependencyGraph extends HTMLElementBase {
     if (contentType !== "application/vnd.zpkg.dependency-graph.v1+json") {
       throw new Error("The server returned the wrong dependency graph representation type.");
     }
-    const document = await response.json();
+    const authoritative = response.headers.get("x-zpkg-graph-authoritative") || "";
+    if (authoritative !== "true") {
+      throw new Error("The server returned a non-authoritative dependency graph representation.");
+    }
+    const contentLength = parseContentLength(response.headers.get("content-length"));
+    if (contentLength === null || contentLength > MAX_GRAPH_DOCUMENT_BYTES) {
+      throw new Error("The dependency graph response did not carry a valid representation length.");
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength !== contentLength) {
+      throw new Error("The dependency graph response length did not match its representation metadata.");
+    }
+    let document;
+    try {
+      document = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    } catch {
+      throw new Error("The dependency graph response was not valid UTF-8 JSON.");
+    }
     const etag = response.headers.get("etag") || "";
     const headerDigest = response.headers.get("x-zpkg-graph-digest") || "";
     const documentDigest = document.graph_digest || "";
@@ -629,10 +824,21 @@ class ZedDependencyGraph extends HTMLElementBase {
       document,
       etag,
       digest: headerDigest,
+      authoritative,
+      contentLength,
       selectedVersion: response.headers.get("x-zpkg-selected-version") || "",
     };
-    this.cache.set(url, result);
+    if (noStore || responseNoStore) this.cache.delete(url);
+    else this.rememberDocument(url, result);
     return result;
+  }
+
+  rememberDocument(url, result) {
+    this.cache.delete(url);
+    this.cache.set(url, result);
+    while (this.cache.size > MAX_DOCUMENT_CACHE_ENTRIES) {
+      this.cache.delete(this.cache.keys().next().value);
+    }
   }
 
   afterGraphLoaded(message) {
@@ -863,6 +1069,7 @@ class ZedDependencyGraph extends HTMLElementBase {
         transform: `translate(${position.x - NODE_WIDTH / 2} ${position.y - NODE_HEIGHT / 2})`,
         tabindex: id === keyboardNode ? "0" : "-1",
         role: "button",
+        "aria-pressed": String(selected),
         "aria-label": `${nodeLabel(node)}${node.version ? ` version ${node.version}` : ""}`,
         "data-node-id": id,
       });
@@ -1064,10 +1271,27 @@ class ZedDependencyGraph extends HTMLElementBase {
   }
 
   async expandLatest(node) {
+    const sequence = this.loadSequence;
     node.expanded = true;
     this.setStatus(`Expanding latest declared graph for ${node.org}/${node.name}…`, "loading");
     try {
-      const result = await this.fetchDocument(latestDocumentUrl(node.org, node.name));
+      // A latest neighbor may be private, but visibility is intentionally not
+      // exposed in the graph document. Serialize these reads so rotating the
+      // opaque browser refresh handle cannot race across rapid expansions.
+      const result = await this.fetchDocument(latestDocumentUrl(node.org, node.name), {
+        serialized: true,
+        noStore: true,
+      });
+      if (sequence !== this.loadSequence) return;
+      if (!result.selectedVersion) {
+        throw new Error("The latest dependency graph response omitted its selected version.");
+      }
+      assertDeclaredDocumentCoordinate(
+        result.document,
+        node.org,
+        node.name,
+        result.selectedVersion
+      );
       this.addDocument(result.document, { synthetic: true });
       node.version ||= result.selectedVersion;
       node.synthetic = true;
@@ -1080,6 +1304,7 @@ class ZedDependencyGraph extends HTMLElementBase {
       this.renderAccessibleTable();
       this.setStatus(`Expanded ${node.org}/${node.name}@${result.selectedVersion || "latest"}.`, "ready");
     } catch (error) {
+      if (sequence !== this.loadSequence) return;
       node.expanded = false;
       this.fail(error);
     }
@@ -1374,17 +1599,23 @@ class ZedDependencyGraph extends HTMLElementBase {
         : [this.dataset.scopeKind, this.dataset.scopeTitle];
     const filename = projectionFilename(nameParts, format);
     if (format === "svg") {
-      downloadBlob(new Blob([projection.svg], { type: "image/svg+xml;charset=utf-8" }), filename);
+      downloadBlob(
+        new Blob([projection.svg], { type: "image/svg+xml;charset=utf-8" }),
+        filename
+      );
       this.setStatus("Downloaded the visible graph projection as SVG.", "ready");
       return;
     }
-    if (format !== "png") throw new Error("That visible projection format is not supported.");
+    if (format !== "png") {
+      throw new Error("That visible projection format is not supported.");
+    }
 
     const image = new Image();
     const source = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(projection.svg)}`;
     await new Promise((resolve, reject) => {
       image.onload = resolve;
-      image.onerror = () => reject(new Error("The browser could not rasterize this graph projection."));
+      image.onerror = () =>
+        reject(new Error("The browser could not rasterize this graph projection."));
       image.src = source;
     });
     const canvas = document.createElement("canvas");
@@ -1556,11 +1787,20 @@ function segment(value) {
 }
 
 function coordinateKey(identity) {
-  return `${identity.registry_id || "registry:unknown"}::${identity.org}/${identity.name}`;
+  return JSON.stringify([
+    identity.registry_id || "registry:unknown",
+    identity.org,
+    identity.name,
+  ]);
 }
 
 function resolvedKey(identity) {
-  return `${coordinateKey(identity)}@${identity.version}`;
+  return JSON.stringify([
+    identity.registry_id || "registry:unknown",
+    identity.org,
+    identity.name,
+    identity.version,
+  ]);
 }
 
 function nodeLabel(node) {
@@ -1593,7 +1833,14 @@ function adjacency(edges, fromKey, toKey) {
 }
 
 function edgeIdentity(edge) {
-  return [edge.from, edge.to, edge.kind, edge.requirement, edge.target, edge.optional].join("\u0000");
+  return JSON.stringify([
+    edge.from,
+    edge.to,
+    edge.kind,
+    edge.requirement,
+    edge.target,
+    edge.optional,
+  ]);
 }
 
 function edgePairIdentity(from, to) {
@@ -1650,9 +1897,19 @@ function projectionSvgDocument({
   const padding = 72;
   const minX = bounds.minX - NODE_WIDTH / 2 - padding;
   const minY = bounds.minY - NODE_HEIGHT / 2 - padding;
-  const viewWidth = Math.max(1, bounds.maxX - bounds.minX + NODE_WIDTH + padding * 2);
-  const viewHeight = Math.max(1, bounds.maxY - bounds.minY + NODE_HEIGHT + padding * 2);
-  const scale = Math.min(2, MAX_PROJECTION_DIMENSION / viewWidth, MAX_PROJECTION_DIMENSION / viewHeight);
+  const viewWidth = Math.max(
+    1,
+    bounds.maxX - bounds.minX + NODE_WIDTH + padding * 2
+  );
+  const viewHeight = Math.max(
+    1,
+    bounds.maxY - bounds.minY + NODE_HEIGHT + padding * 2
+  );
+  const scale = Math.min(
+    2,
+    MAX_PROJECTION_DIMENSION / viewWidth,
+    MAX_PROJECTION_DIMENSION / viewHeight
+  );
   const width = Math.max(1, Math.round(viewWidth * scale));
   const height = Math.max(1, Math.round(viewHeight * scale));
   const kindColors = {
@@ -1667,8 +1924,12 @@ function projectionSvgDocument({
     .map((edge) => {
       const stroke = kindColors[edge.kind] || kindColors.runtime;
       const dash = edge.synthetic ? "2 6" : edge.optional ? "7 6" : "none";
-      return `<path d="${escapeHtml(edgePath(positions.get(edge.from), positions.get(edge.to)))}" fill="none" stroke="${stroke}" stroke-width="1.8" stroke-opacity="0.72" stroke-dasharray="${dash}" marker-end="url(#projection-arrow)"><title>${escapeHtml(
-        `${nodeLabel(nodesById.get(edge.from))} → ${nodeLabel(nodesById.get(edge.to))} · ${edge.kind}`
+      return `<path d="${escapeHtml(
+        edgePath(positions.get(edge.from), positions.get(edge.to))
+      )}" fill="none" stroke="${stroke}" stroke-width="1.8" stroke-opacity="0.72" stroke-dasharray="${dash}" marker-end="url(#projection-arrow)"><title>${escapeHtml(
+        `${nodeLabel(nodesById.get(edge.from))} → ${nodeLabel(
+          nodesById.get(edge.to)
+        )} · ${edge.kind}`
       )}</title></path>`;
     })
     .join("");
@@ -1690,19 +1951,22 @@ function projectionSvgDocument({
         truncate(nodeMeta(node), 34)
       )}</text>${
         root
-          ? `<text x="${NODE_WIDTH - 12}" y="17" text-anchor="end" fill="#ff7a1a" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" font-weight="700">ROOT</text>`
+          ? `<text x="${
+              NODE_WIDTH - 12
+            }" y="17" text-anchor="end" fill="#ff7a1a" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="8" font-weight="700">ROOT</text>`
           : ""
       }><title>${escapeHtml(`${nodeLabel(node)}\n${nodeMeta(node)}`)}</title></g>`;
     })
     .join("");
   const safeTitle = escapeHtml(title);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="${minX} ${minY} ${viewWidth} ${viewHeight}" role="img" aria-labelledby="projection-title projection-description"><title id="projection-title">${safeTitle}</title><desc id="projection-description">Visible dependency graph projection with ${positionedNodes.length} packages and ${positionedEdges.length} relationships.</desc><defs><pattern id="projection-grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M 32 0 L 0 0 0 32" fill="none" stroke="#8fd3f4" stroke-opacity="0.07" stroke-width="1"/></pattern><marker id="projection-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,4.5 L0,9 z" fill="#8fa4b9"/></marker></defs><rect x="${minX}" y="${minY}" width="${viewWidth}" height="${viewHeight}" rx="18" fill="#07080c"/><rect x="${minX}" y="${minY}" width="${viewWidth}" height="${viewHeight}" rx="18" fill="url(#projection-grid)"/>${edgeMarkup}${nodeMarkup}</svg>`;
-  return { svg, width, height, viewWidth, viewHeight };
+  const svgDocument = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="${minX} ${minY} ${viewWidth} ${viewHeight}" role="img" aria-labelledby="projection-title projection-description"><title id="projection-title">${safeTitle}</title><desc id="projection-description">Visible dependency graph projection with ${positionedNodes.length} packages and ${positionedEdges.length} relationships.</desc><defs><pattern id="projection-grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M 32 0 L 0 0 0 32" fill="none" stroke="#8fd3f4" stroke-opacity="0.07" stroke-width="1"/></pattern><marker id="projection-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L9,4.5 L0,9 z" fill="#8fa4b9"/></marker></defs><rect x="${minX}" y="${minY}" width="${viewWidth}" height="${viewHeight}" rx="18" fill="#07080c"/><rect x="${minX}" y="${minY}" width="${viewWidth}" height="${viewHeight}" rx="18" fill="url(#projection-grid)"/>${edgeMarkup}${nodeMarkup}</svg>`;
+  return { svg: svgDocument, width, height, viewWidth, viewHeight };
 }
 
 function projectionFilename(parts, format) {
+  const extension = format === "png" ? "png" : "svg";
   const base = parts.filter(Boolean).map(safeFilename).join("_") || "dependency_graph";
-  return `${base}.dependency-graph.visible.${format}`;
+  return `${base}.dependency-graph.visible.${extension}`;
 }
 
 function downloadBlob(blob, filename) {
@@ -1714,7 +1978,7 @@ function downloadBlob(blob, filename) {
   document.body.appendChild(link);
   link.click();
   link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+  setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
 function svg(tag, attributes = {}, text = null) {
@@ -1785,6 +2049,21 @@ function isGraphDigest(value) {
   return /^sha256:[0-9a-f]{64}$/.test(value);
 }
 
+function parseContentLength(value) {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+  const length = Number(value);
+  return Number.isSafeInteger(length) ? length : null;
+}
+
+function cacheControlDisallowsStorage(value) {
+  return String(value)
+    .split(",")
+    .some(
+      (directive) =>
+        directive.trim().split("=", 1)[0].trim().toLowerCase() === "no-store"
+    );
+}
+
 function truncate(value, length) {
   const text = String(value || "");
   return text.length > length ? `${text.slice(0, length - 1)}…` : text;
@@ -1823,6 +2102,76 @@ function safeStorageSet(key, value) {
   }
 }
 
+function assertIdentity(identity, requireVersion) {
+  if (!identity || typeof identity !== "object") {
+    throw new Error("The dependency graph contains an invalid package identity.");
+  }
+  assertGraphText(identity.registry_id, "package registry identity");
+  assertGraphText(identity.org, "package organization");
+  assertGraphText(identity.name, "package name");
+  if (requireVersion) assertGraphText(identity.version, "package version");
+}
+
+function assertGraphText(value, field) {
+  if (
+    typeof value !== "string" ||
+    !value.length ||
+    value.length > MAX_GRAPH_TEXT_LENGTH ||
+    !isWellFormedUnicode(value)
+  ) {
+    throw new Error(`The dependency graph contains an invalid ${field}.`);
+  }
+}
+
+function isWellFormedUnicode(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function assertDeclaredDocumentCoordinate(document, org, name, version) {
+  if (
+    document?.view !== "declared" ||
+    document.package?.org !== org ||
+    document.package?.name !== name ||
+    document.package?.version !== version
+  ) {
+    throw new Error("The dependency graph response did not match the requested exact package version.");
+  }
+}
+
+function assertOptionalGraphText(value, field) {
+  if (value !== undefined && value !== null && value !== "") assertGraphText(value, field);
+}
+
+function assertOptionalBoolean(value, field) {
+  if (value !== undefined && typeof value !== "boolean") {
+    throw new Error(`The dependency graph contains an invalid ${field}.`);
+  }
+}
+
+function assertStringList(value, field) {
+  if (value === undefined) return;
+  if (!Array.isArray(value) || value.length > MAX_EDGE_FEATURES) {
+    throw new Error(`The dependency graph contains invalid ${field}.`);
+  }
+  for (const item of value) assertGraphText(item, field);
+}
+
+function assertDependencyKind(value) {
+  if (!Object.hasOwn(KIND_LABELS, value)) {
+    throw new Error("The dependency graph contains an invalid dependency kind.");
+  }
+}
+
 if (globalThis.customElements && !customElements.get("zed-dependency-graph")) {
   customElements.define("zed-dependency-graph", ZedDependencyGraph);
 }
@@ -1830,12 +2179,17 @@ if (globalThis.customElements && !customElements.get("zed-dependency-graph")) {
 export {
   ZedDependencyGraph,
   adjacency,
+  assertDeclaredDocumentCoordinate,
+  cacheControlDisallowsStorage,
+  edgeIdentity,
   edgePairIdentity,
+  escapeHtml,
   isGraphDigest,
   isStrongGraphEtag,
   packageDocumentUrl,
   packageExportUrl,
   packagePageUrl,
+  parseContentLength,
   pathEdgePairs,
   projectionFilename,
   projectionSvgDocument,

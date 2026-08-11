@@ -41,8 +41,19 @@ pub async fn organization(
             );
         }
     };
-    let rows: Vec<components::PackageRow> =
-        packages.iter().map(super::package::summary_row).collect();
+    let rows = match latest_graph_rows(db, &packages).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(%error, org = %org.slug, "organization graph latest-version lookup failed");
+            return message_page(
+                &state,
+                &viewer,
+                "Topology unavailable",
+                "The organization package topology is temporarily unavailable.",
+                StatusCode::SERVICE_UNAVAILABLE,
+            );
+        }
+    };
 
     let content = html! {
         div class="pkg-head" {
@@ -109,8 +120,24 @@ pub async fn project(
             );
         }
     };
-    let rows: Vec<components::PackageRow> =
-        packages.iter().map(super::package::summary_row).collect();
+    let rows = match latest_graph_rows(db, &packages).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                org = %org.slug,
+                project = %project.slug,
+                "project graph latest-version lookup failed"
+            );
+            return message_page(
+                &state,
+                &viewer,
+                "Topology unavailable",
+                "The project package topology is temporarily unavailable.",
+                StatusCode::SERVICE_UNAVAILABLE,
+            );
+        }
+    };
 
     let content = html! {
         div class="pkg-head" {
@@ -145,6 +172,27 @@ pub async fn project(
         .into_string(),
     )
     .into_response()
+}
+
+async fn latest_graph_rows(
+    db: &zed_orm_core::ReadContext,
+    packages: &[zed_orm_core::models::PackageSummary],
+) -> Result<Vec<components::PackageRow>, zed_orm_core::OrmError> {
+    let mut rows = Vec::with_capacity(packages.len());
+    for package in packages {
+        let mut row = super::package::summary_row(package);
+        row.latest = match package.latest_version.as_deref() {
+            Some(latest) => {
+                zed_orm_core::read::package_version_by_package_and_version(db, package.id, latest)
+                    .await?
+                    .filter(|version| !version.yanked)
+                    .map(|version| version.version)
+            }
+            None => None,
+        };
+        rows.push(row);
+    }
+    Ok(rows)
 }
 
 async fn project_scope(
@@ -200,10 +248,23 @@ async fn project_scope(
         }
     };
 
-    let direct_role = if viewer.can_see_private(org_slug) {
+    let org_role = match session::exact_org_role(db, &viewer, org.id).await {
+        Ok(role) => role,
+        Err(error) => {
+            tracing::warn!(%error, org = org_slug, project = project_slug, "project graph organization membership lookup failed");
+            return Err(message_page(
+                state,
+                &viewer,
+                "Topology unavailable",
+                "The project topology is temporarily unavailable.",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ));
+        }
+    };
+    let direct_role = if org_role.is_some() {
         None
-    } else if let Some(user) = viewer.user() {
-        match zed_orm_core::read::project_role_for_user(db, project.id, user.id).await {
+    } else if viewer.user().is_some() {
+        match session::exact_project_role(db, &viewer, project.id).await {
             Ok(Some(role)) => Some(role),
             Ok(None) => return Err(project_not_found(state, &viewer)),
             Err(error) => {
@@ -228,7 +289,7 @@ async fn project_scope(
         slug: project.slug,
         name: project.name,
         description: project.description,
-        role: direct_role.unwrap_or_default(),
+        role: direct_role.or(org_role).unwrap_or_default(),
     };
     Ok((viewer, org, summary))
 }
@@ -271,7 +332,7 @@ async fn org_scope(
             ));
         }
     };
-    let Some(org) = org.filter(|_| viewer.can_see_private(org_slug)) else {
+    let Some(org) = org else {
         return Err(message_page(
             state,
             &viewer,
@@ -280,6 +341,28 @@ async fn org_scope(
             StatusCode::NOT_FOUND,
         ));
     };
+    let role = match session::exact_org_role(db, &viewer, org.id).await {
+        Ok(role) => role,
+        Err(error) => {
+            tracing::warn!(%error, org = org_slug, "graph organization membership lookup failed");
+            return Err(message_page(
+                state,
+                &viewer,
+                "Registry unavailable",
+                "Dependency topology metadata is temporarily unavailable.",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ));
+        }
+    };
+    if role.is_none() {
+        return Err(message_page(
+            state,
+            &viewer,
+            "Not found",
+            "That organization does not exist, or you are not a member of it.",
+            StatusCode::NOT_FOUND,
+        ));
+    }
     Ok((viewer, org))
 }
 
