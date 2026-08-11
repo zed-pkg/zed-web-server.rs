@@ -175,12 +175,19 @@ impl DelegatedGet {
 pub(crate) async fn delegated_get(
     state: &WebState,
     headers: &HeaderMap,
+    method: Method,
     url: reqwest::Url,
-    if_none_match: Option<HeaderValue>,
+    accept: &'static str,
 ) -> Result<DelegatedGet, Response> {
     let Some(config) = auth_config(state) else {
         return Err(auth_unavailable());
     };
+    if !matches!(method, Method::GET | Method::HEAD) {
+        return Err(error_json(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "delegated browser reads permit only GET and HEAD",
+        ));
+    }
     if !delegated_url_allowed(config, &url) {
         tracing::error!(%url, "refused to send delegated credentials outside the configured API");
         return Err(error_json(
@@ -218,8 +225,13 @@ pub(crate) async fn delegated_get(
             });
         }
     };
-    let mut request = state.http.get(url).bearer_auth(delegated);
-    if let Some(etag) = if_none_match {
+    let mut request = state
+        .http
+        .request(method, url)
+        .bearer_auth(delegated)
+        .header(header::ACCEPT, accept)
+        .header(header::ACCEPT_ENCODING, "identity");
+    for etag in headers.get_all(header::IF_NONE_MATCH) {
         request = request.header(header::IF_NONE_MATCH, etag);
     }
     let outcome = match request.send().await {

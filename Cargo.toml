@@ -14,12 +14,13 @@ zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = 
 # would hand this process write symbols its database identity cannot use.
 # Pin the certified canonical data-plane revision; never follow a moving branch
 # in a production server lock graph.
-zed-orm-core = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "18fd49ba4d73689a941eaa56ef20a12a6c90a993" }
+zed-orm-core = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "38ef3f50638614a14170d5c677173e040e916a6d" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 axum = "0.8"
 dotenvy = "0.15"
+http-body = "1"
 maud = "0.27"
 # No default features: no auto-redirects wanted (policy is set to none at
 # construction anyway) and auth pages must pass through byte-for-byte, so no

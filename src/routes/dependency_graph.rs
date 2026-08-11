@@ -9,19 +9,23 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use reqwest::Url;
 use serde_json::json;
+use zed_interfaces::{
+    DEPENDENCY_GRAPH_AUTHORITATIVE_HEADER, DEPENDENCY_GRAPH_DEFAULT_MAX_ENCODED_BYTES,
+    DEPENDENCY_GRAPH_DIGEST_HEADER, DependencyGraphExportFormat, DependencyGraphFormat,
+};
 
 use crate::state::WebState;
 use crate::{browser_auth, session};
 
-const MAX_GRAPH_BYTES: usize = 32 * 1024 * 1024;
-const GRAPH_DIGEST_HEADER: &str = "x-zpkg-graph-digest";
-const GRAPH_AUTHORITY_HEADER: &str = "x-zpkg-graph-authoritative";
+const MAX_GRAPH_BYTES: usize = DEPENDENCY_GRAPH_DEFAULT_MAX_ENCODED_BYTES as usize;
+const MAX_COORDINATE_LENGTH: usize = 128;
 const SELECTED_VERSION_HEADER: &str = "x-zpkg-selected-version";
 const DEFAULT_API_BASE: &str = "http://127.0.0.1:8080";
+const PUBLIC_EXACT_GRAPH_CACHE: &str = "public, max-age=31536000, immutable";
 const PRIVATE_GRAPH_CACHE: &str = "private, no-store";
 const LATEST_GRAPH_CACHE: &str = "public, max-age=60, must-revalidate";
 
@@ -50,36 +54,73 @@ impl GraphCachePolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExportRoute {
-    Canonical(&'static str),
-    Extended(&'static str),
+    Canonical(DependencyGraphFormat),
+    Extended(DependencyGraphExportFormat),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GraphUrlError;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RepresentationContract {
+    media_type: &'static str,
+    authoritative: Option<bool>,
+}
+
+impl RepresentationContract {
+    const fn json() -> Self {
+        Self {
+            media_type: DependencyGraphFormat::Json.media_type(),
+            authoritative: Some(DependencyGraphFormat::Json.is_authoritative()),
+        }
+    }
+
+    const fn for_export(format: ExportRoute) -> Self {
+        Self {
+            media_type: format.media_type(),
+            authoritative: format.authoritative_header(),
+        }
+    }
+}
+
 impl ExportRoute {
     fn parse(value: &str) -> Option<Self> {
-        Some(match value.to_ascii_lowercase().as_str() {
-            "json" => Self::Canonical("json"),
-            "yaml" | "yml" => Self::Canonical("yaml"),
-            "toml" => Self::Canonical("toml"),
-            "dot" | "graphviz" => Self::Canonical("dot"),
-            "mermaid" | "mmd" => Self::Canonical("mermaid"),
-            "json5" => Self::Extended("json5"),
-            "xml" => Self::Extended("xml"),
-            "csv" => Self::Extended("csv"),
-            "msgpack" | "messagepack" | "mpk" => Self::Extended("msgpack"),
-            "protobuf" | "proto" | "pb" => Self::Extended("protobuf"),
-            _ => return None,
-        })
+        DependencyGraphFormat::parse_name(value)
+            .map(Self::Canonical)
+            .or_else(|| DependencyGraphExportFormat::parse_name(value).map(Self::Extended))
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Canonical(format) => format.name(),
+            Self::Extended(format) => format.name(),
+        }
+    }
+
+    const fn media_type(self) -> &'static str {
+        match self {
+            Self::Canonical(format) => format.media_type(),
+            Self::Extended(format) => format.media_type(),
+        }
+    }
+
+    const fn authoritative_header(self) -> Option<bool> {
+        match self {
+            Self::Canonical(format) => Some(format.is_authoritative()),
+            Self::Extended(format) => Some(format.is_authoritative()),
+        }
     }
 }
 
 pub async fn package_document(
     State(state): State<Arc<WebState>>,
+    method: Method,
     headers: HeaderMap,
     Path((org, name, version)): Path<(String, String, String)>,
 ) -> Response {
+    if !valid_package_coordinate(&org, &name, Some(&version)) {
+        return invalid_coordinate();
+    }
     let authorized = match authorize_package(&state, &headers, &org, &name, Some(&version)).await {
         Ok(authorized) => authorized,
         Err(response) => return response,
@@ -91,19 +132,25 @@ pub async fn package_document(
     };
     relay(
         &state,
+        method,
         &headers,
         url,
         None,
         GraphCachePolicy::for_package(authorized.is_public, false),
+        RepresentationContract::json(),
     )
     .await
 }
 
 pub async fn latest_package_document(
     State(state): State<Arc<WebState>>,
+    method: Method,
     headers: HeaderMap,
     Path((org, name)): Path<(String, String)>,
 ) -> Response {
+    if !valid_package_coordinate(&org, &name, None) {
+        return invalid_coordinate();
+    }
     let authorized = match authorize_package(&state, &headers, &org, &name, None).await {
         Ok(authorized) => authorized,
         Err(response) => return response,
@@ -116,19 +163,25 @@ pub async fn latest_package_document(
     };
     relay(
         &state,
+        method,
         &headers,
         url,
         Some(&version),
         GraphCachePolicy::for_package(authorized.is_public, true),
+        RepresentationContract::json(),
     )
     .await
 }
 
 pub async fn package_export(
     State(state): State<Arc<WebState>>,
+    method: Method,
     headers: HeaderMap,
     Path((org, name, version, requested_format)): Path<(String, String, String, String)>,
 ) -> Response {
+    if !valid_package_coordinate(&org, &name, Some(&version)) {
+        return invalid_coordinate();
+    }
     let authorized = match authorize_package(&state, &headers, &org, &name, Some(&version)).await {
         Ok(authorized) => authorized,
         Err(response) => return response,
@@ -142,11 +195,11 @@ pub async fn package_export(
     };
     let api_base = api_base(&state);
     let url = match format {
-        ExportRoute::Canonical(format) => {
-            declared_graph_url(&api_base, &org, &name, &version, Some(format))
+        ExportRoute::Canonical(_) => {
+            declared_graph_url(&api_base, &org, &name, &version, Some(format.name()))
         }
-        ExportRoute::Extended(format) => {
-            extended_export_url(&api_base, &org, &name, &version, format)
+        ExportRoute::Extended(_) => {
+            extended_export_url(&api_base, &org, &name, &version, format.name())
         }
     };
     let url = match url {
@@ -155,12 +208,38 @@ pub async fn package_export(
     };
     relay(
         &state,
+        method,
         &headers,
         url,
         None,
         GraphCachePolicy::for_package(authorized.is_public, false),
+        RepresentationContract::for_export(format),
     )
     .await
+}
+
+fn valid_package_coordinate(org: &str, name: &str, version: Option<&str>) -> bool {
+    [Some(org), Some(name), version]
+        .into_iter()
+        .flatten()
+        .all(valid_coordinate_component)
+}
+
+fn valid_coordinate_component(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_COORDINATE_LENGTH
+        && !matches!(value, "." | "..")
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'+' | b'@')
+        })
+}
+
+fn invalid_coordinate() -> Response {
+    problem(
+        StatusCode::BAD_REQUEST,
+        "invalid_coordinate",
+        "The package coordinate is not valid.",
+    )
 }
 
 async fn authorize_package(
@@ -194,14 +273,27 @@ async fn authorize_package(
         return Err(graph_not_found());
     };
     let is_public = package.visibility == "public";
-    let mut can_read_private = viewer.can_see_private(&org.slug);
-    if !is_public
-        && !can_read_private
-        && let (Some(user), Some(project_id)) = (viewer.user(), package.project_id)
-    {
-        let project_role =
-            match zed_orm_core::read::project_role_for_user(db, project_id, user.id).await {
-                Ok(role) => role,
+    let mut can_read_private = false;
+    if !is_public {
+        can_read_private = match session::exact_org_role(db, &viewer, org.id).await {
+            Ok(role) => role.is_some(),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    org = org_slug,
+                    package = name,
+                    "graph organization membership lookup failed"
+                );
+                return Err(problem(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "registry_unavailable",
+                    "Dependency graph metadata is temporarily unavailable.",
+                ));
+            }
+        };
+        if !can_read_private && let Some(project_id) = package.project_id {
+            can_read_private = match session::exact_project_role(db, &viewer, project_id).await {
+                Ok(role) => role.is_some(),
                 Err(error) => {
                     tracing::warn!(
                         %error,
@@ -216,15 +308,15 @@ async fn authorize_package(
                     ));
                 }
             };
-        can_read_private = project_role.is_some();
+        }
     }
     if !is_public && !can_read_private {
         return Err(graph_not_found());
     }
 
-    // Package authorization is sufficient for an exact immutable coordinate;
-    // verify it with the exact indexed read rather than scanning the bounded
-    // package-page listing, which would reject older published history.
+    // Resolve an exact immutable coordinate through the dedicated key lookup.
+    // Never scan the page-oriented version listing here: older history remains
+    // addressable after a package has more than one page of releases.
     if let Some(requested) = requested_version {
         return match zed_orm_core::read::package_version_by_package_and_version(
             db, package.id, requested,
@@ -237,7 +329,13 @@ async fn authorize_package(
             }),
             Ok(None) => Err(graph_not_found()),
             Err(error) => {
-                tracing::warn!(%error, org = org_slug, package = name, version = requested, "graph version lookup failed");
+                tracing::warn!(
+                    %error,
+                    org = org_slug,
+                    package = name,
+                    version = requested,
+                    "exact graph version lookup failed"
+                );
                 Err(problem(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "registry_unavailable",
@@ -247,8 +345,16 @@ async fn authorize_package(
         };
     }
 
-    let versions = match zed_orm_core::read::versions_for_package(db, package.id).await {
-        Ok(versions) => versions,
+    let Some(latest) = package.latest_version else {
+        return Err(graph_not_found());
+    };
+    let version = match zed_orm_core::read::package_version_by_package_and_version(
+        db, package.id, &latest,
+    )
+    .await
+    {
+        Ok(Some(version)) if !version.yanked => version.version,
+        Ok(_) => return Err(graph_not_found()),
         Err(error) => {
             tracing::warn!(%error, org = org_slug, package = name, "graph version lookup failed");
             return Err(problem(
@@ -258,34 +364,6 @@ async fn authorize_package(
             ));
         }
     };
-
-    let exact_latest = match package.latest_version {
-        Some(latest) => match zed_orm_core::read::package_version_by_package_and_version(
-            db, package.id, &latest,
-        )
-        .await
-        {
-            Ok(Some(row)) if !row.yanked => Some(latest),
-            Ok(_) => None,
-            Err(error) => {
-                tracing::warn!(%error, org = org_slug, package = name, version = latest, "latest graph version lookup failed");
-                return Err(problem(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "registry_unavailable",
-                    "Dependency graph metadata is temporarily unavailable.",
-                ));
-            }
-        },
-        None => None,
-    };
-    let version = exact_latest
-        .or_else(|| {
-            versions
-                .iter()
-                .find(|row| !row.yanked)
-                .map(|row| row.version.clone())
-        })
-        .ok_or_else(graph_not_found)?;
     Ok(AuthorizedGraph { version, is_public })
 }
 
@@ -390,17 +468,20 @@ fn base_url(base: &str) -> Result<Url, GraphUrlError> {
 
 async fn relay(
     state: &WebState,
+    method: Method,
     request_headers: &HeaderMap,
     url: Url,
     selected_version: Option<&str>,
     cache_policy: GraphCachePolicy,
+    contract: RepresentationContract,
 ) -> Response {
     if cache_policy == GraphCachePolicy::Private {
         let delegated = match browser_auth::delegated_get(
             state,
             request_headers,
+            method.clone(),
             url,
-            request_headers.get(header::IF_NONE_MATCH).cloned(),
+            contract.media_type,
         )
         .await
         {
@@ -410,7 +491,14 @@ async fn relay(
         let (outcome, rotation) = delegated.into_parts();
         let mut response = match outcome {
             browser_auth::DelegatedGetOutcome::Upstream(upstream) => {
-                relay_response(upstream, selected_version, cache_policy).await
+                relay_response(
+                    upstream,
+                    method == Method::HEAD,
+                    selected_version,
+                    cache_policy,
+                    contract,
+                )
+                .await
             }
             browser_auth::DelegatedGetOutcome::Failed(response) => private_auth_error(response),
         };
@@ -418,12 +506,25 @@ async fn relay(
         return response;
     }
 
-    let mut request = state.http.get(url);
-    if let Some(etag) = request_headers.get(header::IF_NONE_MATCH) {
-        request = request.header(header::IF_NONE_MATCH, etag.clone());
+    let mut request = state
+        .http
+        .request(method.clone(), url)
+        .header(header::ACCEPT, contract.media_type)
+        .header(header::ACCEPT_ENCODING, "identity");
+    for etag in request_headers.get_all(header::IF_NONE_MATCH) {
+        request = request.header(header::IF_NONE_MATCH, etag);
     }
     match request.send().await {
-        Ok(upstream) => relay_response(upstream, selected_version, cache_policy).await,
+        Ok(upstream) => {
+            relay_response(
+                upstream,
+                method == Method::HEAD,
+                selected_version,
+                cache_policy,
+                contract,
+            )
+            .await
+        }
         Err(error) => {
             tracing::warn!(%error, "dependency graph API request failed");
             problem(
@@ -456,8 +557,10 @@ fn private_auth_error(response: Response) -> Response {
 
 async fn relay_response(
     mut upstream: reqwest::Response,
+    is_head: bool,
     selected_version: Option<&str>,
     cache_policy: GraphCachePolicy,
+    contract: RepresentationContract,
 ) -> Response {
     let status =
         StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -469,6 +572,13 @@ async fn relay_response(
     }
     if status == StatusCode::PAYLOAD_TOO_LARGE {
         return graph_too_large();
+    }
+    if status == StatusCode::UNPROCESSABLE_ENTITY {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "graph_unprocessable",
+            "That dependency graph cannot be represented within the selected format or limits.",
+        );
     }
     if status == StatusCode::TOO_MANY_REQUESTS {
         let mut response = problem(
@@ -492,6 +602,66 @@ async fn relay_response(
         );
     }
 
+    if !valid_graph_validators(upstream.headers()) {
+        tracing::warn!("dependency graph API omitted required representation validators");
+        return problem(
+            StatusCode::BAD_GATEWAY,
+            "graph_upstream_contract_error",
+            "The dependency graph API returned invalid representation metadata.",
+        );
+    }
+    if status == StatusCode::OK && !content_type_matches(upstream.headers(), contract.media_type) {
+        tracing::warn!(
+            expected_media_type = contract.media_type,
+            "dependency graph API returned the wrong media type"
+        );
+        return problem(
+            StatusCode::BAD_GATEWAY,
+            "graph_upstream_contract_error",
+            "The dependency graph API returned the wrong representation type.",
+        );
+    }
+    if status == StatusCode::OK && !content_encoding_is_identity(upstream.headers()) {
+        tracing::warn!("dependency graph API returned an unexpected content encoding");
+        return problem(
+            StatusCode::BAD_GATEWAY,
+            "graph_upstream_contract_error",
+            "The dependency graph API returned an unsupported content encoding.",
+        );
+    }
+    if !valid_attachment_disposition(upstream.headers()) {
+        tracing::warn!("dependency graph API omitted the required safe download filename");
+        return problem(
+            StatusCode::BAD_GATEWAY,
+            "graph_upstream_contract_error",
+            "The dependency graph API returned invalid download metadata.",
+        );
+    }
+    if let Some(expected) = contract.authoritative
+        && !authority_header_matches(upstream.headers(), expected)
+    {
+        tracing::warn!(
+            expected,
+            "dependency graph API returned the wrong authority marker"
+        );
+        return problem(
+            StatusCode::BAD_GATEWAY,
+            "graph_upstream_contract_error",
+            "The dependency graph API returned inconsistent representation metadata.",
+        );
+    }
+    let Some(content_length) = selected_representation_length(upstream.headers()) else {
+        tracing::warn!("dependency graph API omitted the selected representation length");
+        return problem(
+            StatusCode::BAD_GATEWAY,
+            "graph_upstream_contract_error",
+            "The dependency graph API returned invalid representation metadata.",
+        );
+    };
+    if content_length > MAX_GRAPH_BYTES as u64 {
+        return graph_too_large();
+    }
+
     let mut response_headers = HeaderMap::new();
     copy_header(
         upstream.headers(),
@@ -503,45 +673,37 @@ async fn relay_response(
         &mut response_headers,
         header::CONTENT_DISPOSITION,
     );
-    // Axum strips the downstream body for the automatically supported HEAD
-    // method. Keep the upstream representation length so HEAD and 304 retain
-    // useful exact metadata without inventing a second representation.
+    apply_cache_policy(upstream.headers(), &mut response_headers, cache_policy);
+    copy_header(upstream.headers(), &mut response_headers, header::ETAG);
     copy_header(
         upstream.headers(),
         &mut response_headers,
         header::CONTENT_LENGTH,
     );
-    apply_cache_policy(upstream.headers(), &mut response_headers, cache_policy);
-    copy_header(upstream.headers(), &mut response_headers, header::ETAG);
     copy_named_header(
         upstream.headers(),
         &mut response_headers,
-        GRAPH_DIGEST_HEADER,
+        DEPENDENCY_GRAPH_DIGEST_HEADER,
     );
     copy_named_header(
         upstream.headers(),
         &mut response_headers,
-        GRAPH_AUTHORITY_HEADER,
+        DEPENDENCY_GRAPH_AUTHORITATIVE_HEADER,
     );
     if let Some(version) = selected_version.and_then(|value| HeaderValue::from_str(value).ok()) {
         response_headers.insert(HeaderName::from_static(SELECTED_VERSION_HEADER), version);
     }
 
     if status == StatusCode::NOT_MODIFIED {
-        return (status, response_headers).into_response();
+        return super::not_modified_with_representation_metadata(response_headers);
     }
 
-    if upstream
-        .content_length()
-        .is_some_and(|length| length > MAX_GRAPH_BYTES as u64)
-    {
-        return graph_too_large();
+    if is_head {
+        return (status, response_headers).into_response();
     }
     let mut body = Vec::with_capacity(
-        upstream
-            .content_length()
-            .and_then(|length| usize::try_from(length).ok())
-            .unwrap_or(0)
+        usize::try_from(content_length)
+            .unwrap_or(MAX_GRAPH_BYTES)
             .min(MAX_GRAPH_BYTES),
     );
     loop {
@@ -561,28 +723,158 @@ async fn relay_response(
             }
         }
     }
+    if body.len() as u64 != content_length {
+        tracing::warn!(
+            declared_length = content_length,
+            actual_length = body.len(),
+            "dependency graph API returned a body with the wrong representation length"
+        );
+        return problem(
+            StatusCode::BAD_GATEWAY,
+            "graph_upstream_contract_error",
+            "The dependency graph API returned inconsistent representation metadata.",
+        );
+    }
     (status, response_headers, body).into_response()
 }
 
 fn apply_cache_policy(upstream: &HeaderMap, downstream: &mut HeaderMap, policy: GraphCachePolicy) {
-    match policy {
-        GraphCachePolicy::PublicExact => {
-            copy_header(upstream, downstream, header::CACHE_CONTROL);
+    let upstream_forbids_storage = cache_control_has_directive(upstream, "no-store")
+        || cache_control_has_directive(upstream, "private");
+    match (policy, upstream_forbids_storage) {
+        (GraphCachePolicy::Private, _) => {
+            downstream.insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static(PRIVATE_GRAPH_CACHE),
+            );
         }
-        GraphCachePolicy::PublicLatest => {
+        (_, true) => {
+            // A visibility change between the database authorization read and
+            // the API response must only make caching stricter.
+            downstream.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        }
+        (GraphCachePolicy::PublicExact, false) => {
+            downstream.insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static(PUBLIC_EXACT_GRAPH_CACHE),
+            );
+        }
+        (GraphCachePolicy::PublicLatest, false) => {
             downstream.insert(
                 header::CACHE_CONTROL,
                 HeaderValue::from_static(LATEST_GRAPH_CACHE),
             );
         }
-        GraphCachePolicy::Private => {
-            downstream.insert(
-                header::CACHE_CONTROL,
-                HeaderValue::from_static(PRIVATE_GRAPH_CACHE),
-            );
-            downstream.insert(header::VARY, HeaderValue::from_static("Cookie"));
-        }
     }
+    downstream.insert(
+        header::VARY,
+        HeaderValue::from_static(match policy {
+            GraphCachePolicy::Private => "Accept, Cookie",
+            GraphCachePolicy::PublicExact | GraphCachePolicy::PublicLatest => "Accept",
+        }),
+    );
+}
+
+fn cache_control_has_directive(headers: &HeaderMap, expected: &str) -> bool {
+    headers
+        .get_all(header::CACHE_CONTROL)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .map(|directive| {
+            directive
+                .split_once('=')
+                .map_or(directive, |(name, _)| name)
+                .trim()
+        })
+        .any(|directive| directive.eq_ignore_ascii_case(expected))
+}
+
+fn valid_graph_validators(headers: &HeaderMap) -> bool {
+    headers.get(header::ETAG).is_some_and(is_strong_etag)
+        && headers
+            .get(DEPENDENCY_GRAPH_DIGEST_HEADER)
+            .is_some_and(is_graph_digest)
+}
+
+fn selected_representation_length(headers: &HeaderMap) -> Option<u64> {
+    let value = headers.get(header::CONTENT_LENGTH)?.to_str().ok()?;
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
+}
+
+fn is_strong_etag(value: &HeaderValue) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 2
+        && bytes.first() == Some(&b'"')
+        && bytes.last() == Some(&b'"')
+        && bytes[1..bytes.len() - 1]
+            .iter()
+            .all(|byte| *byte == 0x21 || (0x23..=0x7e).contains(byte) || *byte >= 0x80)
+}
+
+fn is_graph_digest(value: &HeaderValue) -> bool {
+    value
+        .to_str()
+        .ok()
+        .and_then(|value| value.strip_prefix("sha256:"))
+        .is_some_and(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+}
+
+fn content_type_matches(headers: &HeaderMap, expected: &str) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|actual| {
+            media_type_essence(actual).eq_ignore_ascii_case(media_type_essence(expected))
+        })
+}
+
+fn content_encoding_is_identity(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::CONTENT_ENCODING)
+        .iter()
+        .all(|value| {
+            value.to_str().is_ok_and(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .all(|encoding| encoding.eq_ignore_ascii_case("identity"))
+            })
+        })
+}
+
+fn valid_attachment_disposition(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_DISPOSITION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("attachment; filename=\""))
+        .and_then(|value| value.strip_suffix('"'))
+        .is_some_and(|filename| {
+            !filename.is_empty()
+                && filename.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'_')
+                })
+        })
+}
+
+fn media_type_essence(value: &str) -> &str {
+    value.split(';').next().unwrap_or_default().trim()
+}
+
+fn authority_header_matches(headers: &HeaderMap, expected: bool) -> bool {
+    headers
+        .get(DEPENDENCY_GRAPH_AUTHORITATIVE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == if expected { "true" } else { "false" })
 }
 
 fn copy_header(source: &HeaderMap, target: &mut HeaderMap, name: HeaderName) {
@@ -636,17 +928,44 @@ mod tests {
     fn export_aliases_are_explicit_and_bounded() {
         assert_eq!(
             ExportRoute::parse("yml"),
-            Some(ExportRoute::Canonical("yaml"))
+            Some(ExportRoute::Canonical(DependencyGraphFormat::Yaml))
         );
         assert_eq!(
             ExportRoute::parse("messagepack"),
-            Some(ExportRoute::Extended("msgpack"))
+            Some(ExportRoute::Extended(
+                DependencyGraphExportFormat::MessagePack
+            ))
         );
         assert_eq!(
             ExportRoute::parse("pb"),
-            Some(ExportRoute::Extended("protobuf"))
+            Some(ExportRoute::Extended(DependencyGraphExportFormat::Protobuf))
         );
         assert!(ExportRoute::parse("pickle").is_none());
+    }
+
+    #[test]
+    fn package_coordinates_are_ascii_bounded_and_path_safe() {
+        assert!(valid_package_coordinate(
+            "acme",
+            "http-kit",
+            Some("2.0.0-beta.1+build.7")
+        ));
+        assert!(!valid_package_coordinate(
+            "acme tools",
+            "http-kit",
+            Some("2.0.0")
+        ));
+        assert!(!valid_package_coordinate(
+            "acme",
+            "http/client",
+            Some("2.0.0")
+        ));
+        assert!(!valid_package_coordinate("acme", "..", Some("2.0.0")));
+        assert!(!valid_package_coordinate(
+            "a".repeat(MAX_COORDINATE_LENGTH + 1).as_str(),
+            "http-kit",
+            Some("2.0.0")
+        ));
     }
 
     #[test]
@@ -719,28 +1038,115 @@ mod tests {
     }
 
     #[test]
-    fn authorization_sensitive_cache_policies_override_public_upstream_headers() {
-        let mut upstream = HeaderMap::new();
-        upstream.insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("public, max-age=31536000, immutable"),
-        );
-
+    fn authorization_sensitive_cache_policies_are_owned_by_the_bff() {
+        let upstream = HeaderMap::new();
         let mut private = HeaderMap::new();
         apply_cache_policy(&upstream, &mut private, GraphCachePolicy::Private);
         assert_eq!(private[header::CACHE_CONTROL], PRIVATE_GRAPH_CACHE);
-        assert_eq!(private[header::VARY], "Cookie");
+        assert_eq!(private[header::VARY], "Accept, Cookie");
 
         let mut latest = HeaderMap::new();
         apply_cache_policy(&upstream, &mut latest, GraphCachePolicy::PublicLatest);
         assert_eq!(latest[header::CACHE_CONTROL], LATEST_GRAPH_CACHE);
+        assert_eq!(latest[header::VARY], "Accept");
 
         let mut exact = HeaderMap::new();
         apply_cache_policy(&upstream, &mut exact, GraphCachePolicy::PublicExact);
-        assert_eq!(
-            exact[header::CACHE_CONTROL],
-            upstream[header::CACHE_CONTROL]
+        assert_eq!(exact[header::CACHE_CONTROL], PUBLIC_EXACT_GRAPH_CACHE);
+
+        let mut no_store_upstream = HeaderMap::new();
+        no_store_upstream.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, NO-STORE"),
         );
+        let mut guarded = HeaderMap::new();
+        apply_cache_policy(
+            &no_store_upstream,
+            &mut guarded,
+            GraphCachePolicy::PublicExact,
+        );
+        assert_eq!(guarded[header::CACHE_CONTROL], "no-store");
+
+        let mut private_upstream = HeaderMap::new();
+        private_upstream.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, max-age=0"),
+        );
+        let mut race_guarded = HeaderMap::new();
+        apply_cache_policy(
+            &private_upstream,
+            &mut race_guarded,
+            GraphCachePolicy::PublicExact,
+        );
+        assert_eq!(race_guarded[header::CACHE_CONTROL], "no-store");
+    }
+
+    #[test]
+    fn upstream_graph_metadata_requires_strong_byte_and_semantic_validators() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ETAG, HeaderValue::from_static("\"bytes\""));
+        headers.insert(
+            HeaderName::from_static(DEPENDENCY_GRAPH_DIGEST_HEADER),
+            HeaderValue::from_static(
+                "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            ),
+        );
+        headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("4096"));
+        assert!(valid_graph_validators(&headers));
+        assert_eq!(selected_representation_length(&headers), Some(4096));
+
+        headers.insert(header::ETAG, HeaderValue::from_static("W/\"bytes\""));
+        assert!(!valid_graph_validators(&headers));
+        headers.insert(header::ETAG, HeaderValue::from_static("\"bytes\""));
+        headers.insert(
+            HeaderName::from_static(DEPENDENCY_GRAPH_DIGEST_HEADER),
+            HeaderValue::from_static("sha256:ABCDEF"),
+        );
+        assert!(!valid_graph_validators(&headers));
+        headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("4KiB"));
+        assert_eq!(selected_representation_length(&headers), None);
+    }
+
+    #[test]
+    fn upstream_media_and_authority_markers_must_match_the_selected_export() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/csv; charset=utf-8"),
+        );
+        headers.insert(
+            HeaderName::from_static(DEPENDENCY_GRAPH_AUTHORITATIVE_HEADER),
+            HeaderValue::from_static("false"),
+        );
+        assert!(content_type_matches(&headers, "text/csv; charset=utf-8"));
+        assert!(!content_type_matches(
+            &headers,
+            "application/vnd.zpkg.dependency-graph.v1+json"
+        ));
+        assert!(authority_header_matches(&headers, false));
+        assert!(!authority_header_matches(&headers, true));
+        assert_eq!(RepresentationContract::json().authoritative, Some(true));
+    }
+
+    #[test]
+    fn upstream_download_metadata_is_safe_and_unencoded() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static(
+                "attachment; filename=\"acme_http_1.0.0.dependency-graph.json\"",
+            ),
+        );
+        assert!(valid_attachment_disposition(&headers));
+        assert!(content_encoding_is_identity(&headers));
+
+        headers.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static("attachment; filename=\"../private.json\""),
+        );
+        assert!(!valid_attachment_disposition(&headers));
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        assert!(!content_encoding_is_identity(&headers));
     }
 
     #[test]
@@ -748,14 +1154,5 @@ mod tests {
         let response = graph_not_found();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
-    }
-
-    #[test]
-    fn representation_length_is_allowlisted_with_other_exact_metadata() {
-        let mut upstream = HeaderMap::new();
-        upstream.insert(header::CONTENT_LENGTH, HeaderValue::from_static("1234"));
-        let mut downstream = HeaderMap::new();
-        copy_header(&upstream, &mut downstream, header::CONTENT_LENGTH);
-        assert_eq!(downstream[header::CONTENT_LENGTH], "1234");
     }
 }

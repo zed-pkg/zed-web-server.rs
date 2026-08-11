@@ -30,7 +30,7 @@ fn package_manifest_and_lock_pin_the_cross_repository_contracts() {
         ),
         (
             "https://github.com/zed-pkg/zed-lib-core.git",
-            "18fd49ba4d73689a941eaa56ef20a12a6c90a993",
+            "38ef3f50638614a14170d5c677173e040e916a6d",
         ),
     ] {
         assert!(
@@ -62,6 +62,36 @@ fn package_manifest_and_lock_pin_the_cross_repository_contracts() {
         assert!(
             boundary.contains(contract),
             "database boundary lost {contract}"
+        );
+    }
+}
+
+#[test]
+fn ci_and_container_publisher_verify_the_exact_source_graph() {
+    let interfaces = "15577e17a820c3b2b1a39ee178d4645185309a05";
+    let core = "38ef3f50638614a14170d5c677173e040e916a6d";
+    for workflow in [
+        read(".github/workflows/ci.yml"),
+        read(".github/workflows/publish-container.yml"),
+    ] {
+        assert!(workflow.contains(&format!("ZED_INTERFACES_SHA: {interfaces}")));
+        assert!(workflow.contains(&format!("ZED_LIB_CORE_SHA: {core}")));
+        assert!(workflow.contains("node scripts/build-graph-assets.mjs --check"));
+        assert!(workflow.contains("node tests/dependency-graph.mjs"));
+    }
+
+    let publisher = read(".github/workflows/publish-container.yml");
+    for contract in [
+        "Verify embedded dependency-graph representations",
+        "Accept-Encoding: ${encoding}",
+        "If-None-Match: ${etag}",
+        "not_modified[\"content-length\"] == expected_length",
+        "io.zpkg.interfaces.revision",
+        "io.zpkg.core.revision",
+    ] {
+        assert!(
+            publisher.contains(contract),
+            "container publisher lost graph/provenance gate {contract}"
         );
     }
 }
