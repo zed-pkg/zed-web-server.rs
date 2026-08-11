@@ -21,6 +21,7 @@ const MAX_GRAPH_BYTES: usize = 32 * 1024 * 1024;
 const GRAPH_DIGEST_HEADER: &str = "x-zpkg-graph-digest";
 const GRAPH_AUTHORITY_HEADER: &str = "x-zpkg-graph-authoritative";
 const SELECTED_VERSION_HEADER: &str = "x-zpkg-selected-version";
+const DEFAULT_API_BASE: &str = "http://127.0.0.1:8080";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExportRoute {
@@ -57,7 +58,8 @@ pub async fn package_document(
     if let Err(response) = authorize_package(&state, &headers, &org, &name, Some(&version)).await {
         return response;
     }
-    let url = match declared_graph_url(api_base(&state), &org, &name, &version, Some("json")) {
+    let api_base = api_base(&state);
+    let url = match declared_graph_url(&api_base, &org, &name, &version, Some("json")) {
         Ok(url) => url,
         Err(_) => return upstream_configuration_error(),
     };
@@ -73,7 +75,8 @@ pub async fn latest_package_document(
         Ok(version) => version,
         Err(response) => return response,
     };
-    let url = match declared_graph_url(api_base(&state), &org, &name, &version, Some("json")) {
+    let api_base = api_base(&state);
+    let url = match declared_graph_url(&api_base, &org, &name, &version, Some("json")) {
         Ok(url) => url,
         Err(_) => return upstream_configuration_error(),
     };
@@ -95,12 +98,13 @@ pub async fn package_export(
             "That dependency-graph export format is not supported.",
         );
     };
+    let api_base = api_base(&state);
     let url = match format {
         ExportRoute::Canonical(format) => {
-            declared_graph_url(api_base(&state), &org, &name, &version, Some(format))
+            declared_graph_url(&api_base, &org, &name, &version, Some(format))
         }
         ExportRoute::Extended(format) => {
-            extended_export_url(api_base(&state), &org, &name, &version, format)
+            extended_export_url(&api_base, &org, &name, &version, format)
         }
     };
     let url = match url {
@@ -180,12 +184,33 @@ async fn authorize_package(
         .ok_or_else(graph_not_found)
 }
 
-fn api_base(state: &WebState) -> &str {
-    state
-        .browser_auth
-        .as_ref()
-        .map(|config| config.api_url.as_str())
-        .unwrap_or("http://127.0.0.1:8080")
+fn api_base(state: &WebState) -> String {
+    let zed_api_url = std::env::var("ZED_API_URL").ok();
+    let public_registry_url = std::env::var("PUBLIC_REGISTRY_URL").ok();
+    configured_api_base(
+        state
+            .browser_auth
+            .as_ref()
+            .map(|config| config.api_url.as_str()),
+        zed_api_url.as_deref(),
+        public_registry_url.as_deref(),
+    )
+}
+
+fn configured_api_base(
+    browser_auth_api_url: Option<&str>,
+    zed_api_url: Option<&str>,
+    public_registry_url: Option<&str>,
+) -> String {
+    browser_auth_api_url
+        .into_iter()
+        .chain(zed_api_url)
+        .chain(public_registry_url)
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_API_BASE)
+        .trim_end_matches('/')
+        .to_owned()
 }
 
 fn declared_graph_url(
@@ -387,6 +412,35 @@ mod tests {
             Some(ExportRoute::Extended("protobuf"))
         );
         assert!(ExportRoute::parse("pickle").is_none());
+    }
+
+    #[test]
+    fn graph_api_origin_works_without_shared_auth() {
+        assert_eq!(
+            configured_api_base(
+                None,
+                None,
+                Some(" http://127.0.0.1:49152/ ")
+            ),
+            "http://127.0.0.1:49152"
+        );
+        assert_eq!(
+            configured_api_base(
+                None,
+                Some("https://api.internal.example/"),
+                Some("https://public.example/")
+            ),
+            "https://api.internal.example"
+        );
+        assert_eq!(
+            configured_api_base(
+                Some("https://delegated.internal/"),
+                Some("https://api.internal.example/"),
+                Some("https://public.example/")
+            ),
+            "https://delegated.internal"
+        );
+        assert_eq!(configured_api_base(None, Some("  "), None), DEFAULT_API_BASE);
     }
 
     #[test]
