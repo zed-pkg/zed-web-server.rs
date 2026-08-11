@@ -104,6 +104,23 @@ pub async fn page(
 
     let can_manage = viewer.can_administer(&org.slug);
     let can_view_org_topology = viewer.can_see_private(&org.slug);
+    // The package entity stores the project UUID, not its URL slug. Resolve the
+    // slug only for an authorized org member before rendering the optional
+    // project-topology link; public package visitors do not need this private
+    // organization listing.
+    let project_slug = if can_view_org_topology {
+        match package.project_id {
+            Some(project_id) => zed_orm_core::read::projects_for_org(db, org.id, &org.slug, true)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .find(|project| project.id == project_id)
+                .map(|project| project.slug),
+            None => None,
+        }
+    } else {
+        None
+    };
 
     let content = html! {
         div class="pkg-head" {
@@ -112,7 +129,7 @@ pub async fn page(
                 span class="badge badge-private" { (package.visibility) }
             }
             @if can_view_org_topology {
-                @if let Some(project_slug) = &package.project_slug {
+                @if let Some(project_slug) = &project_slug {
                     a class="button"
                       href={ "/orgs/" (org.slug) "/projects/" (project_slug) "/dependency-graph" } {
                         "Project graph"
