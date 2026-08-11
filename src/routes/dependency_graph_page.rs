@@ -1,0 +1,322 @@
+//! Organization and project dependency-topology pages.
+//!
+//! These pages compose already-authorized package summaries into the same
+//! shared browser component used by package pages. Each source graph is still
+//! fetched through the same-origin BFF and remains independently immutable.
+
+use std::sync::Arc;
+
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{Html, IntoResponse, Response};
+use maud::html;
+
+use crate::session::{self, Viewer};
+use crate::state::WebState;
+use crate::views::{PageContext, components, dependency_graph, layout};
+
+pub async fn organization(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+) -> Response {
+    let (viewer, org) = match org_scope(&state, &headers, &org_slug).await {
+        Ok(scope) => scope,
+        Err(response) => return response,
+    };
+    let db = state
+        .db
+        .as_ref()
+        .expect("org_scope proved the database is available");
+    let packages = match zed_orm_core::read::packages_for_org(db, org.id, &org.slug, true).await {
+        Ok(packages) => packages,
+        Err(error) => {
+            tracing::warn!(%error, org = %org.slug, "organization graph package lookup failed");
+            return message_page(
+                &state,
+                &viewer,
+                "Topology unavailable",
+                "The organization package topology is temporarily unavailable.",
+                StatusCode::SERVICE_UNAVAILABLE,
+            );
+        }
+    };
+    let rows: Vec<components::PackageRow> =
+        packages.iter().map(super::package::summary_row).collect();
+
+    let content = html! {
+        div class="pkg-head" {
+            div {
+                p class="dg-eyebrow" { "Organization intelligence" }
+                h1 { (org.name) " dependency topology" }
+            }
+            a class="button" href={ "/dashboard/" (org.slug) } { "Back to organization" }
+        }
+        p class="lede" {
+            "This view composes each package's latest declared graph. Select a node to inspect impact, "
+            "open the package, or expand beyond the organization boundary."
+        }
+        (dependency_graph::scope_workspace(
+            "organization",
+            &format!("{} package topology", org.name),
+            "Compare relationships across every published package visible in this organization.",
+            &rows,
+        ))
+    };
+
+    Html(
+        layout(
+            &format!("{} dependency topology", org.name),
+            true,
+            &viewer,
+            &PageContext::org(&org.slug),
+            content,
+        )
+        .into_string(),
+    )
+    .into_response()
+}
+
+pub async fn project(
+    State(state): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Path((org_slug, project_slug)): Path<(String, String)>,
+) -> Response {
+    let (viewer, org, project) =
+        match project_scope(&state, &headers, &org_slug, &project_slug).await {
+            Ok(scope) => scope,
+            Err(response) => return response,
+        };
+    let db = state
+        .db
+        .as_ref()
+        .expect("project_scope proved the database is available");
+    let packages = match zed_orm_core::read::packages_for_project(db, project.id, &org.slug).await {
+        Ok(packages) => packages,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                org = %org.slug,
+                project = %project.slug,
+                "project graph package lookup failed"
+            );
+            return message_page(
+                &state,
+                &viewer,
+                "Topology unavailable",
+                "The project package topology is temporarily unavailable.",
+                StatusCode::SERVICE_UNAVAILABLE,
+            );
+        }
+    };
+    let rows: Vec<components::PackageRow> =
+        packages.iter().map(super::package::summary_row).collect();
+
+    let content = html! {
+        div class="pkg-head" {
+            div {
+                p class="dg-eyebrow" { "Project intelligence" }
+                h1 { (project.name) " dependency topology" }
+            }
+            a class="button"
+              href={ "/orgs/" (org.slug) "/projects/" (project.slug) "/settings" } {
+                "Back to project"
+            }
+        }
+        @if let Some(description) = &project.description {
+            p class="lede" { (description) }
+        }
+        (dependency_graph::scope_workspace(
+            "project",
+            &format!("{} package topology", project.name),
+            "Trace dependencies and reverse impact among the latest published packages assigned to this project.",
+            &rows,
+        ))
+    };
+
+    Html(
+        layout(
+            &format!("{} dependency topology", project.name),
+            true,
+            &viewer,
+            &PageContext::project(&org.slug, &project.slug, &project.name),
+            content,
+        )
+        .into_string(),
+    )
+    .into_response()
+}
+
+async fn project_scope(
+    state: &WebState,
+    headers: &HeaderMap,
+    org_slug: &str,
+    project_slug: &str,
+) -> Result<
+    (
+        Viewer,
+        zed_orm_core::entities::org::Model,
+        zed_orm_core::models::ProjectSummary,
+    ),
+    Response,
+> {
+    let viewer = session::resolve(state, headers).await;
+    let Some(db) = &state.db else {
+        return Err(message_page(
+            state,
+            &viewer,
+            "Registry offline",
+            "The registry database is unavailable.",
+            StatusCode::SERVICE_UNAVAILABLE,
+        ));
+    };
+    let org = match zed_orm_core::read::org_by_slug(db, org_slug).await {
+        Ok(Some(org)) => org,
+        Ok(None) => return Err(project_not_found(state, &viewer)),
+        Err(error) => {
+            tracing::warn!(%error, org = org_slug, "project graph organization lookup failed");
+            return Err(message_page(
+                state,
+                &viewer,
+                "Registry unavailable",
+                "Dependency topology metadata is temporarily unavailable.",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ));
+        }
+    };
+    let project = match zed_orm_core::read::project_by_org_and_slug(db, org.id, project_slug).await
+    {
+        Ok(Some(project)) => project,
+        Ok(None) => return Err(project_not_found(state, &viewer)),
+        Err(error) => {
+            tracing::warn!(%error, org = org_slug, project = project_slug, "project graph lookup failed");
+            return Err(message_page(
+                state,
+                &viewer,
+                "Topology unavailable",
+                "The project topology is temporarily unavailable.",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ));
+        }
+    };
+
+    let direct_role = if viewer.can_see_private(org_slug) {
+        None
+    } else if let Some(user) = viewer.user() {
+        match zed_orm_core::read::project_role_for_user(db, project.id, user.id).await {
+            Ok(Some(role)) => Some(role),
+            Ok(None) => return Err(project_not_found(state, &viewer)),
+            Err(error) => {
+                tracing::warn!(%error, org = org_slug, project = project_slug, "project graph membership lookup failed");
+                return Err(message_page(
+                    state,
+                    &viewer,
+                    "Topology unavailable",
+                    "The project topology is temporarily unavailable.",
+                    StatusCode::SERVICE_UNAVAILABLE,
+                ));
+            }
+        }
+    } else {
+        return Err(project_not_found(state, &viewer));
+    };
+
+    let summary = zed_orm_core::models::ProjectSummary {
+        id: project.id,
+        org_id: project.org_id,
+        org_slug: org.slug.clone(),
+        slug: project.slug,
+        name: project.name,
+        description: project.description,
+        role: direct_role.unwrap_or_default(),
+    };
+    Ok((viewer, org, summary))
+}
+
+fn project_not_found(state: &WebState, viewer: &Viewer) -> Response {
+    message_page(
+        state,
+        viewer,
+        "Not found",
+        "That project does not exist in this organization.",
+        StatusCode::NOT_FOUND,
+    )
+}
+
+async fn org_scope(
+    state: &WebState,
+    headers: &HeaderMap,
+    org_slug: &str,
+) -> Result<(Viewer, zed_orm_core::entities::org::Model), Response> {
+    let viewer = session::resolve(state, headers).await;
+    let Some(db) = &state.db else {
+        return Err(message_page(
+            state,
+            &viewer,
+            "Registry offline",
+            "The registry database is unavailable.",
+            StatusCode::SERVICE_UNAVAILABLE,
+        ));
+    };
+    let org = match zed_orm_core::read::org_by_slug(db, org_slug).await {
+        Ok(org) => org,
+        Err(error) => {
+            tracing::warn!(%error, org = org_slug, "graph organization lookup failed");
+            return Err(message_page(
+                state,
+                &viewer,
+                "Registry unavailable",
+                "Dependency topology metadata is temporarily unavailable.",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ));
+        }
+    };
+    let Some(org) = org.filter(|_| viewer.can_see_private(org_slug)) else {
+        return Err(message_page(
+            state,
+            &viewer,
+            "Not found",
+            "That organization does not exist, or you are not a member of it.",
+            StatusCode::NOT_FOUND,
+        ));
+    };
+    Ok((viewer, org))
+}
+
+fn message_page(
+    state: &WebState,
+    viewer: &Viewer,
+    title: &str,
+    body: &str,
+    status: StatusCode,
+) -> Response {
+    let content = html! {
+        h1 { (title) }
+        p class="muted" { (body) }
+    };
+    (
+        status,
+        Html(
+            layout(
+                title,
+                state.db.is_some(),
+                viewer,
+                &PageContext::none(),
+                content,
+            )
+            .into_string(),
+        ),
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn topology_routes_have_distinct_page_titles() {
+        assert_ne!(
+            "organization dependency topology",
+            "project dependency topology"
+        );
+    }
+}

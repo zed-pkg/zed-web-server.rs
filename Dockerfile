@@ -1,5 +1,5 @@
-# Build context must be the PARENT directory (side-by-side checkout) because
-# of the ../zed-interfaces path dependency:
+# Build context is the parent source-graph directory used by the publish
+# workflow. Cargo.lock independently pins both cross-repository Rust inputs:
 #
 #   docker build -f zed-web-server.rs/Dockerfile -t ghcr.io/zed-pkg/zed-web-server:dev .
 #
@@ -11,7 +11,6 @@
 FROM rust:1.97-slim-bookworm AS build
 ENV RUSTUP_TOOLCHAIN=1.97.1
 WORKDIR /work
-COPY zed-interfaces ./zed-interfaces
 COPY zed-web-server.rs ./zed-web-server.rs
 WORKDIR /work/zed-web-server.rs
 RUN cargo build --release --locked
@@ -19,12 +18,14 @@ RUN cargo build --release --locked
 FROM debian:12-slim
 ARG ZED_WEB_REVISION=unknown
 ARG ZED_INTERFACES_REVISION=unknown
+ARG ZED_LIB_CORE_REVISION=unknown
 LABEL org.opencontainers.image.title="Zed registry web" \
       org.opencontainers.image.description="Read-only Zed package registry web interface" \
       org.opencontainers.image.source="https://github.com/zed-pkg/zed-web-server.rs" \
       org.opencontainers.image.revision="$ZED_WEB_REVISION" \
       org.opencontainers.image.licenses="MIT" \
-      io.zpkg.interfaces.revision="$ZED_INTERFACES_REVISION"
+      io.zpkg.interfaces.revision="$ZED_INTERFACES_REVISION" \
+      io.zpkg.core.revision="$ZED_LIB_CORE_REVISION"
 RUN useradd --system --uid 10001 zed \
     && apt-get update \
     && apt-get install -y --no-install-recommends curl \
