@@ -20,17 +20,22 @@ use crate::proxy;
 use crate::state::WebState;
 
 mod console;
+mod dependency_graph;
+mod dependency_graph_page;
 mod health;
 mod home;
 mod package;
 mod search;
 
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
-     img-src 'self' data: https:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; \
-     object-src 'none'";
+     connect-src 'self'; img-src 'self' data: https:; frame-ancestors 'none'; base-uri 'none'; \
+     form-action 'self'; object-src 'none'";
 const STRICT_TRANSPORT_SECURITY: &str = "max-age=63072000; includeSubDomains";
 const SHARED_AUTH_UI_PREFIX: &str = "/shared-auth-ui";
 const MARKETING_AUTH_ENTRY: &str = "/auth/sign-in?return_to=%2Fdashboard";
+const IMMUTABLE_ASSET_CACHE: &str = "public, max-age=31536000, immutable";
+const DEPENDENCY_GRAPH_JS_BR: &[u8] = include_bytes!("../../static/dependency-graph.js.br");
+const DEPENDENCY_GRAPH_CSS_BR: &[u8] = include_bytes!("../../static/dependency-graph.css.br");
 
 fn security_header(
     name: header::HeaderName,
@@ -45,6 +50,31 @@ fn security_header(
 /// provider token or secret.
 async fn marketing_auth_entry() -> Redirect {
     Redirect::temporary(MARKETING_AUTH_ENTRY)
+}
+
+/// Serve the dependency graph assets without a JavaScript package manager or
+/// external CDN. The committed Brotli bytes are content-addressed by each
+/// deployment and may be cached indefinitely.
+fn compressed_graph_asset(content_type: &'static str, bytes: &'static [u8]) -> Response {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("br"));
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(IMMUTABLE_ASSET_CACHE),
+    );
+    (headers, bytes).into_response()
+}
+
+async fn dependency_graph_js() -> Response {
+    compressed_graph_asset(
+        "text/javascript; charset=utf-8",
+        DEPENDENCY_GRAPH_JS_BR,
+    )
+}
+
+async fn dependency_graph_css() -> Response {
+    compressed_graph_asset("text/css; charset=utf-8", DEPENDENCY_GRAPH_CSS_BR)
 }
 
 /// `/dashboard` is intentionally organization-neutral. Resolve the product
@@ -117,10 +147,22 @@ pub fn router(state: Arc<WebState>) -> Router {
         .route("/signup", get(marketing_auth_entry))
         .route("/dashboard", get(marketing_dashboard))
         .route("/healthz", get(health::healthz))
+        .route(
+            "/graph-assets/dependency-graph.js",
+            get(dependency_graph_js),
+        )
+        .route(
+            "/graph-assets/dependency-graph.css",
+            get(dependency_graph_css),
+        )
         .route("/search", get(search::page))
         .route("/partials/search", get(search::partial))
         .route("/p/{org}/{name}", get(package::page))
         .route("/dashboard/{org}", get(console::dashboard))
+        .route(
+            "/dashboard/{org}/dependency-graph",
+            get(dependency_graph_page::organization),
+        )
         .route("/orgs/{org}", get(console::org_redirect))
         .route("/orgs/{org}/settings", get(console::org_settings))
         .route(
@@ -128,10 +170,28 @@ pub fn router(state: Arc<WebState>) -> Router {
             get(console::project_settings),
         )
         .route(
+            "/orgs/{org}/projects/{project}/dependency-graph",
+            get(dependency_graph_page::project),
+        )
+        .route(
             "/orgs/{org}/packages/{name}/settings",
             get(console::package_settings),
         )
         .route("/settings", get(console::user_settings))
+        // Read-only dependency graph BFF. Every package route repeats the
+        // page's visibility check before contacting the canonical API.
+        .route(
+            "/bff/dependency-graphs/packages/{org}/{name}/latest",
+            get(dependency_graph::latest_package_document),
+        )
+        .route(
+            "/bff/dependency-graphs/packages/{org}/{name}/{version}",
+            get(dependency_graph::package_document),
+        )
+        .route(
+            "/bff/dependency-graphs/packages/{org}/{name}/{version}/export/{format}",
+            get(dependency_graph::package_export),
+        )
         // Exact-client Shared Auth handoff. The callback is backend-only; the
         // browser never receives the delegated zed-pkg API token.
         .route("/auth/sign-in", get(browser_auth::sign_in))
@@ -255,5 +315,26 @@ mod tests {
         ] {
             assert!(!shared_auth_ui_path_allowed(internal), "{internal}");
         }
+    }
+
+    #[test]
+    fn graph_workspace_csp_remains_self_hosted() {
+        assert!(CONTENT_SECURITY_POLICY.contains("script-src 'self'"));
+        assert!(CONTENT_SECURITY_POLICY.contains("connect-src 'self'"));
+        assert!(!CONTENT_SECURITY_POLICY.contains("unsafe-inline"));
+        assert!(!CONTENT_SECURITY_POLICY.contains("claritas"));
+    }
+
+    #[test]
+    fn graph_assets_are_immutable_brotli_responses() {
+        let response = compressed_graph_asset(
+            "text/javascript; charset=utf-8",
+            DEPENDENCY_GRAPH_JS_BR,
+        );
+        assert_eq!(response.headers().get(header::CONTENT_ENCODING).unwrap(), "br");
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            IMMUTABLE_ASSET_CACHE
+        );
     }
 }

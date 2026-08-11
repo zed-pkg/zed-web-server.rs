@@ -10,7 +10,7 @@ use zed_orm_core::models::PackageSummary;
 
 use crate::session::{self, Viewer};
 use crate::state::WebState;
-use crate::views::{PageContext, components, layout};
+use crate::views::{PageContext, components, dependency_graph, layout};
 
 /// Adapt a data-plane summary to the list row the templates render.
 pub fn summary_row(summary: &PackageSummary) -> components::PackageRow {
@@ -26,6 +26,12 @@ pub fn summary_row(summary: &PackageSummary) -> components::PackageRow {
 /// a stored `javascript:` or `data:` URL cannot become a live link.
 fn is_linkable_url(url: &str) -> bool {
     url.starts_with("https://") || url.starts_with("http://")
+}
+
+fn is_prerelease(version: &str) -> bool {
+    semver::Version::parse(version)
+        .map(|parsed| !parsed.pre.is_empty())
+        .unwrap_or_else(|_| version.contains('-'))
 }
 
 pub async fn page(
@@ -72,14 +78,49 @@ pub async fn page(
             yanked: version.yanked,
         })
         .collect();
+    let graph_versions: Vec<dependency_graph::GraphVersion> = versions
+        .iter()
+        .map(|version| dependency_graph::GraphVersion {
+            version: version.version.clone(),
+            prerelease: is_prerelease(&version.version),
+            yanked: version.yanked,
+        })
+        .collect();
+    let selected_graph_version = package
+        .latest_version
+        .as_deref()
+        .filter(|latest| {
+            versions
+                .iter()
+                .any(|version| version.version.as_str() == *latest)
+        })
+        .or_else(|| {
+            versions
+                .iter()
+                .find(|version| !version.yanked)
+                .map(|version| version.version.as_str())
+        })
+        .or_else(|| versions.first().map(|version| version.version.as_str()));
 
     let can_manage = viewer.can_administer(&org.slug);
+    let can_view_org_topology = viewer.can_see_private(&org.slug);
 
     let content = html! {
         div class="pkg-head" {
             h1 { (org.slug) "/" (package.name) }
             @if package.visibility != "public" {
                 span class="badge badge-private" { (package.visibility) }
+            }
+            @if can_view_org_topology {
+                @if let Some(project_slug) = &package.project_slug {
+                    a class="button"
+                      href={ "/orgs/" (org.slug) "/projects/" (project_slug) "/dependency-graph" } {
+                        "Project graph"
+                    }
+                }
+                a class="button" href={ "/dashboard/" (org.slug) "/dependency-graph" } {
+                    "Org graph"
+                }
             }
             @if can_manage {
                 a class="button"
@@ -98,7 +139,13 @@ pub async fn page(
             dt { "downloads" } dd { (package.download_count) }
             dt { "versions" } dd { (package.version_count) }
             @if let Some(latest) = &package.latest_version {
-                dt { "latest" } dd class="mono" { (latest) }
+                dt { "latest" }
+                dd class="mono" {
+                    (latest)
+                    @if is_prerelease(latest) {
+                        " " span class="badge" { "pre-release" }
+                    }
+                }
             }
             @if !licenses.is_empty() {
                 dt { "license" }
@@ -123,6 +170,20 @@ pub async fn page(
                 dd { a href=(package.repo_url) rel="nofollow noopener" { (package.repo_url) } }
             } @else if !package.repo_url.is_empty() {
                 dt { "repository" } dd class="mono" { (package.repo_url) }
+            }
+        }
+
+        @if let Some(selected_version) = selected_graph_version {
+            (dependency_graph::package_workspace(
+                &org.slug,
+                &package.name,
+                selected_version,
+                &graph_versions,
+            ))
+        } @else {
+            section class="card" id="dependency-graph" {
+                h2 { "Dependency graph" }
+                p class="muted" { "Publish a version to activate the dependency graph workspace." }
             }
         }
 
@@ -199,5 +260,12 @@ mod tests {
         assert!(!is_linkable_url("data:text/html,<script>"));
         assert!(!is_linkable_url("git@github.com:zed-pkg/zed-cli.git"));
         assert!(!is_linkable_url(""));
+    }
+
+    #[test]
+    fn semver_prereleases_are_detected_without_a_second_database_flag() {
+        assert!(is_prerelease("2.0.0-beta.1"));
+        assert!(!is_prerelease("2.0.0"));
+        assert!(is_prerelease("calendar-preview"));
     }
 }
