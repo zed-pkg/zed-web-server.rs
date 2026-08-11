@@ -85,6 +85,7 @@ fn ci_and_container_publisher_verify_the_exact_source_graph() {
         "Verify embedded dependency-graph representations",
         "Accept-Encoding: ${encoding}",
         "If-None-Match: ${etag}",
+        "not_modified_body == b\"\"",
         "not_modified[\"content-length\"] == expected_length",
         "io.zpkg.interfaces.revision",
         "io.zpkg.core.revision",
@@ -94,6 +95,21 @@ fn ci_and_container_publisher_verify_the_exact_source_graph() {
             "container publisher lost graph/provenance gate {contract}"
         );
     }
+}
+
+#[test]
+fn public_package_pages_degrade_optional_membership_controls_closed() {
+    let package = read("src/routes/package.rs");
+    assert!(package.contains("let is_public = package.visibility == \"public\";"));
+    assert_eq!(
+        package.matches("if is_public {").count(),
+        2,
+        "both organization and project membership failures must preserve public pages"
+    );
+    assert!(package.contains("if !is_public && org_role.is_none() && project_role.is_none()"));
+    assert!(package.contains(
+        "\"package project lookup failed\"\n                    );\n                    None"
+    ));
 }
 
 #[test]

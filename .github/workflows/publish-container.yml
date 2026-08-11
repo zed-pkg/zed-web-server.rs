@@ -209,11 +209,12 @@ jobs:
                 "http://127.0.0.1:48081/graph-assets/dependency-graph.${asset}"
               etag="$(sed -n 's/^[Ee][Tt][Aa][Gg]:[[:space:]]*//p' "${prefix}.get.headers" | tr -d '\r' | tail -n 1)"
               test -n "$etag"
+              : > "${prefix}.304.body"
               status="$(curl -sS \
                 -H "Accept-Encoding: ${encoding}" \
                 -H "If-None-Match: ${etag}" \
                 -D "${prefix}.304.headers" \
-                -o /dev/null \
+                -o "${prefix}.304.body" \
                 -w '%{http_code}' \
                 "http://127.0.0.1:48081/graph-assets/dependency-graph.${asset}")"
               test "$status" = 304
@@ -243,19 +244,25 @@ jobs:
                   get = headers(Path(f"{prefix}.get.headers"))
                   head = headers(Path(f"{prefix}.head.headers"))
                   not_modified = headers(Path(f"{prefix}.304.headers"))
+                  not_modified_body = Path(f"{prefix}.304.body").read_bytes()
                   expected_length = str(len(body))
+                  assert not_modified_body == b""
                   assert get["content-length"] == expected_length
                   assert head["content-length"] == expected_length
                   assert not_modified["content-length"] == expected_length
                   assert get["etag"] == head["etag"] == not_modified["etag"]
                   assert get["etag"].startswith('"') and get["etag"].endswith('"')
+                  for name in ("content-type", "cache-control", "vary"):
+                      assert get[name] == head[name] == not_modified[name]
                   assert get["vary"].lower() == "accept-encoding"
+                  assert "transfer-encoding" not in not_modified
                   if encoding == "br":
                       assert get["content-encoding"].lower() == "br"
-                      assert head["content-encoding"].lower() == "br"
+                      assert get["content-encoding"] == head["content-encoding"] == not_modified["content-encoding"]
                   else:
                       assert "content-encoding" not in get
                       assert "content-encoding" not in head
+                      assert "content-encoding" not in not_modified
           PY
 
       - name: Capture web smoke and provenance diagnostics

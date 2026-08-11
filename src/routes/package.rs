@@ -64,12 +64,17 @@ pub async fn page(
     let Some((package, org)) = found else {
         return not_found(&state, &viewer, &org_slug, &name);
     };
+    let is_public = package.visibility == "public";
 
     let org_role = match session::exact_org_role(db, &viewer, org.id).await {
         Ok(role) => role,
         Err(error) => {
             tracing::warn!(%error, org = %org.slug, package = %package.name, "package organization membership lookup failed");
-            return unavailable(&state, &viewer, &org_slug, &name);
+            if is_public {
+                None
+            } else {
+                return unavailable(&state, &viewer, &org_slug, &name);
+            }
         }
     };
     let project_role = if org_role.is_none() {
@@ -78,7 +83,11 @@ pub async fn page(
                 Ok(role) => role,
                 Err(error) => {
                     tracing::warn!(%error, org = %org.slug, package = %package.name, "package project membership lookup failed");
-                    return unavailable(&state, &viewer, &org_slug, &name);
+                    if is_public {
+                        None
+                    } else {
+                        return unavailable(&state, &viewer, &org_slug, &name);
+                    }
                 }
             },
             None => None,
@@ -90,7 +99,7 @@ pub async fn page(
     // Private package reads accept the same exact org/project memberships as
     // the API and graph BFF. Missing and unauthorized coordinates collapse to
     // one 404 so this page cannot enumerate private package names.
-    if package.visibility != "public" && org_role.is_none() && project_role.is_none() {
+    if !is_public && org_role.is_none() && project_role.is_none() {
         return not_found(&state, &viewer, &org_slug, &name);
     }
 
@@ -170,8 +179,14 @@ pub async fn page(
                 Ok(Some(project)) if project.org_id == org.id => Some(project.slug),
                 Ok(_) => None,
                 Err(error) => {
-                    tracing::warn!(%error, org = %org.slug, package = %package.name, "package project lookup failed");
-                    return unavailable(&state, &viewer, &org_slug, &name);
+                    tracing::warn!(
+                        %error,
+                        %project_id,
+                        org = %org.slug,
+                        package = %package.name,
+                        "package project lookup failed"
+                    );
+                    None
                 }
             },
             None => None,
