@@ -20,6 +20,7 @@ use crate::proxy;
 use crate::state::WebState;
 
 mod console;
+mod graph_gateway;
 mod health;
 mod home;
 mod package;
@@ -120,6 +121,12 @@ pub fn router(state: Arc<WebState>) -> Router {
         .route("/search", get(search::page))
         .route("/partials/search", get(search::partial))
         .route("/p/{org}/{name}", get(package::page))
+        // Public graph bytes are serialized by the API and exposed here under
+        // the web origin through a fixed route/header allowlist.
+        .route(
+            "/api/v1/packages/{org}/{name}/versions/{version}/dependency-graph",
+            get(graph_gateway::declared),
+        )
         .route("/dashboard/{org}", get(console::dashboard))
         .route("/orgs/{org}", get(console::org_redirect))
         .route("/orgs/{org}/settings", get(console::org_settings))
