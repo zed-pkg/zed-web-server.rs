@@ -91,10 +91,12 @@ dependencies at runtime.
 
 The dependency-graph Web Component and styles are reviewable in `assets/`.
 Use the exact Node release in `.node-version` when running
-`node scripts/build-graph-assets.mjs`; it deterministically produces the Brotli
-files embedded by Axum, and `--check` is the CI freshness gate. Both CI and the
-container publisher install that pinned compressor runtime. The browser never
-loads Claritas or another external visualization runtime.
+`node scripts/build-graph-assets.mjs`; it produces the Brotli files embedded by
+Axum. Because Brotli encoders can emit different valid streams across operating
+systems, `--check` validates the portable invariant: each committed stream must
+decode byte-for-byte to its reviewable source. Both CI and the container
+publisher install the pinned JavaScript runtime. The browser never loads
+Claritas or another external visualization runtime.
 
 ## Development
 
