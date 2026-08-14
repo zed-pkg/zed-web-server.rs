@@ -6,6 +6,7 @@ on:
     paths:
       - 'assets/**'
       - 'scripts/build-graph-assets.mjs'
+      - '.node-version'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
@@ -18,6 +19,7 @@ on:
     paths:
       - 'assets/**'
       - 'scripts/build-graph-assets.mjs'
+      - '.node-version'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
@@ -115,6 +117,10 @@ jobs:
               source = f"git+{repository}?rev={revision}#{revision}"
               assert source in lock, f"Cargo.lock does not pin {package} at {revision}"
           PY
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
+        with:
+          node-version-file: zed-web-server.rs/.node-version
 
       - name: Verify dependency-graph release inputs
         working-directory: zed-web-server.rs

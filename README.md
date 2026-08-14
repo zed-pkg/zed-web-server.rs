@@ -90,8 +90,10 @@ cargo run
 dependencies at runtime.
 
 The dependency-graph Web Component and styles are reviewable in `assets/`.
-`node scripts/build-graph-assets.mjs` deterministically produces the Brotli
-files embedded by Axum; `--check` is the CI freshness gate. The browser never
+Use the exact Node release in `.node-version` when running
+`node scripts/build-graph-assets.mjs`; it deterministically produces the Brotli
+files embedded by Axum, and `--check` is the CI freshness gate. Both CI and the
+container publisher install that pinned compressor runtime. The browser never
 loads Claritas or another external visualization runtime.
 
 ## Development

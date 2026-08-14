@@ -93,6 +93,9 @@ jobs:
       - name: Resolve only the committed lockfile
         working-directory: zed-web-server.rs
         run: cargo metadata --locked --format-version 1 >/dev/null
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
+        with:
+          node-version-file: zed-web-server.rs/.node-version
       - name: Verify dependency-graph assets are reproducible
         working-directory: zed-web-server.rs
         run: node scripts/build-graph-assets.mjs --check
