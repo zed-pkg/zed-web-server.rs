@@ -161,6 +161,82 @@ impl RotatedSession {
     }
 }
 
+/// Coarse continuity result for token-blind marketing session probes. The
+/// opaque cookie update may rotate or clear the product session, but no token,
+/// principal, audience, or provider detail crosses this module boundary.
+pub(crate) enum SessionContinuity {
+    Anonymous(Option<RotatedSession>),
+    Authenticated(Option<RotatedSession>),
+    Unavailable,
+}
+
+/// Revalidate a product session only when its coarse foreground cadence is
+/// due. A due session must both refresh and delegate for the configured client,
+/// audience, and scopes before it remains authenticated. This catches revoked,
+/// provider-confused, wrong-client, and wrong-audience sessions without making
+/// every focus/visibility probe call Shared Auth.
+pub(crate) async fn verify_session_continuity(
+    state: &WebState,
+    headers: &HeaderMap,
+    recheck_after_seconds: i64,
+) -> SessionContinuity {
+    let Some(config) = auth_config(state) else {
+        return SessionContinuity::Unavailable;
+    };
+    let cookie_present = cookie_value(headers, &config.session_cookie_name).is_some();
+    let Some(session) =
+        read_signed_cookie::<BrowserSession>(headers, &config.session_cookie_name, config)
+    else {
+        let update = cookie_present
+            .then(|| RotatedSession(clear_cookie(&config.session_cookie_name, config)));
+        return SessionContinuity::Anonymous(update);
+    };
+
+    let age = Utc::now().timestamp() - session.issued_at;
+    if !(0..=SESSION_MAX_AGE_SECONDS).contains(&age) {
+        return SessionContinuity::Anonymous(Some(RotatedSession(clear_cookie(
+            &config.session_cookie_name,
+            config,
+        ))));
+    }
+    if age < recheck_after_seconds.max(1) {
+        return SessionContinuity::Authenticated(None);
+    }
+
+    let refreshed = match refresh(state, config, &session).await {
+        Ok(refreshed) => refreshed,
+        Err(response) => return continuity_failure(response, config),
+    };
+    if let Err(response) = delegate(state, config, &refreshed.access_token).await {
+        return continuity_failure(response, config);
+    }
+    let next_session = BrowserSession {
+        refresh_token: refreshed.refresh_token,
+        shared_user_id: refreshed.shared_user_id,
+        issued_at: Utc::now().timestamp(),
+    };
+    SessionContinuity::Authenticated(Some(RotatedSession(signed_cookie(
+        &config.session_cookie_name,
+        &next_session,
+        SESSION_MAX_AGE_SECONDS,
+        config,
+    ))))
+}
+
+fn continuity_failure(response: Response, config: &BrowserAuthConfig) -> SessionContinuity {
+    if matches!(
+        response.status(),
+        StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+    ) {
+        SessionContinuity::Anonymous(Some(RotatedSession(clear_cookie(
+            &config.session_cookie_name,
+            config,
+        ))))
+    } else {
+        SessionContinuity::Unavailable
+    }
+}
+
 pub(crate) struct DelegatedGet {
     outcome: DelegatedGetOutcome,
     rotation: RotatedSession,
@@ -808,7 +884,7 @@ async fn decode_json<T: for<'de> Deserialize<'de>>(
         );
         let mapped = if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
             StatusCode::UNAUTHORIZED
-        } else if status.is_client_error() {
+        } else if status == StatusCode::BAD_REQUEST {
             StatusCode::BAD_REQUEST
         } else {
             StatusCode::BAD_GATEWAY
@@ -1198,6 +1274,8 @@ fn sha256(input: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::Router;
+    use axum::routing::post;
 
     fn config() -> BrowserAuthConfig {
         BrowserAuthConfig {
@@ -1214,6 +1292,169 @@ mod tests {
             session_cookie_name: "__Host-zpkg_session".into(),
             login_cookie_name: "__Host-zpkg_login".into(),
             secure_cookies: true,
+        }
+    }
+
+    fn continuity_state(config: BrowserAuthConfig) -> WebState {
+        WebState {
+            db: None,
+            registry_url: String::new(),
+            shared_auth_url: None,
+            session_path: "/auth/browser/session".into(),
+            browser_auth: Some(config),
+            http: crate::proxy::client(),
+        }
+    }
+
+    fn session_headers(config: &BrowserAuthConfig, age_seconds: i64) -> HeaderMap {
+        let session = BrowserSession {
+            refresh_token: "opaque-refresh".into(),
+            shared_user_id: Uuid::nil(),
+            issued_at: Utc::now().timestamp() - age_seconds,
+        };
+        let cookie = signed_cookie(
+            &config.session_cookie_name,
+            &session,
+            SESSION_MAX_AGE_SECONDS,
+            config,
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            cookie.split(';').next().unwrap().parse().unwrap(),
+        );
+        headers
+    }
+
+    async fn spawn_auth_stub(app: Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{address}")
+    }
+
+    #[tokio::test]
+    async fn continuity_probe_skips_upstream_before_the_coarse_cadence() {
+        let mut config = config();
+        config.shared_auth_url = "http://127.0.0.1:9".into();
+        let headers = session_headers(&config, 2999);
+        let state = continuity_state(config);
+        assert!(matches!(
+            verify_session_continuity(&state, &headers, 3000).await,
+            SessionContinuity::Authenticated(None)
+        ));
+    }
+
+    #[tokio::test]
+    async fn expired_and_future_dated_sessions_are_cleared_locally() {
+        for age in [-1, SESSION_MAX_AGE_SECONDS + 1] {
+            let mut config = config();
+            config.shared_auth_url = "http://127.0.0.1:9".into();
+            let headers = session_headers(&config, age);
+            let state = continuity_state(config);
+            match verify_session_continuity(&state, &headers, 3000).await {
+                SessionContinuity::Anonymous(Some(RotatedSession(cookie))) => {
+                    assert!(cookie.contains("Max-Age=0"));
+                }
+                _ => panic!("invalid local session age was not cleared"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn due_continuity_probe_refreshes_and_verifies_client_audience() {
+        let app = Router::new()
+            .route(
+                "/auth/refresh",
+                post(|axum::Json(body): axum::Json<Value>| async move {
+                    assert_eq!(body["refresh_token"], "opaque-refresh");
+                    axum::Json(json!({
+                        "access_token": "base-access",
+                        "refresh_token": "next-opaque-refresh",
+                        "shared_user_id": Uuid::nil(),
+                    }))
+                }),
+            )
+            .route(
+                "/auth/delegate",
+                post(|axum::Json(body): axum::Json<Value>| async move {
+                    assert_eq!(body["client_id"], "zpkg-web");
+                    assert_eq!(body["audience"], "zed-pkg");
+                    assert_eq!(body["scopes"], json!(["zpkg:account"]));
+                    axum::Json(json!({ "access_token": "delegated" }))
+                }),
+            );
+        let mut config = config();
+        config.shared_auth_url = spawn_auth_stub(app).await;
+        let headers = session_headers(&config, 3000);
+        let state = continuity_state(config);
+        match verify_session_continuity(&state, &headers, 3000).await {
+            SessionContinuity::Authenticated(Some(RotatedSession(cookie))) => {
+                assert!(cookie.contains("Max-Age=2592000"));
+                assert!(!cookie.contains("next-opaque-refresh"));
+            }
+            _ => panic!("due session was not refreshed and rotated"),
+        }
+    }
+
+    #[tokio::test]
+    async fn revoked_or_wrong_audience_sessions_fail_closed_and_clear_cookie() {
+        for app in [
+            Router::new().route("/auth/refresh", post(|| async { StatusCode::UNAUTHORIZED })),
+            Router::new()
+                .route(
+                    "/auth/refresh",
+                    post(|| async {
+                        axum::Json(json!({
+                            "access_token": "base-access",
+                            "refresh_token": "next-opaque-refresh",
+                            "shared_user_id": Uuid::nil(),
+                        }))
+                    }),
+                )
+                .route(
+                    "/auth/delegate",
+                    post(|| async { StatusCode::UNAUTHORIZED }),
+                ),
+            Router::new().route(
+                "/auth/refresh",
+                post(|| async {
+                    axum::Json(json!({
+                        "access_token": "base-access",
+                        "refresh_token": "next-opaque-refresh",
+                        "shared_user_id": Uuid::from_u128(1),
+                    }))
+                }),
+            ),
+        ] {
+            let mut config = config();
+            config.shared_auth_url = spawn_auth_stub(app).await;
+            let headers = session_headers(&config, 3000);
+            let state = continuity_state(config);
+            match verify_session_continuity(&state, &headers, 3000).await {
+                SessionContinuity::Anonymous(Some(RotatedSession(cookie))) => {
+                    assert!(cookie.contains("Max-Age=0"));
+                }
+                _ => panic!("invalid continuity was not cleared"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_auth_outage_is_explicit_and_does_not_destroy_cookie() {
+        for status in [
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::TOO_MANY_REQUESTS,
+        ] {
+            let app = Router::new().route("/auth/refresh", post(move || async move { status }));
+            let mut config = config();
+            config.shared_auth_url = spawn_auth_stub(app).await;
+            let headers = session_headers(&config, 3000);
+            let state = continuity_state(config);
+            assert!(matches!(
+                verify_session_continuity(&state, &headers, 3000).await,
+                SessionContinuity::Unavailable
+            ));
         }
     }
 

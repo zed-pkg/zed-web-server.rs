@@ -31,6 +31,7 @@ mod health;
 mod home;
 mod package;
 mod search;
+mod session_status;
 
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
      connect-src 'self'; img-src 'self' data: https:; frame-ancestors 'none'; base-uri 'none'; \
@@ -304,6 +305,12 @@ pub fn router(state: Arc<WebState>) -> Router {
             get(console::package_settings),
         )
         .route("/settings", get(console::user_settings))
+        // Exact, credentialed CORS surface for the static marketing header.
+        // It returns only a boolean, dashboard URL, and coarse recheck hint.
+        .route(
+            "/auth/session/status",
+            get(session_status::get).options(session_status::options),
+        )
         // Read-only dependency graph BFF. Every package route repeats the
         // page's visibility check before contacting the canonical API.
         .route(
