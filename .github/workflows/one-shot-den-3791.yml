@@ -6,6 +6,11 @@ on:
       - agent/den-3791-graph-instance-identifiers
     paths:
       - .github/workflows/one-shot-den-3791.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/one-shot-den-3791.yml
 
 permissions:
   contents: write
