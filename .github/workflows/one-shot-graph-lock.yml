@@ -1,0 +1,90 @@
+name: one-shot dependency graph lockfile sync
+
+on:
+  push:
+    branches:
+      - agent/dependency-graph-batch-latest-version-read
+    paths:
+      - .github/workflows/one-shot-graph-lock.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: one-shot-graph-lock-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  EXPECTED_BRANCH: agent/dependency-graph-batch-latest-version-read
+  OLD_ZED_LIB_CORE_SHA: c3d486a1519381276fbec02aa25247f542924443
+  ZED_LIB_CORE_SHA: 34333b5ea5c0ee7862bfe0366fe9fa2b1c4bd210
+
+jobs:
+  synchronize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.EXPECTED_BRANCH }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Verify one-shot scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "$EXPECTED_BRANCH"
+          test "$(git branch --show-current)" = "$EXPECTED_BRANCH"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import tomllib
+
+          manifest = tomllib.loads(Path("Cargo.toml").read_text())
+          spec = manifest["dependencies"]["zed-orm-core"]
+          assert spec["git"] == "https://github.com/zed-pkg/zed-lib-core.git"
+          assert spec["rev"] == os.environ["ZED_LIB_CORE_SHA"]
+          lock = Path("Cargo.lock").read_text()
+          old = os.environ["OLD_ZED_LIB_CORE_SHA"]
+          assert lock.count(old) == 2, "expected old rev and resolved git commit"
+          assert os.environ["ZED_LIB_CORE_SHA"] not in lock
+          PY
+
+      - name: Refresh only the exact ORM git package
+        run: cargo update -p zed-orm-core --precise "$ZED_LIB_CORE_SHA"
+
+      - name: Reject any lock drift beyond the released git coordinate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git diff --name-only)" = Cargo.lock
+          test "$(git diff --numstat -- Cargo.lock)" = $'1\t1\tCargo.lock'
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          lock = Path("Cargo.lock").read_text()
+          old = os.environ["OLD_ZED_LIB_CORE_SHA"]
+          new = os.environ["ZED_LIB_CORE_SHA"]
+          expected = (
+              "git+https://github.com/zed-pkg/zed-lib-core.git?"
+              f"rev={new}#{new}"
+          )
+          assert old not in lock
+          assert lock.count(expected) == 1
+          PY
+          git diff --check
+
+      - name: Commit the generated lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Cargo.lock
+          git commit -m 'build(graph): refresh released ORM lock coordinate'
+          git push origin "HEAD:${EXPECTED_BRANCH}"
