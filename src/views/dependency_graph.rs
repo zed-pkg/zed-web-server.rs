@@ -117,10 +117,9 @@ pub fn scope_workspace(
     description: &str,
     packages: &[PackageRow],
 ) -> Markup {
-    // Bound at the server-rendering boundary, before JSON serialization or the
-    // no-JavaScript table is emitted. The browser also enforces this limit, but
-    // a client-side slice cannot protect the HTML response from a very large
-    // organization or project.
+    // The read layer already caps organization/project listings. Apply the
+    // browser workspace's stricter bound before JSON serialization and fallback
+    // table rendering so the server does not ship entries the canvas discards.
     let published_packages = packages
         .iter()
         .filter(|package| package.latest.is_some())
@@ -265,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn scope_workspace_bounds_large_scopes_before_serialization() {
+    fn scope_workspace_applies_browser_limit_before_serialization() {
         let packages = (0..82)
             .map(|index| PackageRow {
                 org: "acme".into(),
@@ -287,5 +286,11 @@ mod tests {
         assert!(!markup.contains("pkg-080"));
         assert!(!markup.contains("pkg-081"));
         assert!(markup.contains("2 additional published packages"));
+    }
+
+    #[test]
+    fn server_scope_limit_matches_browser_workspace_limit() {
+        let graph_script = include_str!("../../assets/dependency-graph.js");
+        assert!(graph_script.contains(&format!("const SCOPE_LIMIT = {SCOPE_PACKAGE_LIMIT};")));
     }
 }
