@@ -14,7 +14,7 @@ zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = 
 # would hand this process write symbols its database identity cannot use.
 # Pin the certified canonical data-plane revision; never follow a moving branch
 # in a production server lock graph.
-zed-orm-core = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "c3d486a1519381276fbec02aa25247f542924443" }
+zed-orm-core = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "34333b5ea5c0ee7862bfe0366fe9fa2b1c4bd210" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
