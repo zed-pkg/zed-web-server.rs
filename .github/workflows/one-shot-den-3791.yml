@@ -1,0 +1,279 @@
+name: one-shot graph instance identifier hardening
+
+on:
+  push:
+    branches:
+      - agent/den-3791-graph-instance-identifiers
+    paths:
+      - .github/workflows/one-shot-den-3791.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: one-shot-den-3791-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  harden:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: agent/den-3791-graph-instance-identifiers
+          persist-credentials: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
+        with:
+          node-version-file: .node-version
+
+      - name: Apply reviewable source and test transformations
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly one match, found {count}")
+              return text.replace(old, new, 1)
+
+          script_path = Path("assets/dependency-graph.js")
+          script = script_path.read_text()
+          script = replace_once(
+              script,
+              'const HTMLElementBase = globalThis.HTMLElement || class {};\n\nconst KIND_LABELS = {',
+              '''const HTMLElementBase = globalThis.HTMLElement || class {};
+          let graphInstanceSequence = 0;
+
+          function graphInstanceIdentifiers() {
+            const namespace = `dg-${(++graphInstanceSequence).toString(36)}`;
+            return Object.freeze({
+              namespace,
+              keyboardInstructions: `${namespace}-keyboard-instructions`,
+              svgTitle: `${namespace}-svg-title`,
+              svgDescription: `${namespace}-svg-description`,
+              arrow: `${namespace}-arrow`,
+            });
+          }
+
+          const KIND_LABELS = {''',
+              "identifier factory",
+          )
+          script = replace_once(
+              script,
+              '  constructor() {\n    super();\n    this.mode = "package";',
+              '  constructor() {\n    super();\n    this.identifiers = graphInstanceIdentifiers();\n    this.mode = "package";',
+              "constructor identifiers",
+          )
+          script = replace_once(
+              script,
+              '  connectedCallback() {\n    if (this.dataset.ready === "true") return;\n    this.dataset.ready = "true";',
+              '  connectedCallback() {\n    if (this.dataset.ready === "true") return;\n    this.claimElementId();\n    this.dataset.graphNamespace = this.identifiers.namespace;\n    this.dataset.ready = "true";',
+              "connected identifier claim",
+          )
+          script = replace_once(
+              script,
+              '    delete this.dataset.ready;\n  }\n\n  renderShell() {',
+              '''    delete this.dataset.ready;
+            }
+
+            claimElementId() {
+              const preferred = this.id || "dependency-graph";
+              const graphs = globalThis.document?.querySelectorAll?.("zed-dependency-graph") || [];
+              const occupied = Array.from(graphs).some(
+                (element) => element !== this && element.id === preferred
+              );
+              this.id = occupied ? `${preferred}-${this.identifiers.namespace}` : preferred;
+            }
+
+            renderShell() {''',
+              "element identifier claim method",
+          )
+          script = replace_once(
+              script,
+              '<p id="dg-keyboard-instructions" class="dg-sr-only">',
+              '<p id="${this.identifiers.keyboardInstructions}" class="dg-sr-only">',
+              "keyboard instructions identifier",
+          )
+          script = replace_once(
+              script,
+              '<svg data-role="svg" role="group" aria-labelledby="dg-svg-title dg-svg-description" aria-describedby="dg-keyboard-instructions" tabindex="0">',
+              '<svg data-role="svg" role="group" aria-labelledby="${this.identifiers.svgTitle} ${this.identifiers.svgDescription}" aria-describedby="${this.identifiers.keyboardInstructions}" tabindex="0">',
+              "svg aria references",
+          )
+          script = replace_once(
+              script,
+              '<title id="dg-svg-title">Interactive package dependency graph</title>',
+              '<title id="${this.identifiers.svgTitle}">Interactive package dependency graph</title>',
+              "svg title identifier",
+          )
+          script = replace_once(
+              script,
+              '<desc id="dg-svg-description">Package nodes and directed dependency relationships. A text relationship table follows the canvas.</desc>',
+              '<desc id="${this.identifiers.svgDescription}">Package nodes and directed dependency relationships. A text relationship table follows the canvas.</desc>',
+              "svg description identifier",
+          )
+          script = replace_once(
+              script,
+              '<marker id="dg-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="strokeWidth">',
+              '<marker id="${this.identifiers.arrow}" class="dg-arrow-marker" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="strokeWidth">',
+              "arrow marker identifier",
+          )
+          script = replace_once(
+              script,
+              '''                <filter id="dg-glow" x="-40%" y="-40%" width="180%" height="180%">
+                            <feGaussianBlur stdDeviation="4" result="blur"></feGaussianBlur>
+                            <feMerge><feMergeNode in="blur"></feMergeNode><feMergeNode in="SourceGraphic"></feMergeNode></feMerge>
+                          </filter>
+          ''',
+              "",
+              "global glow filter removal",
+          )
+          script = replace_once(
+              script,
+              '        "marker-end": "url(#dg-arrow)",',
+              '        "marker-end": `url(#${this.identifiers.arrow})`,',
+              "instance marker reference",
+          )
+          script = replace_once(
+              script,
+              '  edgePairIdentity,\n  escapeHtml,',
+              '  edgePairIdentity,\n  escapeHtml,\n  graphInstanceIdentifiers,',
+              "identifier export",
+          )
+          script_path.write_text(script)
+
+          style_path = Path("assets/dependency-graph.css")
+          style = style_path.read_text()
+          style = replace_once(
+              style,
+              '#dg-arrow path { fill: #8fa4b9; }',
+              '.dg-arrow-marker path { fill: #8fa4b9; }',
+              "class-based marker styling",
+          )
+          style = replace_once(
+              style,
+              '  filter: url(#dg-glow) drop-shadow(0 12px 18px rgb(0 0 0 / 34%));',
+              '''  filter:
+              drop-shadow(0 0 7px rgb(255 122 26 / 52%))
+              drop-shadow(0 12px 18px rgb(0 0 0 / 34%));''',
+              "collision-free selected-node glow",
+          )
+          style_path.write_text(style)
+
+          test_path = Path("tests/dependency-graph.mjs")
+          tests = test_path.read_text()
+          tests = replace_once(
+              tests,
+              '  escapeHtml,\n  isGraphDigest,',
+              '  escapeHtml,\n  graphInstanceIdentifiers,\n  isGraphDigest,',
+              "test identifier import",
+          )
+          identifier_tests = r'''
+          const firstIdentifiers = graphInstanceIdentifiers();
+          const secondIdentifiers = graphInstanceIdentifiers();
+          assert.notEqual(firstIdentifiers.namespace, secondIdentifiers.namespace);
+          for (const identifiers of [firstIdentifiers, secondIdentifiers]) {
+            const ownedIds = [
+              identifiers.keyboardInstructions,
+              identifiers.svgTitle,
+              identifiers.svgDescription,
+              identifiers.arrow,
+            ];
+            assert.equal(new Set(ownedIds).size, ownedIds.length);
+            assert.ok(ownedIds.every((identifier) => identifier.startsWith(`${identifiers.namespace}-`)));
+          }
+
+          const graphSource = readFileSync(
+            new URL("../assets/dependency-graph.js", import.meta.url),
+            "utf8"
+          );
+          const graphStyles = readFileSync(
+            new URL("../assets/dependency-graph.css", import.meta.url),
+            "utf8"
+          );
+          for (const fixedReference of [
+            'id="dg-keyboard-instructions"',
+            'id="dg-svg-title"',
+            'id="dg-svg-description"',
+            'id="dg-arrow"',
+            'id="dg-glow"',
+            'url(#dg-arrow)',
+            'url(#dg-glow)',
+          ]) {
+            assert.ok(!graphSource.includes(fixedReference), `graph source retained ${fixedReference}`);
+          }
+          assert.ok(!graphStyles.includes("#dg-arrow"));
+          assert.ok(!graphStyles.includes("url(#dg-glow)"));
+          assert.ok(graphStyles.includes(".dg-arrow-marker path"));
+
+          const previousDocument = globalThis.document;
+          try {
+            const firstElement = new ZedDependencyGraph();
+            const secondElement = new ZedDependencyGraph();
+            firstElement.id = "dependency-graph";
+            secondElement.id = "dependency-graph";
+            globalThis.document = {
+              querySelectorAll: () => [firstElement, secondElement],
+            };
+            firstElement.claimElementId();
+            secondElement.claimElementId();
+            assert.notEqual(firstElement.id, secondElement.id);
+            assert.equal(
+              [firstElement.id, secondElement.id].filter((id) => id === "dependency-graph").length,
+              1
+            );
+            const claimedId = firstElement.id;
+            firstElement.claimElementId();
+            assert.equal(firstElement.id, claimedId, "reconnect keeps the instance identifier stable");
+          } finally {
+            if (previousDocument === undefined) delete globalThis.document;
+            else globalThis.document = previousDocument;
+          }
+
+          '''
+          tests = replace_once(
+              tests,
+              'const sources = [\n',
+              identifier_tests + 'const sources = [\n',
+              "identifier collision regression tests",
+          )
+          test_path.write_text(tests)
+          PY
+
+      - name: Regenerate and verify self-hosted assets
+        run: |
+          node scripts/build-graph-assets.mjs
+          node scripts/build-graph-assets.mjs --check
+          node --check assets/dependency-graph.js
+          node tests/dependency-graph.mjs
+
+      - name: Verify bounded one-shot diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=$'assets/dependency-graph.css\nassets/dependency-graph.js\nstatic/dependency-graph.css.br\nstatic/dependency-graph.js.br\ntests/dependency-graph.mjs'
+          test "$(git diff --name-only | sort)" = "$expected"
+          git diff --check
+          grep -q 'graphInstanceIdentifiers' assets/dependency-graph.js
+          grep -q 'data-graph-namespace' assets/dependency-graph.js
+          ! grep -q 'id="dg-arrow"' assets/dependency-graph.js
+          ! grep -q 'url(#dg-glow)' assets/dependency-graph.css
+
+      - name: Commit hardened sources and remove the one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/one-shot-den-3791.yml
+          git add assets/dependency-graph.js assets/dependency-graph.css \
+            static/dependency-graph.js.br static/dependency-graph.css.br \
+            tests/dependency-graph.mjs
+          git commit -m 'fix(graph): namespace reusable component identifiers'
+          git push origin HEAD:agent/den-3791-graph-instance-identifiers
