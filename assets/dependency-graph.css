@@ -351,7 +351,7 @@ zed-dependency-graph noscript {
 .dg-edge.dg-kind-peer { stroke: var(--dg-peer); }
 .dg-edge.dg-kind-tooling { stroke: var(--dg-tooling); }
 
-#dg-arrow path { fill: #8fa4b9; }
+.dg-arrow-marker path { fill: #8fa4b9; }
 
 .dg-node {
   cursor: pointer;
@@ -375,7 +375,9 @@ zed-dependency-graph noscript {
   fill: #15130f;
   stroke: var(--orange);
   stroke-width: 2.2;
-  filter: url(#dg-glow) drop-shadow(0 12px 18px rgb(0 0 0 / 34%));
+  filter:
+    drop-shadow(0 0 7px rgb(255 122 26 / 52%))
+    drop-shadow(0 12px 18px rgb(0 0 0 / 34%));
 }
 .dg-node.is-root rect { stroke: color-mix(in srgb, var(--orange) 70%, #2e3b4c); }
 .dg-node.is-search-match rect { stroke: #fef08a; stroke-width: 2.2; }

@@ -9,6 +9,7 @@ import {
   edgeIdentity,
   edgePairIdentity,
   escapeHtml,
+  graphInstanceIdentifiers,
   isGraphDigest,
   isStrongGraphEtag,
   packageDocumentUrl,
@@ -99,6 +100,68 @@ assert.equal(
   escapeHtml(`<img src=x onerror='alert(1)'>&\"`),
   "&lt;img src=x onerror=&#39;alert(1)&#39;&gt;&amp;&quot;"
 );
+
+
+const firstIdentifiers = graphInstanceIdentifiers();
+const secondIdentifiers = graphInstanceIdentifiers();
+assert.notEqual(firstIdentifiers.namespace, secondIdentifiers.namespace);
+for (const identifiers of [firstIdentifiers, secondIdentifiers]) {
+  const ownedIds = [
+    identifiers.keyboardInstructions,
+    identifiers.svgTitle,
+    identifiers.svgDescription,
+    identifiers.arrow,
+  ];
+  assert.equal(new Set(ownedIds).size, ownedIds.length);
+  assert.ok(ownedIds.every((identifier) => identifier.startsWith(`${identifiers.namespace}-`)));
+}
+
+const graphSource = readFileSync(
+  new URL("../assets/dependency-graph.js", import.meta.url),
+  "utf8"
+);
+const graphStyles = readFileSync(
+  new URL("../assets/dependency-graph.css", import.meta.url),
+  "utf8"
+);
+for (const fixedReference of [
+  'id="dg-keyboard-instructions"',
+  'id="dg-svg-title"',
+  'id="dg-svg-description"',
+  'id="dg-arrow"',
+  'id="dg-glow"',
+  'url(#dg-arrow)',
+  'url(#dg-glow)',
+]) {
+  assert.ok(!graphSource.includes(fixedReference), `graph source retained ${fixedReference}`);
+}
+assert.ok(!graphStyles.includes("#dg-arrow"));
+assert.ok(!graphStyles.includes("url(#dg-glow)"));
+assert.ok(graphStyles.includes(".dg-arrow-marker path"));
+
+const previousDocument = globalThis.document;
+try {
+  const firstElement = new ZedDependencyGraph();
+  const secondElement = new ZedDependencyGraph();
+  firstElement.id = "dependency-graph";
+  secondElement.id = "dependency-graph";
+  globalThis.document = {
+    querySelectorAll: () => [firstElement, secondElement],
+  };
+  firstElement.claimElementId();
+  secondElement.claimElementId();
+  assert.notEqual(firstElement.id, secondElement.id);
+  assert.equal(
+    [firstElement.id, secondElement.id].filter((id) => id === "dependency-graph").length,
+    1
+  );
+  const claimedId = firstElement.id;
+  firstElement.claimElementId();
+  assert.equal(firstElement.id, claimedId, "reconnect keeps the instance identifier stable");
+} finally {
+  if (previousDocument === undefined) delete globalThis.document;
+  else globalThis.document = previousDocument;
+}
 
 const sources = [
   { org: "acme", name: "public", version: "1.0.0", private: false },
