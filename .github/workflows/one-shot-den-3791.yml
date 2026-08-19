@@ -78,7 +78,7 @@ jobs:
           script = replace_once(
               script,
               '  connectedCallback() {\n    if (this.dataset.ready === "true") return;\n    this.dataset.ready = "true";',
-              '  connectedCallback() {\n    if (this.dataset.ready === "true") return;\n    this.claimElementId();\n    this.dataset.graphNamespace = this.identifiers.namespace;\n    this.dataset.ready = "true";',
+              '  connectedCallback() {\n    if (this.dataset.ready === "true") return;\n    this.claimElementId();\n    this.setAttribute("data-graph-namespace", this.identifiers.namespace);\n    this.dataset.ready = "true";',
               "connected identifier claim",
           )
           script = replace_once(
