@@ -425,11 +425,7 @@ mod tests {
 
     use super::latest_graph_rows_from_versions;
 
-    fn package_summary(
-        id: Uuid,
-        name: &str,
-        latest_version: Option<&str>,
-    ) -> PackageSummary {
+    fn package_summary(id: Uuid, name: &str, latest_version: Option<&str>) -> PackageSummary {
         PackageSummary {
             id,
             org_id: Uuid::from_u128(100),
