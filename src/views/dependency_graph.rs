@@ -14,6 +14,8 @@ pub struct GraphVersion {
     pub yanked: bool,
 }
 
+const SCOPE_PACKAGE_LIMIT: usize = 80;
+
 const FALLBACK_EXPORTS: &[(&str, &str)] = &[
     ("json", "JSON"),
     ("yaml", "YAML"),
@@ -115,17 +117,34 @@ pub fn scope_workspace(
     description: &str,
     packages: &[PackageRow],
 ) -> Markup {
+    // Bound at the server-rendering boundary, before JSON serialization or the
+    // no-JavaScript table is emitted. The browser also enforces this limit, but
+    // a client-side slice cannot protect the HTML response from a very large
+    // organization or project.
+    let published_packages = packages
+        .iter()
+        .filter(|package| package.latest.is_some())
+        .collect::<Vec<_>>();
+    let shown_packages = published_packages
+        .iter()
+        .copied()
+        .take(SCOPE_PACKAGE_LIMIT)
+        .collect::<Vec<_>>();
+    let omitted_count = published_packages.len().saturating_sub(shown_packages.len());
+
     let sources_json = serde_json::to_string(
-        &packages
+        &shown_packages
             .iter()
-            .filter_map(|package| {
-                package.latest.as_ref().map(|version| {
-                    json!({
-                        "org": package.org,
-                        "name": package.name,
-                        "version": version,
-                        "private": package.visibility != "public",
-                    })
+            .map(|package| {
+                let version = package
+                    .latest
+                    .as_ref()
+                    .expect("scope packages were filtered to published versions");
+                json!({
+                    "org": &package.org,
+                    "name": &package.name,
+                    "version": version,
+                    "private": package.visibility != "public",
                 })
             })
             .collect::<Vec<_>>(),
@@ -133,12 +152,22 @@ pub fn scope_workspace(
     .expect("graph package sources are serializable");
 
     html! {
+        @if omitted_count > 0 {
+            p class="muted dg-scope-limit-note" role="status" {
+                "This topology is limited to the first " (SCOPE_PACKAGE_LIMIT) " published packages; "
+                (omitted_count) " additional published package"
+                @if omitted_count != 1 { "s" }
+                " omitted from this response."
+            }
+        }
         zed-dependency-graph
             id="dependency-graph"
             data-mode="scope"
             data-scope-kind=(scope_kind)
             data-scope-title=(title)
             data-scope-description=(description)
+            data-source-total=(published_packages.len())
+            data-source-limit=(SCOPE_PACKAGE_LIMIT)
             data-sources=(sources_json) {
             p class="muted" { "Loading package topology…" }
             noscript {
@@ -151,8 +180,8 @@ pub fn scope_workspace(
                         tr { th scope="col" { "Package" } th scope="col" { "Version" } th scope="col" { "Graph" } th scope="col" { "Relationship table" } }
                     }
                     tbody {
-                        @for package in packages {
-                            @if let Some(version) = &package.latest {
+                        @for package in &shown_packages {
+                            @if let Some(version) = package.latest.as_ref() {
                                 tr {
                                     th scope="row" { (package.org) "/" (package.name) }
                                     td class="mono" { (version) }
@@ -230,6 +259,33 @@ mod tests {
         assert!(markup.contains("&quot;private&quot;:false"));
         assert!(!markup.contains("&quot;name&quot;:&quot;empty&quot;"));
         assert!(markup.contains("package sources"));
+        assert!(markup.contains("data-source-total=\"1\""));
+        assert!(markup.contains("data-source-limit=\"80\""));
         assert!(markup.contains("/bff/dependency-graphs/packages/acme/a/1.0.0/export/csv"));
+    }
+
+    #[test]
+    fn scope_workspace_bounds_large_scopes_before_serialization() {
+        let packages = (0..82)
+            .map(|index| PackageRow {
+                org: "acme".into(),
+                name: format!("pkg-{index:03}"),
+                description: None,
+                latest: Some("1.0.0".into()),
+                visibility: "public".into(),
+            })
+            .collect::<Vec<_>>();
+
+        let markup =
+            scope_workspace("organization", "Topology", "Description", &packages).into_string();
+
+        assert!(markup.contains("data-source-total=\"82\""));
+        assert!(markup.contains("data-source-limit=\"80\""));
+        assert_eq!(markup.matches("&quot;version&quot;:").count(), 80);
+        assert_eq!(markup.matches("/export/csv").count(), 80);
+        assert!(markup.contains("&quot;name&quot;:&quot;pkg-079&quot;"));
+        assert!(!markup.contains("pkg-080"));
+        assert!(!markup.contains("pkg-081"));
+        assert!(markup.contains("2 additional published packages"));
     }
 }
