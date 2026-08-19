@@ -4,7 +4,7 @@
 //! shared browser component used by package pages. Each source graph is still
 //! fetched through the same-origin BFF and remains independently immutable.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -178,21 +178,43 @@ async fn latest_graph_rows(
     db: &zed_orm_core::ReadContext,
     packages: &[zed_orm_core::models::PackageSummary],
 ) -> Result<Vec<components::PackageRow>, zed_orm_core::OrmError> {
-    let mut rows = Vec::with_capacity(packages.len());
-    for package in packages {
-        let mut row = super::package::summary_row(package);
-        row.latest = match package.latest_version.as_deref() {
-            Some(latest) => {
-                zed_orm_core::read::package_version_by_package_and_version(db, package.id, latest)
-                    .await?
-                    .filter(|version| !version.yanked)
-                    .map(|version| version.version)
-            }
-            None => None,
-        };
-        rows.push(row);
-    }
-    Ok(rows)
+    let coordinates = packages
+        .iter()
+        .filter_map(|package| {
+            package
+                .latest_version
+                .as_ref()
+                .map(|version| (package.id, version.clone()))
+        })
+        .collect::<Vec<_>>();
+    let versions =
+        zed_orm_core::version_reads::exact_unyanked_package_versions(db, &coordinates).await?;
+    let versions_by_package = versions
+        .into_iter()
+        .map(|version| (version.package_id, version.version))
+        .collect::<HashMap<_, _>>();
+
+    Ok(latest_graph_rows_from_versions(
+        packages,
+        &versions_by_package,
+    ))
+}
+
+fn latest_graph_rows_from_versions(
+    packages: &[zed_orm_core::models::PackageSummary],
+    versions_by_package: &HashMap<uuid::Uuid, String>,
+) -> Vec<components::PackageRow> {
+    packages
+        .iter()
+        .map(|package| {
+            let mut row = super::package::summary_row(package);
+            row.latest = package
+                .latest_version
+                .as_ref()
+                .and_then(|_| versions_by_package.get(&package.id).cloned());
+            row
+        })
+        .collect()
 }
 
 async fn project_scope(
@@ -395,11 +417,67 @@ fn message_page(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use serde_json::json;
+    use uuid::Uuid;
+    use zed_orm_core::models::PackageSummary;
+
+    use super::latest_graph_rows_from_versions;
+
+    fn package_summary(
+        id: Uuid,
+        name: &str,
+        latest_version: Option<&str>,
+    ) -> PackageSummary {
+        PackageSummary {
+            id,
+            org_id: Uuid::from_u128(100),
+            org_slug: "acme".into(),
+            project_id: None,
+            project_slug: None,
+            name: name.into(),
+            description: None,
+            visibility: "public".into(),
+            repo_url: format!("https://example.test/{name}"),
+            config: json!({}),
+            latest_version: latest_version.map(str::to_owned),
+            download_count: 0,
+            version_count: i32::from(latest_version.is_some()),
+        }
+    }
+
     #[test]
     fn topology_routes_have_distinct_page_titles() {
         assert_ne!(
             "organization dependency topology",
             "project dependency topology"
         );
+    }
+
+    #[test]
+    fn batched_latest_versions_preserve_package_order_and_missing_rows() {
+        let first = Uuid::from_u128(1);
+        let second = Uuid::from_u128(2);
+        let unpublished = Uuid::from_u128(3);
+        let packages = vec![
+            package_summary(first, "first", Some("1.0.0")),
+            package_summary(second, "second", Some("2.0.0")),
+            package_summary(unpublished, "unpublished", None),
+        ];
+        let versions = HashMap::from([
+            (second, "2.0.0".to_owned()),
+            (unpublished, "9.9.9".to_owned()),
+        ]);
+
+        let rows = latest_graph_rows_from_versions(&packages, &versions);
+
+        assert_eq!(
+            rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
+            vec!["first", "second", "unpublished"]
+        );
+        assert_eq!(rows[0].latest, None);
+        assert_eq!(rows[1].latest.as_deref(), Some("2.0.0"));
+        assert_eq!(rows[2].latest, None);
     }
 }
