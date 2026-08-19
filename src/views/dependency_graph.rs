@@ -129,7 +129,9 @@ pub fn scope_workspace(
         .copied()
         .take(SCOPE_PACKAGE_LIMIT)
         .collect::<Vec<_>>();
-    let omitted_count = published_packages.len().saturating_sub(shown_packages.len());
+    let omitted_count = published_packages
+        .len()
+        .saturating_sub(shown_packages.len());
 
     let sources_json = serde_json::to_string(
         &shown_packages
