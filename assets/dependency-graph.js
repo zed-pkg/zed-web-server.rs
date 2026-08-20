@@ -13,6 +13,18 @@ const FETCH_TIMEOUT_MS = 12000;
 const MAX_GRAPH_TEXT_LENGTH = 2048;
 const MAX_EDGE_FEATURES = 256;
 const HTMLElementBase = globalThis.HTMLElement || class {};
+let graphInstanceSequence = 0;
+
+function graphInstanceIdentifiers() {
+  const namespace = `dg-${(++graphInstanceSequence).toString(36)}`;
+  return Object.freeze({
+    namespace,
+    keyboardInstructions: `${namespace}-keyboard-instructions`,
+    svgTitle: `${namespace}-svg-title`,
+    svgDescription: `${namespace}-svg-description`,
+    arrow: `${namespace}-arrow`,
+  });
+}
 
 const KIND_LABELS = {
   runtime: "Runtime",
@@ -38,6 +50,7 @@ const EXPORT_FORMATS = [
 class ZedDependencyGraph extends HTMLElementBase {
   constructor() {
     super();
+    this.identifiers = graphInstanceIdentifiers();
     this.mode = "package";
     this.nodes = new Map();
     this.edges = [];
@@ -73,6 +86,8 @@ class ZedDependencyGraph extends HTMLElementBase {
 
   connectedCallback() {
     if (this.dataset.ready === "true") return;
+    this.claimElementId();
+    this.setAttribute("data-graph-namespace", this.identifiers.namespace);
     this.dataset.ready = "true";
     this.mode = this.dataset.mode || "package";
     this.versions = parseJson(this.dataset.versions, []);
@@ -100,6 +115,15 @@ class ZedDependencyGraph extends HTMLElementBase {
     this.resizeObserver = null;
     this.searchFrame = null;
     delete this.dataset.ready;
+  }
+
+  claimElementId() {
+    const preferred = this.id || "dependency-graph";
+    const graphs = globalThis.document?.querySelectorAll?.("zed-dependency-graph") || [];
+    const occupied = Array.from(graphs).some(
+      (element) => element !== this && element.id === preferred
+    );
+    this.id = occupied ? `${preferred}-${this.identifiers.namespace}` : preferred;
   }
 
   renderShell() {
@@ -192,18 +216,14 @@ class ZedDependencyGraph extends HTMLElementBase {
 
         <div class="dg-stage">
           <div class="dg-viewport" data-role="viewport">
-            <p id="dg-keyboard-instructions" class="dg-sr-only">Use arrow keys to move between packages, Enter to select, Shift plus Enter to open a package, plus and minus to zoom, and zero to fit the graph.</p>
-            <svg data-role="svg" role="group" aria-labelledby="dg-svg-title dg-svg-description" aria-describedby="dg-keyboard-instructions" tabindex="0">
-              <title id="dg-svg-title">Interactive package dependency graph</title>
-              <desc id="dg-svg-description">Package nodes and directed dependency relationships. A text relationship table follows the canvas.</desc>
+            <p id="${this.identifiers.keyboardInstructions}" class="dg-sr-only">Use arrow keys to move between packages, Enter to select, Shift plus Enter to open a package, plus and minus to zoom, and zero to fit the graph.</p>
+            <svg data-role="svg" role="group" aria-labelledby="${this.identifiers.svgTitle} ${this.identifiers.svgDescription}" aria-describedby="${this.identifiers.keyboardInstructions}" tabindex="0">
+              <title id="${this.identifiers.svgTitle}">Interactive package dependency graph</title>
+              <desc id="${this.identifiers.svgDescription}">Package nodes and directed dependency relationships. A text relationship table follows the canvas.</desc>
               <defs>
-                <marker id="dg-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="strokeWidth">
+                <marker id="${this.identifiers.arrow}" class="dg-arrow-marker" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="strokeWidth">
                   <path d="M0,0 L9,4.5 L0,9 z"></path>
                 </marker>
-                <filter id="dg-glow" x="-40%" y="-40%" width="180%" height="180%">
-                  <feGaussianBlur stdDeviation="4" result="blur"></feGaussianBlur>
-                  <feMerge><feMergeNode in="blur"></feMergeNode><feMergeNode in="SourceGraphic"></feMergeNode></feMerge>
-                </filter>
               </defs>
               <g data-role="world">
                 <g data-role="edges"></g>
@@ -1041,7 +1061,7 @@ class ZedDependencyGraph extends HTMLElementBase {
           edge.synthetic ? " is-synthetic" : ""
         }${this.isEdgeFocused(edge) ? " is-focused" : ""}`,
         d: edgePath(from, to),
-        "marker-end": "url(#dg-arrow)",
+        "marker-end": `url(#${this.identifiers.arrow})`,
       });
       path.appendChild(
         svg("title", {}, `${nodeLabel(this.nodes.get(edge.from))} → ${nodeLabel(this.nodes.get(edge.to))} · ${edge.kind}`)
@@ -2184,6 +2204,7 @@ export {
   edgeIdentity,
   edgePairIdentity,
   escapeHtml,
+  graphInstanceIdentifiers,
   isGraphDigest,
   isStrongGraphEtag,
   packageDocumentUrl,
