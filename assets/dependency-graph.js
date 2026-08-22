@@ -9,6 +9,7 @@ const MAX_GRAPH_EDGES = 12000;
 const MAX_RENDERED_NODES = 750;
 const MAX_RENDERED_EDGES = 2500;
 const MAX_ACCESSIBLE_EDGES = 2000;
+const MAX_FRAGMENT_TABLE_EDGES = 250;
 const MAX_PROJECTION_DIMENSION = 4096;
 const MAX_GRAPH_DOCUMENT_BYTES = 32 * 1024 * 1024;
 const MAX_DOCUMENT_CACHE_ENTRIES = 4;
@@ -131,6 +132,7 @@ class ZedDependencyGraph extends HTMLElementBase {
     this.handleHashChange = () => this.restoreSelectionFromHash();
     this.handleLocationChange = () => this.restoreViewFromLocation();
     this.searchFrame = null;
+    this.fragmentSequences = new Map();
   }
 
   connectedCallback() {
@@ -163,6 +165,10 @@ class ZedDependencyGraph extends HTMLElementBase {
     window.removeEventListener("hashchange", this.handleHashChange);
     window.removeEventListener("popstate", this.handleLocationChange);
     this.resizeObserver?.disconnect();
+    for (const target of [this.inspector, this.querySummary, this.stateFragment, this.$?.('[data-role="table"]')]) {
+      if (target) globalThis.htmx?.trigger?.(target, "htmx:abort");
+    }
+    this.fragmentSequences.clear();
     if (this.searchFrame !== null) cancelAnimationFrame(this.searchFrame);
     this.resizeObserver = null;
     this.searchFrame = null;
@@ -290,6 +296,7 @@ class ZedDependencyGraph extends HTMLElementBase {
 
         <div class="dg-notice" data-role="notice" hidden></div>
         <div class="dg-status" data-role="status" role="status" aria-live="polite">Preparing graph workspace…</div>
+        <div class="dg-state-fragment" data-role="state-fragment" aria-live="polite" hidden></div>
         <div class="dg-degradation" data-role="degradation" role="status" hidden></div>
         <section class="dg-query-summary" data-role="query-summary" aria-labelledby="${this.identifiers.namespace}-query-title" hidden></section>
 
@@ -351,6 +358,7 @@ class ZedDependencyGraph extends HTMLElementBase {
     this.notice = this.$('[data-role="notice"]');
     this.degradation = this.$('[data-role="degradation"]');
     this.querySummary = this.$('[data-role="query-summary"]');
+    this.stateFragment = this.$('[data-role="state-fragment"]');
   }
 
   exportMenu() {
@@ -369,6 +377,36 @@ class ZedDependencyGraph extends HTMLElementBase {
         <button type="button" data-projection-export="png">PNG visible projection</button>
       </div>
     </details>`;
+  }
+
+  requestFragment(name, target, values, afterSwap = null) {
+    const htmx = globalThis.htmx;
+    if (!target || typeof htmx?.ajax !== "function") return;
+    const base = this.dataset.fragmentBase || "/partials/dependency-graph";
+    if (!base.startsWith("/") || base.startsWith("//")) return;
+    const sequence = (this.fragmentSequences.get(name) || 0) + 1;
+    this.fragmentSequences.set(name, sequence);
+    htmx.trigger?.(target, "htmx:abort");
+    target.hidden = false;
+    Promise.resolve(
+      htmx.ajax("POST", `${base}/${name}`, {
+        target,
+        swap: "innerHTML",
+        values,
+      })
+    )
+      .then(() => {
+        if (this.fragmentSequences.get(name) === sequence) afterSwap?.();
+      })
+      .catch(() => {
+        // The local semantic renderer remains the progressive fallback.
+      });
+  }
+
+  requestStateFragment(action) {
+    if (!globalThis.location) return;
+    const url = `${location.pathname}${location.search}${location.hash}`;
+    this.requestFragment("state", this.stateFragment, { action, url });
   }
 
   bindControls() {
@@ -1064,6 +1102,7 @@ class ZedDependencyGraph extends HTMLElementBase {
   saveView() {
     safeStorageSet(this.savedViewKey(), JSON.stringify(this.currentViewState()));
     this.syncViewUrl();
+    this.requestStateFragment("save");
     this.setStatus("Saved this dependency graph view in this browser.", "ready");
   }
 
@@ -1078,6 +1117,7 @@ class ZedDependencyGraph extends HTMLElementBase {
       if (!globalThis.location || !globalThis.history?.replaceState) return;
       history.replaceState(history.state, "", graphViewUrl(location.href, state));
       this.restoreViewFromLocation();
+      this.requestStateFragment("restore");
       this.setStatus("Restored the saved dependency graph view.", "ready");
     } catch {
       this.setStatus("The saved dependency graph view is invalid.", "error");
@@ -1086,6 +1126,7 @@ class ZedDependencyGraph extends HTMLElementBase {
 
   async copyShareLink() {
     this.syncViewUrl();
+    this.requestStateFragment("share");
     try {
       if (!globalThis.navigator?.clipboard?.writeText) {
         throw new Error("Clipboard access is unavailable.");
@@ -1531,6 +1572,8 @@ class ZedDependencyGraph extends HTMLElementBase {
   renderInspector() {
     const node = this.nodes.get(this.selectedId);
     if (!node) {
+      globalThis.htmx?.trigger?.(this.inspector, "htmx:abort");
+      this.fragmentSequences.set("inspector", (this.fragmentSequences.get("inspector") || 0) + 1);
       this.inspector.innerHTML = `<div class="dg-inspector-empty">
         <div class="dg-orbit" aria-hidden="true"></div>
         <h3>Select a package</h3>
@@ -1588,13 +1631,56 @@ class ZedDependencyGraph extends HTMLElementBase {
             : `<p>No outgoing relationships in the loaded graph.</p>`
         }
       </div>`;
+    this.bindInspectorControls(node);
+    this.requestInspectorFragment(node, outgoing, incoming, requirements, features, expandable);
+  }
 
+  bindInspectorControls(node) {
     this.inspector.querySelector('[data-inspector-action="expand"]')?.addEventListener("click", () =>
       this.expandLatest(node)
     );
     this.inspector.querySelectorAll('[data-select-node]').forEach((button) =>
       button.addEventListener("click", () => this.selectNode(button.dataset.selectNode, true))
     );
+  }
+
+  requestInspectorFragment(node, outgoing, incoming, requirements, features, expandable) {
+    const neighbors = outgoing
+      .slice(0, 18)
+      .map((edge) => ({ edge, target: this.nodes.get(edge.to) }))
+      .filter(({ target }) => target)
+      .map(({ edge, target }) => ({
+        id: edge.to,
+        org: target.org,
+        name: target.name,
+        kind: edge.kind,
+        requirement: edge.requirement || "",
+      }));
+    const nodeId = node.id;
+    const payload = {
+      org: node.org,
+      name: node.name,
+      registry_id: node.registryId,
+      version: node.version || "",
+      requirements,
+      dependencies: outgoing.length,
+      dependents: incoming.length,
+      features,
+      license: node.license || "",
+      updated_at: formatMetadataDate(node.updatedAt),
+      artifact: shortDigest(node.artifactDigest) || "",
+      synthetic: Boolean(node.synthetic),
+      expandable,
+      outgoing: neighbors,
+    };
+    this.requestFragment("inspector", this.inspector, { node: JSON.stringify(payload) }, () => {
+      const current = this.nodes.get(this.selectedId);
+      if (!current || current.id !== nodeId) {
+        this.renderInspector();
+        return;
+      }
+      this.bindInspectorControls(current);
+    });
   }
 
   async expandLatest(node) {
@@ -1914,6 +2000,7 @@ class ZedDependencyGraph extends HTMLElementBase {
   }
 
   renderAccessibleTable() {
+    const target = this.$('[data-role="table"]');
     const shownEdges = this.edges.slice(0, MAX_ACCESSIBLE_EDGES);
     const rows = shownEdges
       .map((edge) => {
@@ -1931,14 +2018,33 @@ class ZedDependencyGraph extends HTMLElementBase {
     const boundedNote = shownEdges.length < this.edges.length
       ? `<p role="status">Showing the first ${shownEdges.length} of ${this.edges.length} relationships to keep this page responsive. Use the canonical CSV exports for complete semantic edge data.</p>`
       : "";
-    this.$('[data-role="table"]').innerHTML = this.edges.length
+    target.innerHTML = this.edges.length
       ? `${boundedNote}<table><caption>Loaded dependency relationships</caption><thead><tr><th scope="col">From</th><th scope="col">To</th><th scope="col">Kind</th><th scope="col">Requirement</th><th scope="col">Optional</th></tr></thead><tbody>${rows}</tbody></table>`
       : `<p>No dependency relationships are loaded.</p>`;
+    const fragmentRows = this.edges
+      .slice(0, MAX_FRAGMENT_TABLE_EDGES)
+      .map((edge) => ({ edge, from: this.nodes.get(edge.from), to: this.nodes.get(edge.to) }))
+      .filter(({ from, to }) => from && to)
+      .map(({ edge, from, to }) => ({
+        from_org: from.org,
+        from_name: from.name,
+        to_org: to.org,
+        to_name: to.name,
+        kind: edge.kind,
+        requirement: edge.requirement || "",
+        optional: Boolean(edge.optional),
+      }));
+    this.requestFragment("table", target, {
+      total: this.edges.length,
+      rows: JSON.stringify(fragmentRows),
+    });
   }
 
   renderQuerySummary() {
     if (!this.querySummary) return;
     if (!this.activeQuery || !this.focusNodes) {
+      globalThis.htmx?.trigger?.(this.querySummary, "htmx:abort");
+      this.fragmentSequences.set("query", (this.fragmentSequences.get("query") || 0) + 1);
       this.querySummary.hidden = true;
       this.querySummary.replaceChildren();
       return;
@@ -1991,6 +2097,32 @@ class ZedDependencyGraph extends HTMLElementBase {
           : ""
       }`;
     this.querySummary.hidden = false;
+    this.bindQuerySummaryControls();
+    const fragmentRows = pageNodes.map((node) => ({
+      id: node.id,
+      org: node.org,
+      name: node.name,
+      version: node.version || "",
+      license: node.license || "",
+      updated_at: formatMetadataDate(node.updatedAt),
+      dependencies: outgoingCounts.get(node.id) || 0,
+      dependents: incomingCounts.get(node.id) || 0,
+    }));
+    this.requestFragment(
+      "query",
+      this.querySummary,
+      {
+        label: this.focusLabel,
+        title_id: `${this.identifiers.namespace}-query-title`,
+        page: this.queryPage,
+        total: nodes.length,
+        rows: JSON.stringify(fragmentRows),
+      },
+      () => this.bindQuerySummaryControls()
+    );
+  }
+
+  bindQuerySummaryControls() {
     this.querySummary.querySelectorAll('[data-query-select]').forEach((button) =>
       button.addEventListener("click", () => this.selectNode(button.dataset.querySelect, true))
     );

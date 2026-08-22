@@ -488,6 +488,37 @@ assert.ok(boundedNodes.has("root") && boundedNodes.has("hot"), "scope roots surv
 assert.ok(boundedNodes.has("leaf"), "search matches survive canvas degradation");
 assert.equal(boundedNodes.size, 4);
 
+const originalHtmx = globalThis.htmx;
+try {
+  let fragmentRequest = null;
+  globalThis.htmx = {
+    trigger() {},
+    ajax(method, url, options) {
+      fragmentRequest = { method, url, options };
+      return Promise.resolve();
+    },
+  };
+  const fragmentGraph = new ZedDependencyGraph();
+  fragmentGraph.dataset = {};
+  const fragmentTarget = { hidden: true };
+  let fragmentBound = false;
+  fragmentGraph.requestFragment(
+    "query",
+    fragmentTarget,
+    { label: "Cycles" },
+    () => (fragmentBound = true)
+  );
+  await Promise.resolve();
+  assert.equal(fragmentRequest.method, "POST");
+  assert.equal(fragmentRequest.url, "/partials/dependency-graph/query");
+  assert.equal(fragmentRequest.options.target, fragmentTarget);
+  assert.equal(fragmentRequest.options.values.label, "Cycles");
+  assert.equal(fragmentTarget.hidden, false);
+  assert.equal(fragmentBound, true);
+} finally {
+  globalThis.htmx = originalHtmx;
+}
+
 const originalFetch = globalThis.fetch;
 try {
   const cacheGraph = new ZedDependencyGraph();
