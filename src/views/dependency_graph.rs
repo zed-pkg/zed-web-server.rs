@@ -146,6 +146,8 @@ pub fn scope_workspace(
                     "name": &package.name,
                     "version": version,
                     "prerelease": package.latest_prerelease,
+                    "license": &package.latest_license,
+                    "updatedAt": &package.updated_at,
                     "private": package.visibility != "public",
                 })
             })
@@ -246,6 +248,8 @@ mod tests {
                 description: None,
                 latest: Some("1.0.0".into()),
                 latest_prerelease: false,
+                latest_license: Some("Apache-2.0".into()),
+                updated_at: "2026-08-22T00:00:00+00:00".into(),
                 visibility: "public".into(),
             },
             PackageRow {
@@ -254,6 +258,8 @@ mod tests {
                 description: None,
                 latest: None,
                 latest_prerelease: false,
+                latest_license: None,
+                updated_at: "2025-01-01T00:00:00+00:00".into(),
                 visibility: "private".into(),
             },
         ];
@@ -262,6 +268,8 @@ mod tests {
         assert!(markup.contains("&quot;name&quot;:&quot;a&quot;"));
         assert!(markup.contains("&quot;private&quot;:false"));
         assert!(markup.contains("&quot;prerelease&quot;:false"));
+        assert!(markup.contains("&quot;license&quot;:&quot;Apache-2.0&quot;"));
+        assert!(markup.contains("&quot;updatedAt&quot;:&quot;2026-08-22T00:00:00+00:00&quot;"));
         assert!(!markup.contains("&quot;name&quot;:&quot;empty&quot;"));
         assert!(markup.contains("package sources"));
         assert!(markup.contains("data-source-total=\"1\""));
@@ -278,6 +286,8 @@ mod tests {
                 description: None,
                 latest: Some("1.0.0".into()),
                 latest_prerelease: false,
+                latest_license: None,
+                updated_at: "2026-08-22T00:00:00+00:00".into(),
                 visibility: "public".into(),
             })
             .collect::<Vec<_>>();

@@ -17,6 +17,8 @@ const MAX_GRAPH_TEXT_LENGTH = 2048;
 const MAX_EDGE_FEATURES = 256;
 const MAX_VIEW_STATE_TEXT_LENGTH = 1024;
 const QUERY_RESULT_PAGE_SIZE = 25;
+const UNMAINTAINED_AFTER_DAYS = 365;
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const HTMLElementBase = globalThis.HTMLElement || class {};
 let graphInstanceSequence = 0;
 
@@ -54,6 +56,9 @@ const GRAPH_QUERIES = new Set([
   "prerelease",
   "yanked",
   "centrality",
+  "licenses",
+  "license-review",
+  "unmaintained",
 ]);
 const GRAPH_STATE_PARAMETERS = Object.freeze({
   layout: "graph-layout",
@@ -258,6 +263,9 @@ class ZedDependencyGraph extends HTMLElementBase {
                  <button type="button" data-query="external">External dependencies</button>
                  <button type="button" data-query="duplicates">Multiple versions</button>
                  <button type="button" data-query="prerelease">Pre-release exposure</button>
+                 <button type="button" data-query="licenses">License distribution</button>
+                 <button type="button" data-query="license-review">License review</button>
+                 <button type="button" data-query="unmaintained">Unmaintained packages</button>
                  <button type="button" data-query="centrality">High centrality</button>`
               : `<button type="button" data-query="prerelease">Pre-release exposure</button>
                  <button type="button" data-query="yanked">Yanked exposure</button>
@@ -611,6 +619,8 @@ class ZedDependencyGraph extends HTMLElementBase {
         : isPrereleaseVersion(node.version);
     node.yanked = Boolean(source.yanked);
     node.private = Boolean(source.private);
+    node.license = typeof source.license === "string" ? source.license : "";
+    node.updatedAt = typeof source.updatedAt === "string" ? source.updatedAt : "";
   }
 
   clearGraph() {
@@ -776,6 +786,8 @@ class ZedDependencyGraph extends HTMLElementBase {
       prerelease: false,
       yanked: false,
       private: false,
+      license: "",
+      updatedAt: "",
     };
     if (attributes.version) existing.version = attributes.version;
     if (attributes.requirement) existing.requirements.add(attributes.requirement);
@@ -804,6 +816,8 @@ class ZedDependencyGraph extends HTMLElementBase {
       prerelease: isPrereleaseVersion(node.id.version || ""),
       yanked: false,
       private: false,
+      license: "",
+      updatedAt: "",
     };
     for (const feature of node.features || []) existing.features.add(feature);
     existing.synthetic ||= Boolean(attributes.synthetic);
@@ -1541,6 +1555,8 @@ class ZedDependencyGraph extends HTMLElementBase {
         <dt>Dependencies</dt><dd>${outgoing.length}</dd>
         <dt>Dependents</dt><dd>${incoming.length}</dd>
         <dt>Features</dt><dd>${features.length ? features.map(escapeHtml).join(", ") : "—"}</dd>
+        <dt>License</dt><dd>${escapeHtml(node.license || "—")}</dd>
+        <dt>Last metadata update</dt><dd>${escapeHtml(formatMetadataDate(node.updatedAt) || "—")}</dd>
         <dt>Artifact</dt><dd class="dg-digest">${escapeHtml(shortDigest(node.artifactDigest) || "—")}</dd>
       </dl>
       <div class="dg-inspector-actions">
@@ -1642,6 +1658,9 @@ class ZedDependencyGraph extends HTMLElementBase {
       "prerelease",
       "yanked",
       "centrality",
+      "licenses",
+      "license-review",
+      "unmaintained",
     ]);
     const selected = options.restoring && this.nodes.has(this.queryAnchorId)
       ? this.queryAnchorId
@@ -1705,7 +1724,7 @@ class ZedDependencyGraph extends HTMLElementBase {
       result = new Set(path);
       this.focusEdges = pathEdgePairs(path);
       label = path.length ? `Shortest directed path (${path.length - 1} edges)` : "No directed path found";
-    } else if (["internal", "external", "duplicates", "prerelease", "yanked", "centrality"].includes(query)) {
+    } else if (["internal", "external", "duplicates", "prerelease", "yanked", "centrality", "licenses", "license-review", "unmaintained"].includes(query)) {
       result = aggregateQueryNodes(query, this.nodes, this.roots, queryEdges);
       label = {
         internal: "Packages published in this scope",
@@ -1714,6 +1733,9 @@ class ZedDependencyGraph extends HTMLElementBase {
         prerelease: "Packages exposing pre-release versions",
         yanked: "Packages exposing yanked versions",
         centrality: "Highest-centrality packages in the loaded graph",
+        licenses: "License distribution for packages published in this scope",
+        "license-review": "Scope packages with missing or mixed license metadata requiring review",
+        unmaintained: `Scope packages without a metadata update in ${UNMAINTAINED_AFTER_DAYS} days`,
       }[query];
     }
     if (!result) return;
@@ -1936,6 +1958,8 @@ class ZedDependencyGraph extends HTMLElementBase {
         (node) => `<tr>
           <th scope="row"><a href="${packagePageUrl(node.org, node.name)}">${escapeHtml(nodeLabel(node))}</a></th>
           <td>${escapeHtml(node.version || "unresolved")}</td>
+          <td>${escapeHtml(node.license || "—")}</td>
+          <td>${escapeHtml(formatMetadataDate(node.updatedAt) || "—")}</td>
           <td>${outgoingCounts.get(node.id) || 0}</td>
           <td>${incomingCounts.get(node.id) || 0}</td>
           <td><button type="button" data-query-select="${escapeHtml(node.id)}">Inspect</button></td>
@@ -1963,7 +1987,7 @@ class ZedDependencyGraph extends HTMLElementBase {
       </div>
       ${
         rows
-          ? `<div class="dg-query-table"><table><caption>${escapeHtml(this.focusLabel)}</caption><thead><tr><th scope="col">Package</th><th scope="col">Version</th><th scope="col">Dependencies</th><th scope="col">Dependents</th><th scope="col">Action</th></tr></thead><tbody>${rows}</tbody></table></div>`
+          ? `<div class="dg-query-table"><table><caption>${escapeHtml(this.focusLabel)}</caption><thead><tr><th scope="col">Package</th><th scope="col">Version</th><th scope="col">License</th><th scope="col">Updated</th><th scope="col">Dependencies</th><th scope="col">Dependents</th><th scope="col">Action</th></tr></thead><tbody>${rows}</tbody></table></div>`
           : ""
       }`;
     this.querySummary.hidden = false;
@@ -2449,6 +2473,20 @@ function isPrereleaseVersion(version) {
   return withoutBuild.includes("-");
 }
 
+function formatMetadataDate(value) {
+  const timestamp = Date.parse(String(value || ""));
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString().slice(0, 10) : "";
+}
+
+function isUnmaintainedNode(node, now = Date.now()) {
+  const updatedAt = Date.parse(String(node?.updatedAt || ""));
+  return (
+    Number.isFinite(updatedAt) &&
+    Number.isFinite(now) &&
+    now - updatedAt > UNMAINTAINED_AFTER_DAYS * MILLISECONDS_PER_DAY
+  );
+}
+
 function degreeCounts(edges, key) {
   const counts = new Map();
   for (const edge of edges) counts.set(edge[key], (counts.get(edge[key]) || 0) + 1);
@@ -2485,6 +2523,27 @@ function aggregateQueryNodes(query, nodes, roots, edges) {
     for (const instances of coordinates.values()) {
       const versions = new Set(instances.map(([, version]) => version).filter(Boolean));
       if (versions.size > 1) instances.forEach(([id]) => result.add(id));
+    }
+    return result;
+  }
+  if (query === "licenses") {
+    for (const id of roots) if (nodes.has(id)) result.add(id);
+    return result;
+  }
+  if (query === "license-review") {
+    const scopeNodes = [...roots].map((id) => [id, nodes.get(id)]).filter(([, node]) => node);
+    const declaredLicenses = new Set(
+      scopeNodes.map(([, node]) => String(node.license || "").trim().toLowerCase()).filter(Boolean)
+    );
+    for (const [id, node] of scopeNodes) {
+      if (!String(node.license || "").trim() || declaredLicenses.size > 1) result.add(id);
+    }
+    return result;
+  }
+  if (query === "unmaintained") {
+    for (const id of roots) {
+      const node = nodes.get(id);
+      if (node && isUnmaintainedNode(node)) result.add(id);
     }
     return result;
   }
@@ -2790,6 +2849,7 @@ export {
   graphInstanceIdentifiers,
   graphViewUrl,
   isPrereleaseVersion,
+  isUnmaintainedNode,
   isGraphDigest,
   isStrongGraphEtag,
   packageDocumentUrl,

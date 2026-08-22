@@ -20,6 +20,8 @@ pub fn summary_row(summary: &PackageSummary) -> components::PackageRow {
         description: summary.description.clone(),
         latest: summary.latest_version.clone(),
         latest_prerelease: false,
+        latest_license: None,
+        updated_at: summary.updated_at.to_rfc3339(),
         visibility: summary.visibility.clone(),
     }
 }

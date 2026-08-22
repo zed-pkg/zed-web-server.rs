@@ -14,6 +14,7 @@ import {
   graphInstanceIdentifiers,
   graphViewUrl,
   isPrereleaseVersion,
+  isUnmaintainedNode,
   isGraphDigest,
   isStrongGraphEtag,
   packageDocumentUrl,
@@ -447,8 +448,8 @@ assert.deepEqual(sorted(algorithmGraph.cycleNodes(cycleOutgoing, cycleIncoming))
 assert.deepEqual(algorithmGraph.longestChain("a", cycleOutgoing), { path: [], cyclic: true });
 
 const aggregateNodes = new Map([
-  ["root", { id: "root", registryId: "registry:test", org: "acme", name: "root", version: "1.0.0" }],
-  ["hot", { id: "hot", registryId: "registry:test", org: "acme", name: "hot", version: "2.0.0-beta.1", prerelease: true }],
+  ["root", { id: "root", registryId: "registry:test", org: "acme", name: "root", version: "1.0.0", license: "Apache-2.0", updatedAt: "2020-01-01T00:00:00Z" }],
+  ["hot", { id: "hot", registryId: "registry:test", org: "acme", name: "hot", version: "2.0.0-beta.1", prerelease: true, license: "MIT", updatedAt: "2999-01-01T00:00:00Z" }],
   ["dup-one", { id: "dup-one", registryId: "registry:test", org: "vendor", name: "duplicate", version: "1.0.0" }],
   ["dup-two", { id: "dup-two", registryId: "registry:test", org: "vendor", name: "duplicate", version: "2.0.0", yanked: true }],
   ["leaf", { id: "leaf", registryId: "registry:test", org: "vendor", name: "leaf", version: "3.0.0" }],
@@ -467,6 +468,12 @@ assert.deepEqual(sorted(aggregateQueryNodes("duplicates", aggregateNodes, aggreg
 assert.deepEqual([...aggregateQueryNodes("prerelease", aggregateNodes, aggregateRoots, aggregateEdges)], ["hot"]);
 assert.deepEqual([...aggregateQueryNodes("yanked", aggregateNodes, aggregateRoots, aggregateEdges)], ["dup-two"]);
 assert.deepEqual([...aggregateQueryNodes("centrality", aggregateNodes, aggregateRoots, aggregateEdges)], ["hot"]);
+assert.deepEqual(sorted(aggregateQueryNodes("licenses", aggregateNodes, aggregateRoots, aggregateEdges)), ["hot", "root"]);
+assert.deepEqual(sorted(aggregateQueryNodes("license-review", aggregateNodes, aggregateRoots, aggregateEdges)), ["hot", "root"]);
+assert.deepEqual([...aggregateQueryNodes("unmaintained", aggregateNodes, aggregateRoots, aggregateEdges)], ["root"]);
+assert.equal(isUnmaintainedNode({ updatedAt: "2025-01-01T00:00:00Z" }, Date.parse("2026-01-02T00:00:00Z")), true);
+assert.equal(isUnmaintainedNode({ updatedAt: "2025-01-02T00:00:00Z" }, Date.parse("2026-01-02T00:00:00Z")), false);
+assert.equal(isUnmaintainedNode({ updatedAt: "not-a-date" }, Date.now()), false);
 const boundedNodes = boundedRenderedNodeSet(
   new Set(aggregateNodes.keys()),
   aggregateNodes,
