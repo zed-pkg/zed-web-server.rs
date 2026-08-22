@@ -230,6 +230,7 @@ fn is_prerelease(version: &str, scheme: &str) -> bool {
     zed_interfaces::version::parse_version(version).is_some_and(|parsed| !parsed.pre.is_empty())
 }
 
+#[allow(clippy::result_large_err)] // Scope failures are rendered Axum responses.
 async fn project_scope(
     state: &WebState,
     headers: &HeaderMap,
@@ -339,6 +340,7 @@ fn project_not_found(state: &WebState, viewer: &Viewer) -> Response {
     )
 }
 
+#[allow(clippy::result_large_err)] // Scope failures are rendered Axum responses.
 async fn org_scope(
     state: &WebState,
     headers: &HeaderMap,
