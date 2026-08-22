@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::body::{Body, Bytes, HttpBody};
-use axum::extract::{Request, State};
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{any, get, post};
@@ -26,6 +26,7 @@ use crate::state::WebState;
 
 mod console;
 mod dependency_graph;
+mod dependency_graph_fragments;
 mod dependency_graph_page;
 mod health;
 mod home;
@@ -284,6 +285,25 @@ pub fn router(state: Arc<WebState>) -> Router {
         )
         .route("/search", get(search::page))
         .route("/partials/search", get(search::partial))
+        // Presentation-only graph fragments. The browser posts a bounded view
+        // of its already-authorized model; a 256 KiB ceiling keeps this HTML
+        // renderer out of the graph data plane.
+        .route(
+            "/partials/dependency-graph/query",
+            post(dependency_graph_fragments::query).layer(DefaultBodyLimit::max(256 * 1024)),
+        )
+        .route(
+            "/partials/dependency-graph/inspector",
+            post(dependency_graph_fragments::inspector).layer(DefaultBodyLimit::max(256 * 1024)),
+        )
+        .route(
+            "/partials/dependency-graph/table",
+            post(dependency_graph_fragments::table).layer(DefaultBodyLimit::max(256 * 1024)),
+        )
+        .route(
+            "/partials/dependency-graph/state",
+            post(dependency_graph_fragments::state).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
         .route("/p/{org}/{name}", get(package::page))
         .route("/dashboard/{org}", get(console::dashboard))
         .route(

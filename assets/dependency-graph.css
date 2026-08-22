@@ -60,6 +60,7 @@ zed-dependency-graph noscript {
 .dg-toolbar,
 .dg-querybar,
 .dg-status,
+.dg-state-fragment,
 .dg-notice,
 .dg-degradation,
 .dg-query-summary,
@@ -308,6 +309,16 @@ zed-dependency-graph noscript {
 
 .dg-status[data-state="ready"] { color: color-mix(in srgb, var(--blue) 74%, var(--muted)); }
 .dg-status[data-state="error"] { color: #fda4af; }
+.dg-state-fragment {
+  padding: 7px 20px;
+  border-bottom: 1px solid rgb(143 211 244 / 12%);
+  background: rgb(14 116 144 / 9%);
+  color: var(--muted);
+  font: 0.7rem var(--mono);
+}
+.dg-state-fragment[hidden] { display: none; }
+.dg-state-fragment p { margin: 0; }
+.dg-state-fragment a { color: var(--blue); }
 .dg-notice[data-type="warning"] { color: #fcd34d; background: rgb(120 53 15 / 17%); }
 .dg-notice[data-type="info"] { color: var(--blue); background: rgb(14 116 144 / 12%); }
 .dg-degradation {
