@@ -189,34 +189,88 @@ async fn latest_graph_rows(
         .collect::<Vec<_>>();
     let versions =
         zed_orm_core::version_reads::exact_unyanked_package_versions(db, &coordinates).await?;
+    let license_coordinates = versions
+        .iter()
+        .map(|version| (version.package_id, version.id))
+        .collect::<Vec<_>>();
+    let licenses =
+        zed_orm_core::read::primary_licenses_for_exact_versions(db, &license_coordinates).await?;
     let versions_by_package = versions
         .into_iter()
-        .map(|version| (version.package_id, version.version))
+        .map(|version| {
+            let prerelease = is_prerelease(&version.version, &version.version_scheme);
+            (
+                version.package_id,
+                (version.id, version.version, prerelease),
+            )
+        })
         .collect::<HashMap<_, _>>();
+    let licenses_by_package = effective_license_labels(&versions_by_package, licenses);
 
     Ok(latest_graph_rows_from_versions(
         packages,
         &versions_by_package,
+        &licenses_by_package,
     ))
 }
 
 fn latest_graph_rows_from_versions(
     packages: &[zed_orm_core::models::PackageSummary],
-    versions_by_package: &HashMap<uuid::Uuid, String>,
+    versions_by_package: &HashMap<uuid::Uuid, (uuid::Uuid, String, bool)>,
+    licenses_by_package: &HashMap<uuid::Uuid, String>,
 ) -> Vec<components::PackageRow> {
     packages
         .iter()
         .map(|package| {
             let mut row = super::package::summary_row(package);
-            row.latest = package
+            let latest = package
                 .latest_version
                 .as_ref()
-                .and_then(|_| versions_by_package.get(&package.id).cloned());
+                .and_then(|_| versions_by_package.get(&package.id));
+            row.latest = latest.map(|(_, version, _)| version.clone());
+            row.latest_prerelease = latest.is_some_and(|(_, _, prerelease)| *prerelease);
+            row.latest_license = latest
+                .and_then(|_| licenses_by_package.get(&package.id))
+                .cloned();
             row
         })
         .collect()
 }
 
+fn effective_license_labels(
+    versions_by_package: &HashMap<uuid::Uuid, (uuid::Uuid, String, bool)>,
+    licenses: Vec<zed_orm_core::entities::package_license::Model>,
+) -> HashMap<uuid::Uuid, String> {
+    let mut defaults = HashMap::new();
+    let mut overrides = HashMap::new();
+    for license in licenses {
+        let Some((version_id, _, _)) = versions_by_package.get(&license.package_id) else {
+            continue;
+        };
+        let label = license.spdx_id.or(license.name).unwrap_or(license.kind);
+        match license.package_version_id {
+            Some(candidate) if candidate == *version_id => {
+                overrides.insert(license.package_id, label);
+            }
+            None => {
+                defaults.entry(license.package_id).or_insert(label);
+            }
+            Some(_) => {}
+        }
+    }
+    defaults.extend(overrides);
+    defaults
+}
+
+fn is_prerelease(version: &str, scheme: &str) -> bool {
+    let scheme = zed_interfaces::version::VersionScheme::from_str_lenient(scheme);
+    if scheme == zed_interfaces::version::VersionScheme::Opaque {
+        return false;
+    }
+    zed_interfaces::version::parse_version(version).is_some_and(|parsed| !parsed.pre.is_empty())
+}
+
+#[allow(clippy::result_large_err)] // Scope failures are rendered Axum responses.
 async fn project_scope(
     state: &WebState,
     headers: &HeaderMap,
@@ -326,6 +380,7 @@ fn project_not_found(state: &WebState, viewer: &Viewer) -> Response {
     )
 }
 
+#[allow(clippy::result_large_err)] // Scope failures are rendered Axum responses.
 async fn org_scope(
     state: &WebState,
     headers: &HeaderMap,
@@ -423,7 +478,7 @@ mod tests {
     use uuid::Uuid;
     use zed_orm_core::models::PackageSummary;
 
-    use super::latest_graph_rows_from_versions;
+    use super::{effective_license_labels, is_prerelease, latest_graph_rows_from_versions};
 
     fn package_summary(id: Uuid, name: &str, latest_version: Option<&str>) -> PackageSummary {
         PackageSummary {
@@ -437,9 +492,31 @@ mod tests {
             visibility: "public".into(),
             repo_url: format!("https://example.test/{name}"),
             config: json!({}),
+            updated_at: chrono::DateTime::parse_from_rfc3339("2026-08-22T00:00:00Z").unwrap(),
             latest_version: latest_version.map(str::to_owned),
             download_count: 0,
             version_count: i32::from(latest_version.is_some()),
+        }
+    }
+
+    fn primary_license(
+        package_id: Uuid,
+        package_version_id: Option<Uuid>,
+        spdx_id: &str,
+    ) -> zed_orm_core::entities::package_license::Model {
+        let timestamp = chrono::DateTime::parse_from_rfc3339("2026-08-22T00:00:00Z").unwrap();
+        zed_orm_core::entities::package_license::Model {
+            id: Uuid::new_v4(),
+            package_id,
+            package_version_id,
+            kind: "spdx".into(),
+            spdx_id: Some(spdx_id.into()),
+            name: None,
+            url: None,
+            text_body: None,
+            is_primary: true,
+            created_at: timestamp,
+            updated_at: timestamp,
         }
     }
 
@@ -462,11 +539,14 @@ mod tests {
             package_summary(unpublished, "unpublished", None),
         ];
         let versions = HashMap::from([
-            (second, "2.0.0".to_owned()),
-            (unpublished, "9.9.9".to_owned()),
+            (second, (Uuid::from_u128(20), "2.0.0".to_owned(), false)),
+            (
+                unpublished,
+                (Uuid::from_u128(30), "9.9.9".to_owned(), false),
+            ),
         ]);
 
-        let rows = latest_graph_rows_from_versions(&packages, &versions);
+        let rows = latest_graph_rows_from_versions(&packages, &versions, &HashMap::new());
 
         assert_eq!(
             rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
@@ -475,5 +555,29 @@ mod tests {
         assert_eq!(rows[0].latest, None);
         assert_eq!(rows[1].latest.as_deref(), Some("2.0.0"));
         assert_eq!(rows[2].latest, None);
+    }
+
+    #[test]
+    fn topology_channel_metadata_respects_the_declared_version_scheme() {
+        assert!(is_prerelease("2.0.0-beta.1", "semver"));
+        assert!(is_prerelease("2026.08-preview.1", "calver"));
+        assert!(!is_prerelease("release-candidate-1", "opaque"));
+    }
+
+    #[test]
+    fn exact_version_license_overrides_the_package_default() {
+        let package_id = Uuid::from_u128(1);
+        let version_id = Uuid::from_u128(2);
+        let versions = HashMap::from([(package_id, (version_id, "1.0.0".to_owned(), false))]);
+        let licenses = vec![
+            primary_license(package_id, None, "Apache-2.0"),
+            primary_license(package_id, Some(version_id), "MIT"),
+            primary_license(package_id, Some(Uuid::from_u128(3)), "BSD-3-Clause"),
+        ];
+
+        assert_eq!(
+            effective_license_labels(&versions, licenses).get(&package_id),
+            Some(&"MIT".to_owned())
+        );
     }
 }

@@ -242,6 +242,7 @@ fn invalid_coordinate() -> Response {
     )
 }
 
+#[allow(clippy::result_large_err)] // The BFF deliberately returns an exact problem response.
 async fn authorize_package(
     state: &WebState,
     headers: &HeaderMap,

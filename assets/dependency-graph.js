@@ -6,12 +6,19 @@ const SCOPE_BATCH_SIZE = 4;
 const FORCE_LIMIT = 260;
 const MAX_GRAPH_NODES = 3000;
 const MAX_GRAPH_EDGES = 12000;
+const MAX_RENDERED_NODES = 750;
+const MAX_RENDERED_EDGES = 2500;
+const MAX_ACCESSIBLE_EDGES = 2000;
 const MAX_PROJECTION_DIMENSION = 4096;
 const MAX_GRAPH_DOCUMENT_BYTES = 32 * 1024 * 1024;
 const MAX_DOCUMENT_CACHE_ENTRIES = 4;
 const FETCH_TIMEOUT_MS = 12000;
 const MAX_GRAPH_TEXT_LENGTH = 2048;
 const MAX_EDGE_FEATURES = 256;
+const MAX_VIEW_STATE_TEXT_LENGTH = 1024;
+const QUERY_RESULT_PAGE_SIZE = 25;
+const UNMAINTAINED_AFTER_DAYS = 365;
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const HTMLElementBase = globalThis.HTMLElement || class {};
 let graphInstanceSequence = 0;
 
@@ -33,6 +40,38 @@ const KIND_LABELS = {
   peer: "Peer",
   tooling: "Tooling",
 };
+
+const GRAPH_LAYOUTS = new Set(["layered", "radial", "force"]);
+const GRAPH_CHANNELS = new Set(["all", "stable", "prerelease"]);
+const GRAPH_QUERIES = new Set([
+  "direct",
+  "transitive",
+  "dependents",
+  "cycles",
+  "longest",
+  "shortest",
+  "internal",
+  "external",
+  "duplicates",
+  "prerelease",
+  "yanked",
+  "centrality",
+  "licenses",
+  "license-review",
+  "unmaintained",
+]);
+const GRAPH_STATE_PARAMETERS = Object.freeze({
+  layout: "graph-layout",
+  search: "graph-search",
+  kinds: "graph-kinds",
+  optional: "graph-optional",
+  query: "graph-query",
+  queryAnchor: "graph-query-node",
+  selected: "graph-node",
+  pathStart: "graph-path-start",
+  channel: "graph-channel",
+  version: "graph-version",
+});
 
 const EXPORT_FORMATS = [
   ["json", "JSON"],
@@ -64,10 +103,18 @@ class ZedDependencyGraph extends HTMLElementBase {
     this.focusNodes = null;
     this.focusEdges = null;
     this.focusLabel = "";
+    this.activeQuery = "";
+    this.queryAnchorId = "";
+    this.queryPage = 0;
     this.searchTerm = "";
+    this.searchValue = "";
     this.layoutName = "layered";
+    this.channel = "all";
     this.enabledKinds = new Set(Object.keys(KIND_LABELS));
     this.includeOptional = true;
+    this.pendingSelectedId = "";
+    this.pendingQueryAnchorId = "";
+    this.pendingPathStartId = "";
     this.transform = { x: 0, y: 0, k: 1 };
     this.drag = null;
     this.cache = new Map();
@@ -77,10 +124,12 @@ class ZedDependencyGraph extends HTMLElementBase {
     this.loadSequence = 0;
     this.sourceFailures = 0;
     this.syntheticTraversal = false;
+    this.loadStartedAt = 0;
     this.resizeObserver = null;
     this.handleWindowPointerMove = (event) => this.onPointerMove(event);
     this.handleWindowPointerUp = (event) => this.onPointerUp(event);
     this.handleHashChange = () => this.restoreSelectionFromHash();
+    this.handleLocationChange = () => this.restoreViewFromLocation();
     this.searchFrame = null;
   }
 
@@ -92,10 +141,12 @@ class ZedDependencyGraph extends HTMLElementBase {
     this.mode = this.dataset.mode || "package";
     this.versions = parseJson(this.dataset.versions, []);
     this.sources = parseJson(this.dataset.sources, []);
-    this.layoutName = safeStorageGet("zpkg.graph.layout") || "layered";
-    if (!["layered", "radial", "force"].includes(this.layoutName)) {
-      this.layoutName = "layered";
-    }
+    this.defaultVersion = this.dataset.version || this.versions[0]?.version || "";
+    const storedLayout = safeStorageGet("zpkg.graph.layout") || "layered";
+    const initialState = parseGraphViewState(globalThis.location?.href, {
+      layout: GRAPH_LAYOUTS.has(storedLayout) ? storedLayout : "layered",
+    });
+    this.applyParsedViewState(initialState);
     this.renderShell();
     this.bindControls();
     this.loadInitial();
@@ -110,6 +161,7 @@ class ZedDependencyGraph extends HTMLElementBase {
     window.removeEventListener("pointermove", this.handleWindowPointerMove);
     window.removeEventListener("pointerup", this.handleWindowPointerUp);
     window.removeEventListener("hashchange", this.handleHashChange);
+    window.removeEventListener("popstate", this.handleLocationChange);
     this.resizeObserver?.disconnect();
     if (this.searchFrame !== null) cancelAnimationFrame(this.searchFrame);
     this.resizeObserver = null;
@@ -165,11 +217,18 @@ class ZedDependencyGraph extends HTMLElementBase {
                    <span>Version</span>
                    <select data-control="version">${versionOptions}</select>
                  </label>`
-              : ""
+              : `<label class="dg-field dg-channel-field">
+                   <span>Release channel</span>
+                   <select data-control="channel">
+                     <option value="all"${this.channel === "all" ? " selected" : ""}>All releases</option>
+                     <option value="stable"${this.channel === "stable" ? " selected" : ""}>Stable only</option>
+                     <option value="prerelease"${this.channel === "prerelease" ? " selected" : ""}>Pre-release only</option>
+                   </select>
+                 </label>`
           }
           <label class="dg-field dg-search-field">
             <span>Find package</span>
-            <input data-control="search" type="search" placeholder="org/name or version" autocomplete="off">
+            <input data-control="search" type="search" value="${escapeHtml(this.searchValue)}" placeholder="org/name or version" autocomplete="off">
           </label>
           <div class="dg-segmented" aria-label="Graph layout">
             ${["layered", "radial", "force"]
@@ -183,6 +242,9 @@ class ZedDependencyGraph extends HTMLElementBase {
           </div>
           <button type="button" class="dg-icon-button" data-action="fit" title="Fit graph">Fit</button>
           <button type="button" class="dg-icon-button" data-action="reset" title="Reset filters and focus">Reset</button>
+          <button type="button" class="dg-icon-button" data-action="save" title="Save this view in this browser">Save view</button>
+          <button type="button" class="dg-icon-button" data-action="restore" title="Restore the saved view">Restore</button>
+          <button type="button" class="dg-icon-button" data-action="share" title="Copy a reproducible link">Copy link</button>
           ${this.exportMenu()}
         </div>
 
@@ -195,6 +257,21 @@ class ZedDependencyGraph extends HTMLElementBase {
           <button type="button" data-query="longest">Longest chain</button>
           <button type="button" data-query="pin-path">Pin path start</button>
           <button type="button" data-query="shortest">Shortest path</button>
+          ${
+            this.mode === "scope"
+              ? `<button type="button" data-query="internal">In-scope packages</button>
+                 <button type="button" data-query="external">External dependencies</button>
+                 <button type="button" data-query="duplicates">Multiple versions</button>
+                 <button type="button" data-query="prerelease">Pre-release exposure</button>
+                 <button type="button" data-query="licenses">License distribution</button>
+                 <button type="button" data-query="license-review">License review</button>
+                 <button type="button" data-query="unmaintained">Unmaintained packages</button>
+                 <button type="button" data-query="centrality">High centrality</button>`
+              : `<button type="button" data-query="prerelease">Pre-release exposure</button>
+                 <button type="button" data-query="yanked">Yanked exposure</button>
+                 <button type="button" data-query="duplicates">Multiple versions</button>
+                 <button type="button" data-query="centrality">High centrality</button>`
+          }
           <button type="button" data-query="clear">Clear focus</button>
           <details class="dg-filter-menu">
             <summary>Edge filters</summary>
@@ -213,6 +290,8 @@ class ZedDependencyGraph extends HTMLElementBase {
 
         <div class="dg-notice" data-role="notice" hidden></div>
         <div class="dg-status" data-role="status" role="status" aria-live="polite">Preparing graph workspace…</div>
+        <div class="dg-degradation" data-role="degradation" role="status" hidden></div>
+        <section class="dg-query-summary" data-role="query-summary" aria-labelledby="${this.identifiers.namespace}-query-title" hidden></section>
 
         <div class="dg-stage">
           <div class="dg-viewport" data-role="viewport">
@@ -270,6 +349,8 @@ class ZedDependencyGraph extends HTMLElementBase {
     this.inspector = this.$('[data-role="inspector"]');
     this.status = this.$('[data-role="status"]');
     this.notice = this.$('[data-role="notice"]');
+    this.degradation = this.$('[data-role="degradation"]');
+    this.querySummary = this.$('[data-role="query-summary"]');
   }
 
   exportMenu() {
@@ -293,15 +374,24 @@ class ZedDependencyGraph extends HTMLElementBase {
   bindControls() {
     this.$('[data-control="version"]')?.addEventListener("change", (event) => {
       this.dataset.version = event.target.value;
+      this.syncViewUrl();
       this.loadPackage(event.target.value);
     });
 
+    this.$('[data-control="channel"]')?.addEventListener("change", (event) => {
+      this.channel = event.target.value;
+      this.syncViewUrl();
+      this.loadScope();
+    });
+
     this.$('[data-control="search"]').addEventListener("input", (event) => {
-      this.searchTerm = event.target.value.trim().toLowerCase();
+      this.searchValue = event.target.value.slice(0, MAX_VIEW_STATE_TEXT_LENGTH);
+      this.searchTerm = this.searchValue.trim().toLowerCase();
       if (this.searchFrame !== null) cancelAnimationFrame(this.searchFrame);
       this.searchFrame = requestAnimationFrame(() => {
         this.searchFrame = null;
         this.renderGraph();
+        this.syncViewUrl();
       });
     });
 
@@ -313,13 +403,17 @@ class ZedDependencyGraph extends HTMLElementBase {
           item.setAttribute("aria-pressed", String(item === button))
         );
         this.applyLayout(true);
+        this.syncViewUrl();
       });
     });
 
     this.$$('[data-action]').forEach((button) => {
-      button.addEventListener("click", () => {
+      button.addEventListener("click", async () => {
         if (button.dataset.action === "fit") this.fitGraph();
         if (button.dataset.action === "reset") this.resetView();
+        if (button.dataset.action === "save") this.saveView();
+        if (button.dataset.action === "restore") this.restoreSavedView();
+        if (button.dataset.action === "share") await this.copyShareLink();
       });
     });
 
@@ -331,13 +425,17 @@ class ZedDependencyGraph extends HTMLElementBase {
       checkbox.addEventListener("change", () => {
         if (checkbox.checked) this.enabledKinds.add(checkbox.dataset.kind);
         else this.enabledKinds.delete(checkbox.dataset.kind);
-        this.renderGraph();
+        if (this.activeQuery) this.runQuery(this.activeQuery, { sync: false, fit: false, restoring: true });
+        else this.renderGraph();
+        this.syncViewUrl();
       });
     });
 
     this.$('[data-control="optional"]').addEventListener("change", (event) => {
       this.includeOptional = event.target.checked;
-      this.renderGraph();
+      if (this.activeQuery) this.runQuery(this.activeQuery, { sync: false, fit: false, restoring: true });
+      else this.renderGraph();
+      this.syncViewUrl();
     });
 
     this.$$('[data-projection-export]').forEach((button) => {
@@ -358,6 +456,7 @@ class ZedDependencyGraph extends HTMLElementBase {
     window.addEventListener("pointermove", this.handleWindowPointerMove);
     window.addEventListener("pointerup", this.handleWindowPointerUp);
     window.addEventListener("hashchange", this.handleHashChange);
+    window.addEventListener("popstate", this.handleLocationChange);
     this.svg.addEventListener("keydown", (event) => {
       if (event.key === "+" || event.key === "=") this.zoomAt(1.15, this.viewport.clientWidth / 2, this.viewport.clientHeight / 2);
       if (event.key === "-") this.zoomAt(1 / 1.15, this.viewport.clientWidth / 2, this.viewport.clientHeight / 2);
@@ -384,6 +483,7 @@ class ZedDependencyGraph extends HTMLElementBase {
       return;
     }
     const sequence = ++this.loadSequence;
+    this.loadStartedAt = performanceNow();
     this.setStatus(`Loading ${this.dataset.org}/${this.dataset.package}@${version}…`, "loading");
     this.notice.hidden = true;
     try {
@@ -400,7 +500,12 @@ class ZedDependencyGraph extends HTMLElementBase {
         version
       );
       this.clearGraph();
-      this.addDocument(document, { primary: true, synthetic: false });
+      const root = this.addDocument(document, { primary: true, synthetic: false });
+      const versionRow = this.versions.find((item) => item.version === version);
+      this.applySourceMetadata(root, {
+        prerelease: versionRow?.prerelease,
+        yanked: versionRow?.yanked,
+      });
       this.dataset.version = version;
       this.syntheticTraversal = false;
       this.updateExportLinks();
@@ -413,11 +518,20 @@ class ZedDependencyGraph extends HTMLElementBase {
 
   async loadScope() {
     const sequence = ++this.loadSequence;
-    const sources = this.sources.filter((source) => source.version).slice(0, SCOPE_LIMIT);
+    this.loadStartedAt = performanceNow();
+    const channelSources = this.sources.filter(
+      (source) => source.version && sourceMatchesChannel(source, this.channel)
+    );
+    const sources = channelSources.slice(0, SCOPE_LIMIT);
     this.clearGraph();
     this.sourceFailures = 0;
     if (!sources.length) {
-      this.setStatus("No published package versions are available in this scope.", "error");
+      this.setStatus(
+        this.channel === "all"
+          ? "No published package versions are available in this scope."
+          : `No ${this.channel === "stable" ? "stable" : "pre-release"} package versions are available in this scope.`,
+        "error"
+      );
       this.renderGraph();
       return;
     }
@@ -469,11 +583,12 @@ class ZedDependencyGraph extends HTMLElementBase {
         const source = batch[index];
         if (!document) return;
         try {
-          this.addDocument(document, {
+          const root = this.addDocument(document, {
             primary: offset + index === 0,
             synthetic: false,
             scopeRoot: true,
           });
+          this.applySourceMetadata(root, source);
         } catch (error) {
           this.sourceFailures += 1;
           console.warn("Dependency graph source exceeded workspace limits", source, error);
@@ -484,7 +599,7 @@ class ZedDependencyGraph extends HTMLElementBase {
         }
       });
     }
-    const clipped = this.sources.length > SCOPE_LIMIT;
+    const clipped = channelSources.length > SCOPE_LIMIT;
     const notes = [];
     if (this.sourceFailures) notes.push(`${this.sourceFailures} package graph(s) could not be loaded`);
     if (clipped) notes.push(`scope limited to the first ${SCOPE_LIMIT} packages`);
@@ -494,6 +609,18 @@ class ZedDependencyGraph extends HTMLElementBase {
         this.dataset.scopeKind || "scope"
       }.`
     );
+  }
+
+  applySourceMetadata(node, source = {}) {
+    if (!node) return;
+    node.prerelease =
+      typeof source.prerelease === "boolean"
+        ? source.prerelease
+        : isPrereleaseVersion(node.version);
+    node.yanked = Boolean(source.yanked);
+    node.private = Boolean(source.private);
+    node.license = typeof source.license === "string" ? source.license : "";
+    node.updatedAt = typeof source.updatedAt === "string" ? source.updatedAt : "";
   }
 
   clearGraph() {
@@ -540,7 +667,7 @@ class ZedDependencyGraph extends HTMLElementBase {
           synthetic: Boolean(options.synthetic),
         });
       }
-      return;
+      return root;
     }
 
     if (document.view === "resolved") {
@@ -562,7 +689,7 @@ class ZedDependencyGraph extends HTMLElementBase {
           synthetic: Boolean(options.synthetic),
         });
       }
-      return;
+      return this.nodes.get([...this.roots][0]) || null;
     }
     throw new Error("The server returned an unknown dependency graph view.");
   }
@@ -656,6 +783,11 @@ class ZedDependencyGraph extends HTMLElementBase {
       synthetic: false,
       resolved: false,
       expanded: false,
+      prerelease: false,
+      yanked: false,
+      private: false,
+      license: "",
+      updatedAt: "",
     };
     if (attributes.version) existing.version = attributes.version;
     if (attributes.requirement) existing.requirements.add(attributes.requirement);
@@ -681,6 +813,11 @@ class ZedDependencyGraph extends HTMLElementBase {
       synthetic: false,
       resolved: true,
       expanded: true,
+      prerelease: isPrereleaseVersion(node.id.version || ""),
+      yanked: false,
+      private: false,
+      license: "",
+      updatedAt: "",
     };
     for (const feature of node.features || []) existing.features.add(feature);
     existing.synthetic ||= Boolean(attributes.synthetic);
@@ -861,13 +998,153 @@ class ZedDependencyGraph extends HTMLElementBase {
     }
   }
 
+  applyParsedViewState(state) {
+    this.layoutName = state.layout;
+    this.searchValue = state.search;
+    this.searchTerm = state.search.trim().toLowerCase();
+    this.enabledKinds = new Set(state.kinds);
+    this.includeOptional = state.includeOptional;
+    this.channel = state.channel;
+    this.activeQuery = state.query;
+    this.queryAnchorId = state.queryAnchor;
+    this.pendingQueryAnchorId = state.queryAnchor;
+    this.pendingSelectedId = state.selected;
+    this.pendingPathStartId = state.pathStart;
+    if (this.mode === "package") {
+      this.dataset.version = this.versions.some((item) => item.version === state.version)
+        ? state.version
+        : this.defaultVersion;
+    }
+  }
+
+  currentViewState() {
+    return {
+      layout: this.layoutName,
+      search: this.$?.('[data-control="search"]')?.value.trim() || this.searchValue,
+      kinds: [...this.enabledKinds],
+      includeOptional: this.includeOptional,
+      query: this.activeQuery,
+      queryAnchor: this.queryAnchorId,
+      selected: this.selectedId || "",
+      pathStart: this.pathStartId || "",
+      channel: this.channel,
+      version: this.mode === "package" ? this.dataset.version || "" : "",
+    };
+  }
+
+  updateControlsFromState() {
+    const search = this.$?.('[data-control="search"]');
+    if (search) search.value = this.searchValue;
+    const version = this.$?.('[data-control="version"]');
+    if (version && [...version.options].some((option) => option.value === this.dataset.version)) {
+      version.value = this.dataset.version;
+    }
+    const channel = this.$?.('[data-control="channel"]');
+    if (channel) channel.value = this.channel;
+    this.$$?.('[data-layout]')?.forEach((button) =>
+      button.setAttribute("aria-pressed", String(button.dataset.layout === this.layoutName))
+    );
+    this.$$?.('[data-kind]')?.forEach(
+      (checkbox) => (checkbox.checked = this.enabledKinds.has(checkbox.dataset.kind))
+    );
+    const optional = this.$?.('[data-control="optional"]');
+    if (optional) optional.checked = this.includeOptional;
+  }
+
+  syncViewUrl() {
+    if (!globalThis.location || !globalThis.history?.replaceState) return;
+    const url = graphViewUrl(location.href, this.currentViewState());
+    history.replaceState(history.state, "", url);
+  }
+
+  savedViewKey() {
+    return `zpkg.graph.saved:${globalThis.location?.pathname || this.id}`;
+  }
+
+  saveView() {
+    safeStorageSet(this.savedViewKey(), JSON.stringify(this.currentViewState()));
+    this.syncViewUrl();
+    this.setStatus("Saved this dependency graph view in this browser.", "ready");
+  }
+
+  restoreSavedView() {
+    const saved = safeStorageGet(this.savedViewKey());
+    if (!saved) {
+      this.setStatus("No saved dependency graph view exists for this page.", "error");
+      return;
+    }
+    try {
+      const state = JSON.parse(saved);
+      if (!globalThis.location || !globalThis.history?.replaceState) return;
+      history.replaceState(history.state, "", graphViewUrl(location.href, state));
+      this.restoreViewFromLocation();
+      this.setStatus("Restored the saved dependency graph view.", "ready");
+    } catch {
+      this.setStatus("The saved dependency graph view is invalid.", "error");
+    }
+  }
+
+  async copyShareLink() {
+    this.syncViewUrl();
+    try {
+      if (!globalThis.navigator?.clipboard?.writeText) {
+        throw new Error("Clipboard access is unavailable.");
+      }
+      await navigator.clipboard.writeText(location.href);
+      this.setStatus("Copied a reproducible dependency graph link.", "ready");
+    } catch {
+      this.setStatus("Copy is unavailable; copy the current address from the browser.", "error");
+    }
+  }
+
+  restoreViewFromLocation() {
+    const previousVersion = this.dataset.version || "";
+    const previousChannel = this.channel;
+    const state = parseGraphViewState(globalThis.location?.href, {
+      layout: this.layoutName,
+    });
+    this.applyParsedViewState(state);
+    this.updateControlsFromState();
+    if (this.mode === "package" && this.dataset.version !== previousVersion) {
+      this.loadPackage(this.dataset.version);
+      return;
+    }
+    if (this.mode === "scope" && this.channel !== previousChannel) {
+      this.loadScope();
+      return;
+    }
+    this.applyLayout(false);
+    this.restoreLoadedViewState();
+  }
+
   afterGraphLoaded(message) {
+    this.dataset.graphLoadMs = (performanceNow() - this.loadStartedAt).toFixed(1);
     this.applyLayout(false);
     this.updateMetrics();
     this.renderAccessibleTable();
-    this.setStatus(message, "ready");
-    if (!this.selectedId && !this.restoreSelectionFromHash() && this.roots.size) {
+    this.restoreLoadedViewState(message);
+  }
+
+  restoreLoadedViewState(message = "Dependency graph view restored.") {
+    const selected = this.pendingSelectedId && this.nodes.has(this.pendingSelectedId)
+      ? this.pendingSelectedId
+      : "";
+    if (selected) this.selectNode(selected, false);
+    else if (!this.selectedId && !this.restoreSelectionFromHash() && this.roots.size) {
       this.selectNode([...this.roots][0], false);
+    }
+    this.pathStartId = this.nodes.has(this.pendingPathStartId) ? this.pendingPathStartId : null;
+    this.queryAnchorId = this.nodes.has(this.pendingQueryAnchorId)
+      ? this.pendingQueryAnchorId
+      : this.queryAnchorId;
+    this.pendingSelectedId = "";
+    this.pendingPathStartId = "";
+    this.pendingQueryAnchorId = "";
+    if (this.activeQuery) {
+      this.runQuery(this.activeQuery, { sync: false, fit: false, restoring: true });
+    } else {
+      this.renderQuerySummary();
+      this.setStatus(message, "ready");
     }
   }
 
@@ -1040,13 +1317,33 @@ class ZedDependencyGraph extends HTMLElementBase {
   }
 
   renderGraph() {
+    const renderStartedAt = performanceNow();
     this.edgeLayer.replaceChildren();
     this.nodeLayer.replaceChildren();
     this.renderedNodeElements.clear();
     this.renderedEdgesByNode.clear();
-    const edges = this.filteredEdges(true);
-    const visibleNodes = this.visibleNodeSet(edges);
-    this.$('[data-role="empty"]').hidden = visibleNodes.size > 0;
+    const allEdges = this.filteredEdges(true);
+    const allVisibleNodes = this.visibleNodeSet(allEdges);
+    const matches = this.searchMatches();
+    const visibleNodes = boundedRenderedNodeSet(
+      allVisibleNodes,
+      this.nodes,
+      allEdges,
+      this.roots,
+      this.selectedId,
+      matches,
+      MAX_RENDERED_NODES
+    );
+    const edges = allEdges
+      .filter((edge) => visibleNodes.has(edge.from) && visibleNodes.has(edge.to))
+      .slice(0, MAX_RENDERED_EDGES);
+    this.updateDegradationSummary(
+      allVisibleNodes.size,
+      allEdges.length,
+      visibleNodes.size,
+      edges.length
+    );
+    this.$('[data-role="empty"]').hidden = allVisibleNodes.size > 0;
     const keyboardNode = visibleNodes.has(this.selectedId)
       ? this.selectedId
       : [...this.roots].find((id) => visibleNodes.has(id)) || visibleNodes.values().next().value;
@@ -1074,7 +1371,6 @@ class ZedDependencyGraph extends HTMLElementBase {
       }
     }
 
-    const matches = this.searchMatches();
     for (const id of visibleNodes) {
       const node = this.nodes.get(id);
       const position = this.positions.get(id);
@@ -1134,6 +1430,17 @@ class ZedDependencyGraph extends HTMLElementBase {
     this.updateTransform();
     this.renderInspector();
     this.updateMetrics();
+    this.renderQuerySummary();
+    this.dataset.graphRenderMs = (performanceNow() - renderStartedAt).toFixed(1);
+  }
+
+  updateDegradationSummary(nodeCount, edgeCount, renderedNodeCount, renderedEdgeCount) {
+    if (!this.degradation) return;
+    const bounded = renderedNodeCount < nodeCount || renderedEdgeCount < edgeCount;
+    this.degradation.hidden = !bounded;
+    this.degradation.textContent = bounded
+      ? `Large-graph overview: the canvas shows ${renderedNodeCount} of ${nodeCount} packages and ${renderedEdgeCount} of ${edgeCount} relationships, prioritizing scope roots, matches, selection, and central packages. Queries and downloadable semantic data still use the full loaded graph.`
+      : "";
   }
 
   filteredEdges(applyFocus) {
@@ -1191,15 +1498,13 @@ class ZedDependencyGraph extends HTMLElementBase {
     if (id === null) {
       this.selectedId = null;
       this.renderGraph();
+      if (updateHash) this.syncViewUrl();
       return;
     }
     if (!this.nodes.has(id)) return;
     this.selectedId = id;
-    if (updateHash) {
-      const node = this.nodes.get(id);
-      history.replaceState(null, "", `#dependency-graph=${encodeURIComponent(`${node.org}/${node.name}`)}`);
-    }
     this.renderGraph();
+    if (updateHash) this.syncViewUrl();
     if (updateHash) {
       requestAnimationFrame(() => {
         const selected = [...this.nodeLayer.querySelectorAll("[data-node-id]")].find(
@@ -1250,6 +1555,8 @@ class ZedDependencyGraph extends HTMLElementBase {
         <dt>Dependencies</dt><dd>${outgoing.length}</dd>
         <dt>Dependents</dt><dd>${incoming.length}</dd>
         <dt>Features</dt><dd>${features.length ? features.map(escapeHtml).join(", ") : "—"}</dd>
+        <dt>License</dt><dd>${escapeHtml(node.license || "—")}</dd>
+        <dt>Last metadata update</dt><dd>${escapeHtml(formatMetadataDate(node.updatedAt) || "—")}</dd>
         <dt>Artifact</dt><dd class="dg-digest">${escapeHtml(shortDigest(node.artifactDigest) || "—")}</dd>
       </dl>
       <div class="dg-inspector-actions">
@@ -1330,17 +1637,35 @@ class ZedDependencyGraph extends HTMLElementBase {
     }
   }
 
-  runQuery(query) {
+  runQuery(query, options = {}) {
     if (query === "clear") {
       this.focusNodes = null;
       this.focusEdges = null;
       this.focusLabel = "";
+      this.activeQuery = "";
+      this.queryAnchorId = "";
+      this.queryPage = 0;
       this.setStatus("Query focus cleared.", "ready");
       this.renderGraph();
+      if (options.sync !== false) this.syncViewUrl();
       return;
     }
-    const selected = this.selectedId || [...this.roots][0];
-    if (!selected && query !== "cycles") {
+    const selectionIndependent = new Set([
+      "cycles",
+      "internal",
+      "external",
+      "duplicates",
+      "prerelease",
+      "yanked",
+      "centrality",
+      "licenses",
+      "license-review",
+      "unmaintained",
+    ]);
+    const selected = options.restoring && this.nodes.has(this.queryAnchorId)
+      ? this.queryAnchorId
+      : this.selectedId || [...this.roots][0];
+    if (!selected && !selectionIndependent.has(query)) {
       this.setStatus("Select a package before running this query.", "error");
       return;
     }
@@ -1348,6 +1673,7 @@ class ZedDependencyGraph extends HTMLElementBase {
     if (query === "pin-path") {
       this.pathStartId = selected;
       this.setStatus(`Path start pinned at ${nodeLabel(this.nodes.get(selected))}. Select an endpoint and run Shortest path.`, "ready");
+      this.syncViewUrl();
       return;
     }
 
@@ -1398,13 +1724,30 @@ class ZedDependencyGraph extends HTMLElementBase {
       result = new Set(path);
       this.focusEdges = pathEdgePairs(path);
       label = path.length ? `Shortest directed path (${path.length - 1} edges)` : "No directed path found";
+    } else if (["internal", "external", "duplicates", "prerelease", "yanked", "centrality", "licenses", "license-review", "unmaintained"].includes(query)) {
+      result = aggregateQueryNodes(query, this.nodes, this.roots, queryEdges);
+      label = {
+        internal: "Packages published in this scope",
+        external: "Dependencies outside this scope",
+        duplicates: "Packages with multiple loaded versions",
+        prerelease: "Packages exposing pre-release versions",
+        yanked: "Packages exposing yanked versions",
+        centrality: "Highest-centrality packages in the loaded graph",
+        licenses: "License distribution for packages published in this scope",
+        "license-review": "Scope packages with missing or mixed license metadata requiring review",
+        unmaintained: `Scope packages without a metadata update in ${UNMAINTAINED_AFTER_DAYS} days`,
+      }[query];
     }
     if (!result) return;
     this.focusNodes = result;
     this.focusLabel = label;
+    this.activeQuery = query;
+    this.queryAnchorId = selectionIndependent.has(query) ? "" : selected;
+    this.queryPage = 0;
     this.setStatus(`${label}: ${result.size} package(s).`, result.size ? "ready" : "error");
     this.renderGraph();
-    requestAnimationFrame(() => this.fitGraph());
+    if (options.fit !== false) requestAnimationFrame(() => this.fitGraph());
+    if (options.sync !== false) this.syncViewUrl();
   }
 
   walk(start, neighbors) {
@@ -1545,8 +1888,12 @@ class ZedDependencyGraph extends HTMLElementBase {
     this.focusNodes = null;
     this.focusEdges = null;
     this.focusLabel = "";
+    this.activeQuery = "";
+    this.queryAnchorId = "";
+    this.queryPage = 0;
     this.pathStartId = null;
     this.searchTerm = "";
+    this.searchValue = "";
     this.$('[data-control="search"]').value = "";
     this.enabledKinds = new Set(Object.keys(KIND_LABELS));
     this.$$('[data-kind]').forEach((checkbox) => (checkbox.checked = true));
@@ -1554,6 +1901,7 @@ class ZedDependencyGraph extends HTMLElementBase {
     this.$('[data-control="optional"]').checked = true;
     this.renderGraph();
     this.fitGraph();
+    this.syncViewUrl();
     this.setStatus("Graph view reset.", "ready");
   }
 
@@ -1566,7 +1914,8 @@ class ZedDependencyGraph extends HTMLElementBase {
   }
 
   renderAccessibleTable() {
-    const rows = this.edges
+    const shownEdges = this.edges.slice(0, MAX_ACCESSIBLE_EDGES);
+    const rows = shownEdges
       .map((edge) => {
         const from = this.nodes.get(edge.from);
         const to = this.nodes.get(edge.to);
@@ -1579,9 +1928,78 @@ class ZedDependencyGraph extends HTMLElementBase {
         </tr>`;
       })
       .join("");
+    const boundedNote = shownEdges.length < this.edges.length
+      ? `<p role="status">Showing the first ${shownEdges.length} of ${this.edges.length} relationships to keep this page responsive. Use the canonical CSV exports for complete semantic edge data.</p>`
+      : "";
     this.$('[data-role="table"]').innerHTML = this.edges.length
-      ? `<table><caption>Loaded dependency relationships</caption><thead><tr><th scope="col">From</th><th scope="col">To</th><th scope="col">Kind</th><th scope="col">Requirement</th><th scope="col">Optional</th></tr></thead><tbody>${rows}</tbody></table>`
+      ? `${boundedNote}<table><caption>Loaded dependency relationships</caption><thead><tr><th scope="col">From</th><th scope="col">To</th><th scope="col">Kind</th><th scope="col">Requirement</th><th scope="col">Optional</th></tr></thead><tbody>${rows}</tbody></table>`
       : `<p>No dependency relationships are loaded.</p>`;
+  }
+
+  renderQuerySummary() {
+    if (!this.querySummary) return;
+    if (!this.activeQuery || !this.focusNodes) {
+      this.querySummary.hidden = true;
+      this.querySummary.replaceChildren();
+      return;
+    }
+    const nodes = [...this.focusNodes]
+      .map((id) => this.nodes.get(id))
+      .filter(Boolean)
+      .sort((a, b) => nodeLabel(a).localeCompare(nodeLabel(b)) || a.version.localeCompare(b.version));
+    const pageCount = Math.max(1, Math.ceil(nodes.length / QUERY_RESULT_PAGE_SIZE));
+    this.queryPage = clamp(this.queryPage, 0, pageCount - 1);
+    const start = this.queryPage * QUERY_RESULT_PAGE_SIZE;
+    const pageNodes = nodes.slice(start, start + QUERY_RESULT_PAGE_SIZE);
+    const outgoingCounts = degreeCounts(this.edges, "from");
+    const incomingCounts = degreeCounts(this.edges, "to");
+    const rows = pageNodes
+      .map(
+        (node) => `<tr>
+          <th scope="row"><a href="${packagePageUrl(node.org, node.name)}">${escapeHtml(nodeLabel(node))}</a></th>
+          <td>${escapeHtml(node.version || "unresolved")}</td>
+          <td>${escapeHtml(node.license || "—")}</td>
+          <td>${escapeHtml(formatMetadataDate(node.updatedAt) || "—")}</td>
+          <td>${outgoingCounts.get(node.id) || 0}</td>
+          <td>${incomingCounts.get(node.id) || 0}</td>
+          <td><button type="button" data-query-select="${escapeHtml(node.id)}">Inspect</button></td>
+        </tr>`
+      )
+      .join("");
+    const first = nodes.length ? start + 1 : 0;
+    const last = Math.min(nodes.length, start + QUERY_RESULT_PAGE_SIZE);
+    this.querySummary.innerHTML = `
+      <div class="dg-query-summary-head">
+        <div>
+          <p class="dg-eyebrow">Accessible query result</p>
+          <h3 id="${this.identifiers.namespace}-query-title">${escapeHtml(this.focusLabel)}</h3>
+          <p>${nodes.length ? `Showing ${first}–${last} of ${nodes.length} packages.` : "No packages matched this analysis."}</p>
+        </div>
+        ${
+          pageCount > 1
+            ? `<nav aria-label="Query result pages">
+                 <button type="button" data-query-page="previous"${this.queryPage === 0 ? " disabled" : ""}>Previous</button>
+                 <span>Page ${this.queryPage + 1} of ${pageCount}</span>
+                 <button type="button" data-query-page="next"${this.queryPage + 1 === pageCount ? " disabled" : ""}>Next</button>
+               </nav>`
+            : ""
+        }
+      </div>
+      ${
+        rows
+          ? `<div class="dg-query-table"><table><caption>${escapeHtml(this.focusLabel)}</caption><thead><tr><th scope="col">Package</th><th scope="col">Version</th><th scope="col">License</th><th scope="col">Updated</th><th scope="col">Dependencies</th><th scope="col">Dependents</th><th scope="col">Action</th></tr></thead><tbody>${rows}</tbody></table></div>`
+          : ""
+      }`;
+    this.querySummary.hidden = false;
+    this.querySummary.querySelectorAll('[data-query-select]').forEach((button) =>
+      button.addEventListener("click", () => this.selectNode(button.dataset.querySelect, true))
+    );
+    this.querySummary.querySelectorAll('[data-query-page]').forEach((button) =>
+      button.addEventListener("click", () => {
+        this.queryPage += button.dataset.queryPage === "next" ? 1 : -1;
+        this.renderQuerySummary();
+      })
+    );
   }
 
   updateExportLinks() {
@@ -1594,8 +2012,20 @@ class ZedDependencyGraph extends HTMLElementBase {
   }
 
   projectionDocument() {
-    const edges = this.filteredEdges(true);
-    const visibleNodes = this.visibleNodeSet(edges);
+    const allEdges = this.filteredEdges(true);
+    const allVisibleNodes = this.visibleNodeSet(allEdges);
+    const visibleNodes = boundedRenderedNodeSet(
+      allVisibleNodes,
+      this.nodes,
+      allEdges,
+      this.roots,
+      this.selectedId,
+      this.searchMatches(),
+      MAX_RENDERED_NODES
+    );
+    const edges = allEdges
+      .filter((edge) => visibleNodes.has(edge.from) && visibleNodes.has(edge.to))
+      .slice(0, MAX_RENDERED_EDGES);
     return projectionSvgDocument({
       nodes: [...visibleNodes].map((id) => this.nodes.get(id)).filter(Boolean),
       edges: edges.filter(
@@ -1761,7 +2191,7 @@ class ZedDependencyGraph extends HTMLElementBase {
     queueMicrotask(() => {
       if (this.drag?.moved === moved && this.drag?.type === undefined) this.drag = null;
     });
-    if (type === "pan" && !moved) this.selectNode(null, false);
+    if (type === "pan" && !moved) this.selectNode(null, true);
   }
 
   navigateToNode(node) {
@@ -2027,6 +2457,216 @@ function scopeSourceBatches(sources) {
   };
 }
 
+function sourceMatchesChannel(source, channel) {
+  if (channel === "all") return true;
+  const prerelease =
+    typeof source.prerelease === "boolean"
+      ? source.prerelease
+      : isPrereleaseVersion(source.version || "");
+  return channel === "prerelease" ? prerelease : !prerelease;
+}
+
+function isPrereleaseVersion(version) {
+  const value = String(version || "");
+  if (!/^\d+(?:\.\d+)*/.test(value)) return false;
+  const withoutBuild = value.split("+", 1)[0];
+  return withoutBuild.includes("-");
+}
+
+function formatMetadataDate(value) {
+  const timestamp = Date.parse(String(value || ""));
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString().slice(0, 10) : "";
+}
+
+function isUnmaintainedNode(node, now = Date.now()) {
+  const updatedAt = Date.parse(String(node?.updatedAt || ""));
+  return (
+    Number.isFinite(updatedAt) &&
+    Number.isFinite(now) &&
+    now - updatedAt > UNMAINTAINED_AFTER_DAYS * MILLISECONDS_PER_DAY
+  );
+}
+
+function degreeCounts(edges, key) {
+  const counts = new Map();
+  for (const edge of edges) counts.set(edge[key], (counts.get(edge[key]) || 0) + 1);
+  return counts;
+}
+
+function aggregateQueryNodes(query, nodes, roots, edges) {
+  const result = new Set();
+  if (query === "internal") {
+    for (const id of roots) if (nodes.has(id)) result.add(id);
+    return result;
+  }
+  if (query === "external") {
+    for (const id of nodes.keys()) if (!roots.has(id)) result.add(id);
+    return result;
+  }
+  if (query === "prerelease") {
+    for (const [id, node] of nodes) {
+      if (node.prerelease || isPrereleaseVersion(node.version)) result.add(id);
+    }
+    return result;
+  }
+  if (query === "yanked") {
+    for (const [id, node] of nodes) if (node.yanked) result.add(id);
+    return result;
+  }
+  if (query === "duplicates") {
+    const coordinates = new Map();
+    for (const [id, node] of nodes) {
+      const coordinate = JSON.stringify([node.registryId, node.org, node.name]);
+      if (!coordinates.has(coordinate)) coordinates.set(coordinate, []);
+      coordinates.get(coordinate).push([id, node.version]);
+    }
+    for (const instances of coordinates.values()) {
+      const versions = new Set(instances.map(([, version]) => version).filter(Boolean));
+      if (versions.size > 1) instances.forEach(([id]) => result.add(id));
+    }
+    return result;
+  }
+  if (query === "licenses") {
+    for (const id of roots) if (nodes.has(id)) result.add(id);
+    return result;
+  }
+  if (query === "license-review") {
+    const scopeNodes = [...roots].map((id) => [id, nodes.get(id)]).filter(([, node]) => node);
+    const declaredLicenses = new Set(
+      scopeNodes.map(([, node]) => String(node.license || "").trim().toLowerCase()).filter(Boolean)
+    );
+    for (const [id, node] of scopeNodes) {
+      if (!String(node.license || "").trim() || declaredLicenses.size > 1) result.add(id);
+    }
+    return result;
+  }
+  if (query === "unmaintained") {
+    for (const id of roots) {
+      const node = nodes.get(id);
+      if (node && isUnmaintainedNode(node)) result.add(id);
+    }
+    return result;
+  }
+  if (query === "centrality") {
+    const scores = new Map([...nodes.keys()].map((id) => [id, 0]));
+    for (const edge of edges) {
+      scores.set(edge.from, (scores.get(edge.from) || 0) + 1);
+      scores.set(edge.to, (scores.get(edge.to) || 0) + 1);
+    }
+    const ranked = [...scores]
+      .filter(([, score]) => score > 0)
+      .sort((a, b) => b[1] - a[1] || nodeLabel(nodes.get(a[0])).localeCompare(nodeLabel(nodes.get(b[0]))));
+    const count = Math.min(20, Math.max(1, Math.ceil(nodes.size * 0.1)));
+    ranked.slice(0, count).forEach(([id]) => result.add(id));
+    return result;
+  }
+  return result;
+}
+
+function boundedRenderedNodeSet(visible, nodes, edges, roots, selectedId, matches, limit) {
+  if (visible.size <= limit) return new Set(visible);
+  const scores = new Map([...visible].map((id) => [id, 0]));
+  for (const edge of edges) {
+    if (scores.has(edge.from)) scores.set(edge.from, scores.get(edge.from) + 1);
+    if (scores.has(edge.to)) scores.set(edge.to, scores.get(edge.to) + 1);
+  }
+  const compare = (left, right) =>
+    (scores.get(right) || 0) - (scores.get(left) || 0) ||
+    nodeLabel(nodes.get(left)).localeCompare(nodeLabel(nodes.get(right))) ||
+    left.localeCompare(right);
+  const selected = selectedId && visible.has(selectedId) ? [selectedId] : [];
+  const rootIds = [...roots].filter((id) => visible.has(id) && id !== selectedId).sort(compare);
+  const matchIds = [...matches]
+    .filter((id) => visible.has(id) && id !== selectedId && !roots.has(id))
+    .sort(compare);
+  const prioritized = new Set([...selected, ...rootIds, ...matchIds]);
+  const remaining = [...visible].filter((id) => !prioritized.has(id)).sort(compare);
+  return new Set([...prioritized, ...remaining].slice(0, limit));
+}
+
+function performanceNow() {
+  return globalThis.performance?.now?.() ?? Date.now();
+}
+
+function boundedViewStateText(value) {
+  return typeof value === "string" ? value.slice(0, MAX_VIEW_STATE_TEXT_LENGTH) : "";
+}
+
+function normalizeGraphViewState(state = {}, defaults = {}) {
+  const fallbackLayout = GRAPH_LAYOUTS.has(defaults.layout) ? defaults.layout : "layered";
+  const layout = GRAPH_LAYOUTS.has(state.layout) ? state.layout : fallbackLayout;
+  const kinds = Array.isArray(state.kinds)
+    ? [...new Set(state.kinds.filter((kind) => Object.hasOwn(KIND_LABELS, kind)))]
+    : Object.keys(KIND_LABELS);
+  return {
+    layout,
+    search: boundedViewStateText(state.search),
+    kinds,
+    includeOptional: state.includeOptional !== false,
+    query: GRAPH_QUERIES.has(state.query) ? state.query : "",
+    queryAnchor: boundedViewStateText(state.queryAnchor),
+    selected: boundedViewStateText(state.selected),
+    pathStart: boundedViewStateText(state.pathStart),
+    channel: GRAPH_CHANNELS.has(state.channel) ? state.channel : "all",
+    version: boundedViewStateText(state.version),
+  };
+}
+
+function parseGraphViewState(value, defaults = {}) {
+  let url;
+  try {
+    url = new URL(value || "/", "https://zpkg.invalid");
+  } catch {
+    url = new URL("https://zpkg.invalid/");
+  }
+  const parameters = url.searchParams;
+  const kinds = parameters.has(GRAPH_STATE_PARAMETERS.kinds)
+    ? (parameters.get(GRAPH_STATE_PARAMETERS.kinds) || "").split(",")
+    : undefined;
+  return normalizeGraphViewState(
+    {
+      layout: parameters.get(GRAPH_STATE_PARAMETERS.layout) || defaults.layout,
+      search: parameters.get(GRAPH_STATE_PARAMETERS.search) || "",
+      kinds,
+      includeOptional: parameters.get(GRAPH_STATE_PARAMETERS.optional) !== "0",
+      query: parameters.get(GRAPH_STATE_PARAMETERS.query) || "",
+      queryAnchor: parameters.get(GRAPH_STATE_PARAMETERS.queryAnchor) || "",
+      selected: parameters.get(GRAPH_STATE_PARAMETERS.selected) || "",
+      pathStart: parameters.get(GRAPH_STATE_PARAMETERS.pathStart) || "",
+      channel: parameters.get(GRAPH_STATE_PARAMETERS.channel) || "all",
+      version: parameters.get(GRAPH_STATE_PARAMETERS.version) || "",
+    },
+    defaults
+  );
+}
+
+function graphViewUrl(value, state) {
+  const url = new URL(value || "/", "https://zpkg.invalid");
+  const normalized = normalizeGraphViewState(state);
+  const parameters = url.searchParams;
+  parameters.set(GRAPH_STATE_PARAMETERS.layout, normalized.layout);
+  parameters.set(GRAPH_STATE_PARAMETERS.kinds, [...normalized.kinds].sort().join(","));
+  parameters.set(GRAPH_STATE_PARAMETERS.optional, normalized.includeOptional ? "1" : "0");
+  for (const [key, field] of [
+    [GRAPH_STATE_PARAMETERS.search, "search"],
+    [GRAPH_STATE_PARAMETERS.query, "query"],
+    [GRAPH_STATE_PARAMETERS.queryAnchor, "queryAnchor"],
+    [GRAPH_STATE_PARAMETERS.selected, "selected"],
+    [GRAPH_STATE_PARAMETERS.pathStart, "pathStart"],
+    [GRAPH_STATE_PARAMETERS.version, "version"],
+  ]) {
+    if (normalized[field]) parameters.set(key, normalized[field]);
+    else parameters.delete(key);
+  }
+  if (normalized.channel !== "all") {
+    parameters.set(GRAPH_STATE_PARAMETERS.channel, normalized.channel);
+  } else {
+    parameters.delete(GRAPH_STATE_PARAMETERS.channel);
+  }
+  if (!url.hash || url.hash.startsWith("#dependency-graph=")) url.hash = "dependency-graph";
+  return url.toString();
+}
+
 function parseJson(value, fallback) {
   try {
     return value ? JSON.parse(value) : fallback;
@@ -2199,18 +2839,24 @@ if (globalThis.customElements && !customElements.get("zed-dependency-graph")) {
 export {
   ZedDependencyGraph,
   adjacency,
+  aggregateQueryNodes,
   assertDeclaredDocumentCoordinate,
   cacheControlDisallowsStorage,
+  boundedRenderedNodeSet,
   edgeIdentity,
   edgePairIdentity,
   escapeHtml,
   graphInstanceIdentifiers,
+  graphViewUrl,
+  isPrereleaseVersion,
+  isUnmaintainedNode,
   isGraphDigest,
   isStrongGraphEtag,
   packageDocumentUrl,
   packageExportUrl,
   packagePageUrl,
   parseContentLength,
+  parseGraphViewState,
   pathEdgePairs,
   projectionFilename,
   projectionSvgDocument,

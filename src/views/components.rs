@@ -24,6 +24,12 @@ pub struct PackageRow {
     pub name: String,
     pub description: Option<String>,
     pub latest: Option<String>,
+    /// Exact latest-version channel metadata for dependency topology filters.
+    pub latest_prerelease: bool,
+    /// Effective primary license for the exact latest version, when declared.
+    pub latest_license: Option<String>,
+    /// Package metadata update time, exposed to scope-level maintenance analysis.
+    pub updated_at: String,
     pub visibility: String,
 }
 

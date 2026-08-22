@@ -3146,7 +3146,7 @@ dependencies = [
 [[package]]
 name = "zed-orm-core"
 version = "0.1.0"
-source = "git+https://github.com/zed-pkg/zed-lib-core.git?rev=34333b5ea5c0ee7862bfe0366fe9fa2b1c4bd210#34333b5ea5c0ee7862bfe0366fe9fa2b1c4bd210"
+source = "git+https://github.com/zed-pkg/zed-lib-core.git?rev=9ca75929b0be79aaa0b8af60c2810a8ac0c34198#9ca75929b0be79aaa0b8af60c2810a8ac0c34198"
 dependencies = [
  "chrono",
  "sea-orm",

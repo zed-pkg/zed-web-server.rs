@@ -26,6 +26,7 @@ pub async fn org_redirect(Path(org): Path<String>) -> Redirect {
 
 /// Shared preamble: resolve the viewer, require the database, require the org,
 /// and require membership. Returns the rendered rejection when any step fails.
+#[allow(clippy::result_large_err)] // The caller returns this concrete Axum response unchanged.
 async fn org_scope(
     state: &WebState,
     headers: &HeaderMap,
