@@ -145,6 +145,7 @@ pub fn scope_workspace(
                     "org": &package.org,
                     "name": &package.name,
                     "version": version,
+                    "prerelease": package.latest_prerelease,
                     "private": package.visibility != "public",
                 })
             })
@@ -244,6 +245,7 @@ mod tests {
                 name: "a".into(),
                 description: None,
                 latest: Some("1.0.0".into()),
+                latest_prerelease: false,
                 visibility: "public".into(),
             },
             PackageRow {
@@ -251,6 +253,7 @@ mod tests {
                 name: "empty".into(),
                 description: None,
                 latest: None,
+                latest_prerelease: false,
                 visibility: "private".into(),
             },
         ];
@@ -258,6 +261,7 @@ mod tests {
             scope_workspace("organization", "Topology", "Description", &packages).into_string();
         assert!(markup.contains("&quot;name&quot;:&quot;a&quot;"));
         assert!(markup.contains("&quot;private&quot;:false"));
+        assert!(markup.contains("&quot;prerelease&quot;:false"));
         assert!(!markup.contains("&quot;name&quot;:&quot;empty&quot;"));
         assert!(markup.contains("package sources"));
         assert!(markup.contains("data-source-total=\"1\""));
@@ -273,6 +277,7 @@ mod tests {
                 name: format!("pkg-{index:03}"),
                 description: None,
                 latest: Some("1.0.0".into()),
+                latest_prerelease: false,
                 visibility: "public".into(),
             })
             .collect::<Vec<_>>();

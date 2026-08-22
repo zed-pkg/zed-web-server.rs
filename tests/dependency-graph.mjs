@@ -4,18 +4,23 @@ import { readFileSync } from "node:fs";
 import {
   ZedDependencyGraph,
   adjacency,
+  aggregateQueryNodes,
   assertDeclaredDocumentCoordinate,
+  boundedRenderedNodeSet,
   cacheControlDisallowsStorage,
   edgeIdentity,
   edgePairIdentity,
   escapeHtml,
   graphInstanceIdentifiers,
+  graphViewUrl,
+  isPrereleaseVersion,
   isGraphDigest,
   isStrongGraphEtag,
   packageDocumentUrl,
   packageExportUrl,
   packagePageUrl,
   parseContentLength,
+  parseGraphViewState,
   pathEdgePairs,
   projectionFilename,
   projectionSvgDocument,
@@ -100,6 +105,56 @@ assert.equal(
   escapeHtml(`<img src=x onerror='alert(1)'>&\"`),
   "&lt;img src=x onerror=&#39;alert(1)&#39;&gt;&amp;&quot;"
 );
+
+const selectedStateId = JSON.stringify(["registry:test", "acme", "http", "2.0.0"]);
+const queryAnchorStateId = JSON.stringify(["registry:test", "acme", "root", "1.0.0"]);
+const shareUrl = graphViewUrl("https://app.zpkg.net/orgs/acme/topology?keep=1#dependency-graph=legacy", {
+  layout: "radial",
+  search: "tls client",
+  kinds: ["runtime", "build"],
+  includeOptional: false,
+  query: "dependents",
+  queryAnchor: queryAnchorStateId,
+  selected: selectedStateId,
+  pathStart: queryAnchorStateId,
+  channel: "prerelease",
+  version: "2.0.0-beta.1",
+});
+const parsedShareUrl = new URL(shareUrl);
+assert.equal(parsedShareUrl.searchParams.get("keep"), "1", "unrelated URL state survives");
+assert.equal(parsedShareUrl.hash, "#dependency-graph");
+assert.deepEqual(parseGraphViewState(shareUrl), {
+  layout: "radial",
+  search: "tls client",
+  kinds: ["build", "runtime"],
+  includeOptional: false,
+  query: "dependents",
+  queryAnchor: queryAnchorStateId,
+  selected: selectedStateId,
+  pathStart: queryAnchorStateId,
+  channel: "prerelease",
+  version: "2.0.0-beta.1",
+});
+assert.deepEqual(
+  parseGraphViewState("https://app.zpkg.net/topology?graph-layout=hostile&graph-kinds=runtime,unknown&graph-query=delete"),
+  {
+    layout: "layered",
+    search: "",
+    kinds: ["runtime"],
+    includeOptional: true,
+    query: "",
+    queryAnchor: "",
+    selected: "",
+    pathStart: "",
+    channel: "all",
+    version: "",
+  },
+  "URL state is bounded to graph allowlists"
+);
+assert.ok(isPrereleaseVersion("2.0.0-beta.1"));
+assert.ok(isPrereleaseVersion("2026.08-preview.1"));
+assert.ok(!isPrereleaseVersion("2.0.0+build.7"));
+assert.ok(!isPrereleaseVersion("release-candidate-1"));
 
 
 const firstIdentifiers = graphInstanceIdentifiers();
@@ -390,6 +445,41 @@ assert.deepEqual(sorted(algorithmGraph.cycleNodes(cycleOutgoing, cycleIncoming))
   "self",
 ]);
 assert.deepEqual(algorithmGraph.longestChain("a", cycleOutgoing), { path: [], cyclic: true });
+
+const aggregateNodes = new Map([
+  ["root", { id: "root", registryId: "registry:test", org: "acme", name: "root", version: "1.0.0" }],
+  ["hot", { id: "hot", registryId: "registry:test", org: "acme", name: "hot", version: "2.0.0-beta.1", prerelease: true }],
+  ["dup-one", { id: "dup-one", registryId: "registry:test", org: "vendor", name: "duplicate", version: "1.0.0" }],
+  ["dup-two", { id: "dup-two", registryId: "registry:test", org: "vendor", name: "duplicate", version: "2.0.0", yanked: true }],
+  ["leaf", { id: "leaf", registryId: "registry:test", org: "vendor", name: "leaf", version: "3.0.0" }],
+]);
+const aggregateRoots = new Set(["root", "hot"]);
+const aggregateEdges = [
+  { from: "root", to: "hot" },
+  { from: "root", to: "dup-one" },
+  { from: "hot", to: "dup-one" },
+  { from: "hot", to: "dup-two" },
+  { from: "hot", to: "leaf" },
+];
+assert.deepEqual(sorted(aggregateQueryNodes("internal", aggregateNodes, aggregateRoots, aggregateEdges)), ["hot", "root"]);
+assert.deepEqual(sorted(aggregateQueryNodes("external", aggregateNodes, aggregateRoots, aggregateEdges)), ["dup-one", "dup-two", "leaf"]);
+assert.deepEqual(sorted(aggregateQueryNodes("duplicates", aggregateNodes, aggregateRoots, aggregateEdges)), ["dup-one", "dup-two"]);
+assert.deepEqual([...aggregateQueryNodes("prerelease", aggregateNodes, aggregateRoots, aggregateEdges)], ["hot"]);
+assert.deepEqual([...aggregateQueryNodes("yanked", aggregateNodes, aggregateRoots, aggregateEdges)], ["dup-two"]);
+assert.deepEqual([...aggregateQueryNodes("centrality", aggregateNodes, aggregateRoots, aggregateEdges)], ["hot"]);
+const boundedNodes = boundedRenderedNodeSet(
+  new Set(aggregateNodes.keys()),
+  aggregateNodes,
+  aggregateEdges,
+  aggregateRoots,
+  "dup-two",
+  new Set(["leaf"]),
+  4
+);
+assert.ok(boundedNodes.has("dup-two"), "the selection survives canvas degradation");
+assert.ok(boundedNodes.has("root") && boundedNodes.has("hot"), "scope roots survive canvas degradation");
+assert.ok(boundedNodes.has("leaf"), "search matches survive canvas degradation");
+assert.equal(boundedNodes.size, 4);
 
 const originalFetch = globalThis.fetch;
 try {

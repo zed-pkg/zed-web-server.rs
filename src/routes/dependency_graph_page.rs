@@ -191,7 +191,10 @@ async fn latest_graph_rows(
         zed_orm_core::version_reads::exact_unyanked_package_versions(db, &coordinates).await?;
     let versions_by_package = versions
         .into_iter()
-        .map(|version| (version.package_id, version.version))
+        .map(|version| {
+            let prerelease = is_prerelease(&version.version, &version.version_scheme);
+            (version.package_id, (version.version, prerelease))
+        })
         .collect::<HashMap<_, _>>();
 
     Ok(latest_graph_rows_from_versions(
@@ -202,19 +205,29 @@ async fn latest_graph_rows(
 
 fn latest_graph_rows_from_versions(
     packages: &[zed_orm_core::models::PackageSummary],
-    versions_by_package: &HashMap<uuid::Uuid, String>,
+    versions_by_package: &HashMap<uuid::Uuid, (String, bool)>,
 ) -> Vec<components::PackageRow> {
     packages
         .iter()
         .map(|package| {
             let mut row = super::package::summary_row(package);
-            row.latest = package
+            let latest = package
                 .latest_version
                 .as_ref()
-                .and_then(|_| versions_by_package.get(&package.id).cloned());
+                .and_then(|_| versions_by_package.get(&package.id));
+            row.latest = latest.map(|(version, _)| version.clone());
+            row.latest_prerelease = latest.is_some_and(|(_, prerelease)| *prerelease);
             row
         })
         .collect()
+}
+
+fn is_prerelease(version: &str, scheme: &str) -> bool {
+    let scheme = zed_interfaces::version::VersionScheme::from_str_lenient(scheme);
+    if scheme == zed_interfaces::version::VersionScheme::Opaque {
+        return false;
+    }
+    zed_interfaces::version::parse_version(version).is_some_and(|parsed| !parsed.pre.is_empty())
 }
 
 async fn project_scope(
@@ -423,7 +436,7 @@ mod tests {
     use uuid::Uuid;
     use zed_orm_core::models::PackageSummary;
 
-    use super::latest_graph_rows_from_versions;
+    use super::{is_prerelease, latest_graph_rows_from_versions};
 
     fn package_summary(id: Uuid, name: &str, latest_version: Option<&str>) -> PackageSummary {
         PackageSummary {
@@ -462,8 +475,8 @@ mod tests {
             package_summary(unpublished, "unpublished", None),
         ];
         let versions = HashMap::from([
-            (second, "2.0.0".to_owned()),
-            (unpublished, "9.9.9".to_owned()),
+            (second, ("2.0.0".to_owned(), false)),
+            (unpublished, ("9.9.9".to_owned(), false)),
         ]);
 
         let rows = latest_graph_rows_from_versions(&packages, &versions);
@@ -475,5 +488,12 @@ mod tests {
         assert_eq!(rows[0].latest, None);
         assert_eq!(rows[1].latest.as_deref(), Some("2.0.0"));
         assert_eq!(rows[2].latest, None);
+    }
+
+    #[test]
+    fn topology_channel_metadata_respects_the_declared_version_scheme() {
+        assert!(is_prerelease("2.0.0-beta.1", "semver"));
+        assert!(is_prerelease("2026.08-preview.1", "calver"));
+        assert!(!is_prerelease("release-candidate-1", "opaque"));
     }
 }

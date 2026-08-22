@@ -24,6 +24,8 @@ pub struct PackageRow {
     pub name: String,
     pub description: Option<String>,
     pub latest: Option<String>,
+    /// Exact latest-version channel metadata for dependency topology filters.
+    pub latest_prerelease: bool,
     pub visibility: String,
 }
 
