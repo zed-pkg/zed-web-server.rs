@@ -8,7 +8,7 @@
 //! component's local semantic renderer in place.
 
 use axum::Form;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use maud::{Markup, html};
 use serde::Deserialize;
@@ -23,6 +23,7 @@ const MAX_LABEL: usize = 256;
 const MAX_IDENTITY: usize = 2_048;
 const MAX_METADATA: usize = 512;
 const MAX_LOCAL_URL: usize = 4_096;
+const FRAGMENT_CACHE_CONTROL: &str = "private, no-store";
 
 #[derive(Deserialize)]
 pub struct QueryFragmentForm {
@@ -53,7 +54,7 @@ pub async fn query(Form(form): Form<QueryFragmentForm>) -> Response {
     if !valid_query(&form, &rows) {
         return invalid_fragment();
     }
-    Html(render_query(&form, &rows).into_string()).into_response()
+    fragment_response(render_query(&form, &rows))
 }
 
 fn valid_query(form: &QueryFragmentForm, rows: &[QueryRow]) -> bool {
@@ -201,7 +202,7 @@ pub async fn inspector(Form(form): Form<InspectorFragmentForm>) -> Response {
     if !valid_inspector(&node) {
         return invalid_fragment();
     }
-    Html(render_inspector(&node).into_string()).into_response()
+    fragment_response(render_inspector(&node))
 }
 
 fn valid_inspector(node: &InspectorNode) -> bool {
@@ -304,7 +305,7 @@ pub async fn table(Form(form): Form<TableFragmentForm>) -> Response {
     if !valid_table(&form, &rows) {
         return invalid_fragment();
     }
-    Html(render_table(form.total, &rows).into_string()).into_response()
+    fragment_response(render_table(form.total, &rows))
 }
 
 fn valid_table(form: &TableFragmentForm, rows: &[RelationshipRow]) -> bool {
@@ -384,15 +385,11 @@ pub async fn state(Form(form): Form<StateFragmentForm>) -> Response {
     if !valid_local_url(&form.url) {
         return invalid_fragment();
     }
-    Html(
-        html! {
-            p data-fragment-source="htmx" role="status" {
-                (message) " " a href=(form.url) { "Open reproducible view" }
-            }
+    fragment_response(html! {
+        p data-fragment-source="htmx" role="status" {
+            (message) " " a href=(form.url) { "Open reproducible view" }
         }
-        .into_string(),
-    )
-    .into_response()
+    })
 }
 
 fn valid_list(values: &[String]) -> bool {
@@ -452,7 +449,24 @@ fn uri_segment(value: &str) -> String {
 }
 
 fn invalid_fragment() -> Response {
-    (StatusCode::BAD_REQUEST, "invalid dependency graph fragment").into_response()
+    (
+        fragment_headers(),
+        (StatusCode::BAD_REQUEST, "invalid dependency graph fragment"),
+    )
+        .into_response()
+}
+
+fn fragment_response(markup: Markup) -> Response {
+    (fragment_headers(), Html(markup.into_string())).into_response()
+}
+
+fn fragment_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(FRAGMENT_CACHE_CONTROL),
+    );
+    headers
 }
 
 #[cfg(test)]
@@ -523,5 +537,13 @@ mod tests {
         let markup = render_table(1, &rows).into_string();
         assert!(markup.contains("/p/acme%20tools/http%2Fclient"));
         assert!(markup.contains("Loaded dependency relationships"));
+    }
+
+    #[test]
+    fn presentation_fragments_are_never_cacheable() {
+        assert_eq!(
+            fragment_headers().get(header::CACHE_CONTROL).unwrap(),
+            FRAGMENT_CACHE_CONTROL
+        );
     }
 }
