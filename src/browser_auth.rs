@@ -248,6 +248,10 @@ impl DelegatedGet {
     }
 }
 
+/// P2 is selected for private reads whose policy is owned by `zed-api-server` rather than a named
+/// P1 query. Keep this call stateless, bounded, origin-allowlisted, and limited to delegated
+/// credentials; API failure must not fall back to the read-only pool. Mutations use their dedicated
+/// P2 handlers and idempotency contracts. P3/P4 are not implicit alternatives.
 #[allow(clippy::result_large_err)] // Axum responses are returned directly at this HTTP boundary.
 pub(crate) async fn delegated_get(
     state: &WebState,
