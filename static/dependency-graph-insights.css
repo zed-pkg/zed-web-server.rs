@@ -1,0 +1,328 @@
+/*
+ * Claritas-inspired visual intelligence for the self-hosted Zed graph.
+ * This is an additive presentation layer: no external runtime, network call,
+ * query authority, or graph-data mutation is introduced.
+ */
+zed-dependency-graph {
+  --dg-insight-cyan: #67e8f9;
+  --dg-insight-blue: #22d3ee;
+  --dg-insight-indigo: #818cf8;
+  --dg-insight-ink: rgb(5 12 24 / 92%);
+}
+
+.dg-visual-search,
+.dg-minimap {
+  position: absolute;
+  z-index: 7;
+  overflow: hidden;
+  border: 1px solid rgb(103 232 249 / 22%);
+  background:
+    linear-gradient(145deg, rgb(5 12 24 / 94%), rgb(15 23 42 / 88%)),
+    var(--dg-insight-ink);
+  box-shadow:
+    0 18px 48px rgb(0 0 0 / 42%),
+    inset 0 1px rgb(255 255 255 / 5%);
+  backdrop-filter: blur(16px);
+}
+
+.dg-visual-search::before,
+.dg-minimap::before {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  content: "";
+  background-image:
+    linear-gradient(rgb(103 232 249 / 5%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(129 140 248 / 5%) 1px, transparent 1px);
+  background-size: 18px 18px;
+  mask-image: linear-gradient(135deg, black, transparent 72%);
+}
+
+.dg-visual-search[hidden],
+.dg-minimap[hidden] {
+  display: none;
+}
+
+.dg-visual-search {
+  top: 14px;
+  left: 14px;
+  width: min(246px, calc(100% - 28px));
+  padding: 13px;
+  border-radius: 13px;
+}
+
+.dg-visual-search-kicker {
+  margin: 0 0 8px;
+  color: var(--dg-insight-cyan);
+  font: 750 0.59rem/1 var(--mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.dg-visual-search-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dg-visual-search-heading strong {
+  color: var(--text);
+  font: 800 1rem/1.1 var(--mono);
+  letter-spacing: -0.03em;
+}
+
+.dg-visual-search-heading span {
+  color: var(--muted);
+  font: 0.56rem/1.2 var(--mono);
+  letter-spacing: 0.06em;
+  text-align: right;
+  text-transform: uppercase;
+}
+
+.dg-visual-search-rationale {
+  margin: 7px 0 10px;
+  color: color-mix(in srgb, var(--muted) 85%, white);
+  font-size: 0.67rem;
+  line-height: 1.45;
+}
+
+.dg-layout-scores {
+  display: grid;
+  gap: 5px;
+  margin: 0 0 10px;
+}
+
+.dg-layout-scores > span {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 9px;
+  align-items: center;
+  min-height: 19px;
+  color: var(--muted);
+  font: 0.58rem/1 var(--mono);
+}
+
+.dg-layout-scores i {
+  position: absolute;
+  inset: auto 0 0;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: rgb(255 255 255 / 7%);
+}
+
+.dg-layout-scores i::after {
+  display: block;
+  width: var(--dg-layout-score, 0%);
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--dg-insight-blue), var(--dg-insight-indigo));
+  box-shadow: 0 0 9px rgb(103 232 249 / 42%);
+  content: "";
+  transition: width 180ms ease;
+}
+
+.dg-layout-scores b {
+  padding-bottom: 5px;
+  color: color-mix(in srgb, var(--text) 76%, var(--muted));
+  font-weight: 600;
+}
+
+.dg-layout-scores em {
+  padding-bottom: 5px;
+  color: var(--dg-insight-cyan);
+  font-style: normal;
+}
+
+.dg-visual-search button,
+.dg-minimap button {
+  min-height: 29px;
+  border: 1px solid rgb(103 232 249 / 25%);
+  border-radius: 7px;
+  background: linear-gradient(135deg, rgb(34 211 238 / 12%), rgb(129 140 248 / 12%));
+  color: var(--text);
+  font: 0.62rem var(--mono);
+  cursor: pointer;
+}
+
+.dg-visual-search button {
+  width: 100%;
+}
+
+.dg-visual-search button:hover,
+.dg-minimap button:hover {
+  border-color: rgb(103 232 249 / 58%);
+  color: var(--dg-insight-cyan);
+}
+
+.dg-visual-search button:focus-visible,
+.dg-minimap button:focus-visible,
+.dg-minimap svg:focus-visible {
+  outline: 2px solid var(--dg-insight-cyan);
+  outline-offset: 2px;
+}
+
+.dg-visual-search button:disabled {
+  cursor: default;
+  opacity: 0.56;
+}
+
+.dg-segmented button.is-recommended {
+  position: relative;
+}
+
+.dg-segmented button.is-recommended::after {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--dg-insight-cyan);
+  box-shadow: 0 0 7px var(--dg-insight-cyan);
+  content: "";
+}
+
+.dg-minimap {
+  right: 12px;
+  bottom: 42px;
+  width: 212px;
+  padding: 8px;
+  border-radius: 12px;
+}
+
+.dg-minimap-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.dg-minimap-heading span {
+  display: grid;
+  gap: 2px;
+}
+
+.dg-minimap-heading b {
+  color: var(--text);
+  font: 700 0.63rem/1 var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.dg-minimap-heading small {
+  color: var(--muted);
+  font: 0.53rem/1 var(--mono);
+}
+
+.dg-minimap button {
+  min-width: 38px;
+  padding-inline: 7px;
+}
+
+/* Override the main-canvas SVG sizing rule for the nested overview SVG. */
+.dg-viewport .dg-minimap svg {
+  display: block;
+  width: 196px;
+  height: 118px;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 6%);
+  border-radius: 7px;
+  background:
+    radial-gradient(circle at 50% 50%, rgb(34 211 238 / 7%), transparent 68%),
+    rgb(2 6 16 / 72%);
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.dg-minimap-edge {
+  stroke: rgb(148 163 184 / 22%);
+  stroke-width: 0.55;
+  vector-effect: non-scaling-stroke;
+}
+
+.dg-minimap-edge.dg-kind-runtime { stroke: rgb(125 211 252 / 28%); }
+.dg-minimap-edge.dg-kind-build { stroke: rgb(251 191 36 / 27%); }
+.dg-minimap-edge.dg-kind-development { stroke: rgb(196 181 253 / 27%); }
+.dg-minimap-edge.dg-kind-peer { stroke: rgb(94 234 212 / 27%); }
+.dg-minimap-edge.dg-kind-tooling { stroke: rgb(251 113 133 / 27%); }
+
+.dg-minimap-node {
+  fill: #94a3b8;
+  fill-opacity: 0.72;
+}
+
+.dg-minimap-node.is-root {
+  fill: var(--orange);
+  fill-opacity: 0.92;
+  filter: drop-shadow(0 0 3px rgb(255 122 26 / 58%));
+}
+
+.dg-minimap-node.is-selected {
+  fill: var(--dg-insight-cyan);
+  fill-opacity: 1;
+  filter: drop-shadow(0 0 4px rgb(103 232 249 / 72%));
+}
+
+.dg-minimap-viewport {
+  fill: rgb(34 211 238 / 8%);
+  stroke: var(--dg-insight-cyan);
+  stroke-width: 1.2;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 3px rgb(103 232 249 / 45%));
+  pointer-events: none;
+}
+
+@media (max-width: 720px) {
+  .dg-visual-search {
+    top: 10px;
+    left: 10px;
+    width: min(228px, calc(100% - 20px));
+  }
+
+  .dg-minimap {
+    right: 8px;
+    bottom: 40px;
+    width: 174px;
+  }
+
+  .dg-viewport .dg-minimap svg {
+    width: 158px;
+    height: 96px;
+  }
+
+  .dg-minimap-heading small {
+    display: none;
+  }
+}
+
+@media (max-width: 500px) {
+  .dg-visual-search-rationale,
+  .dg-layout-scores {
+    display: none;
+  }
+
+  .dg-visual-search {
+    width: 202px;
+  }
+
+  .dg-minimap {
+    width: 146px;
+  }
+
+  .dg-viewport .dg-minimap svg {
+    width: 130px;
+    height: 80px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dg-layout-scores i::after {
+    transition: none;
+  }
+}
