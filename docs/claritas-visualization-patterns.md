@@ -2,7 +2,7 @@
 
 This change consumes the versioned `zed-dependency-graph@1.0.0` component
 contract and framework-neutral topology core produced by
-`claritas-viz/data-viz-server.rs@c68e6702f9df336a798208151aae80ab6f9942fe`.
+`claritas-viz/data-viz-server.rs@3b52ee4ea86cfb28b9e757a736671de9841b8eae`.
 Claritas also publishes Rust/Leptos, Rust/Dioxus, and Dart/Flutter adapters for
 the same `zpkg/dependency-graph/v1` model.
 
