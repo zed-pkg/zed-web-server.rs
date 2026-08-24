@@ -71,9 +71,11 @@ pub fn layout(
                 title { (title) " · zed-pkg" }
                 link rel="stylesheet" href="/static/styles.css";
                 link rel="stylesheet" href="/graph-assets/dependency-graph.css";
+                link rel="stylesheet" href="/static/dependency-graph-insights.css";
                 link rel="icon" type="image/svg+xml" href="/static/favicon.svg";
                 script src="/static/htmx.min.js" {}
                 script type="module" src="/graph-assets/dependency-graph.js" {}
+                script type="module" src="/static/dependency-graph-insights.js" {}
             }
             body {
                 (header(viewer, context))
@@ -349,6 +351,8 @@ mod tests {
         .into_string();
         assert!(markup.contains("/graph-assets/dependency-graph.css"));
         assert!(markup.contains("/graph-assets/dependency-graph.js"));
+        assert!(markup.contains("/static/dependency-graph-insights.css"));
+        assert!(markup.contains("/static/dependency-graph-insights.js"));
         assert!(markup.contains("&quot;allowEval&quot;:false"));
         assert!(markup.contains("&quot;allowScriptTags&quot;:false"));
         assert!(!markup.contains("claritas-viz"));
