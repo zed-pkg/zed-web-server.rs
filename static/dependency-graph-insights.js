@@ -135,6 +135,30 @@ function updateLayoutButtons(graph, recommendation) {
   });
 }
 
+function degradeVisualSearch(graph, state) {
+  state.profile = null;
+  state.recommendation = null;
+  state.intelligence.hidden = false;
+  state.minimap.hidden = true;
+  graph.dataset.visualSearch = "degraded";
+  delete graph.dataset.recommendedLayout;
+  state.intelligence.querySelector('[data-role="recommended-layout"]').textContent =
+    "Analysis unavailable";
+  state.intelligence.querySelector('[data-role="layout-rationale"]').textContent =
+    "This graph does not satisfy the bounded Claritas component contract; the canonical Zed graph remains available.";
+  state.intelligence.querySelectorAll("[data-score-layout]").forEach((row) => {
+    row.style.setProperty("--dg-layout-score", "0%");
+    row.querySelector("em").textContent = "0";
+  });
+  const apply = state.intelligence.querySelector('[data-action="apply-recommended-layout"]');
+  apply.disabled = true;
+  apply.textContent = "Recommendation unavailable";
+  graph.querySelectorAll?.("[data-layout]").forEach((button) => {
+    button.classList.remove("is-recommended");
+    delete button.dataset.layoutScore;
+  });
+}
+
 function updateVisualSearch(graph) {
   const state = ensureGraphEnhancements(graph);
   if (!state) return;
@@ -145,7 +169,14 @@ function updateVisualSearch(graph) {
   }
 
   const edges = topologyEdges(graph);
-  const profile = graphTopologyProfile(graph.nodes, edges, graph.roots);
+  let profile;
+  try {
+    profile = graphTopologyProfile(graph.nodes, edges, graph.roots);
+  } catch (error) {
+    if (!(error instanceof RangeError || error instanceof TypeError)) throw error;
+    degradeVisualSearch(graph, state);
+    return;
+  }
   const recommendation = recommendGraphLayout(profile);
   state.profile = profile;
   state.recommendation = recommendation;
@@ -202,7 +233,8 @@ function sampledMinimapIds(graph) {
   const remaining = rendered
     .filter((id) => !prioritized.includes(id))
     .sort((left, right) =>
-      (degrees.get(right) || 0) - (degrees.get(left) || 0) || left.localeCompare(right)
+      (degrees.get(right) || 0) - (degrees.get(left) || 0) ||
+      (left < right ? -1 : left > right ? 1 : 0)
     );
   return [...prioritized, ...remaining].slice(0, MINIMAP_NODE_LIMIT);
 }

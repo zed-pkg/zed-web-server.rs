@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "schema": "claritas/component-provenance/v1",
+  "component": "zed-dependency-graph",
+  "version": "1.0.0",
+  "source": {
+    "repository": "https://github.com/claritas-viz/data-viz-server.rs",
+    "pullRequest": "https://github.com/claritas-viz/data-viz-server.rs/pull/6",
+    "revision": "c68e6702f9df336a798208151aae80ab6f9942fe",
+    "contractPath": "contracts/zed-dependency-graph.component.json",
+    "webSourcePath": "component-bundles/zed-dependency-graph/web/insights-core.js",
+    "bundleEndpoint": "/renderers/component-bundles/zed-dependency-graph/1.0.0"
+  },
+  "integrity": {
+    "algorithm": "sha256",
+    "contract": "sha256:c53a47d38bb498aa8470a666ed8493d6b3d75dac499e112c404f745619cf88cc",
+    "webSource": "sha256:7b854dd4ab7be00f081ae4e1397ef4abc08a32fba10d53ab5cd3b688e9e08088",
+    "package": "sha256:4a78a0fc8c84be2931fd19cf7009ccfff12d0e2596a9b2a1da1e9dc84e5b98f3"
+  },
+  "vendored": {
+    "contract": "/static/claritas/zed-dependency-graph.component.json",
+    "webSource": "/static/dependency-graph-insights-core.js"
+  },
+  "trust": {
+    "distribution": "vendored-source-only",
+    "runtimeNetwork": false,
+    "dynamicCodeEvaluation": false,
+    "externalBrowserRuntime": false
+  }
+}

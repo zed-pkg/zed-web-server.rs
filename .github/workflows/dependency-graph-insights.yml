@@ -7,6 +7,13 @@ on:
       - "static/dependency-graph-insights-core.js"
       - "static/dependency-graph-insights.js"
       - "static/dependency-graph-insights.css"
+      - "static/claritas/zed-dependency-graph.component.json"
+      - "static/claritas/zed-dependency-graph.provenance.json"
+      - "scripts/check-claritas-component-bundle.mjs"
+      - "assets/dependency-graph.js"
+      - "static/dependency-graph.js.br"
+      - "scripts/build-graph-assets.mjs"
+      - "tests/dependency-graph.mjs"
       - "tests/dependency-graph-insights.mjs"
       - "src/views/layout.rs"
       - "docs/claritas-visualization-patterns.md"
@@ -35,7 +42,11 @@ jobs:
         run: |
           node --check static/dependency-graph-insights-core.js
           node --check static/dependency-graph-insights.js
+          node --check assets/dependency-graph.js
+          node tests/dependency-graph.mjs
           node tests/dependency-graph-insights.mjs
+          node scripts/check-claritas-component-bundle.mjs
+          node scripts/build-graph-assets.mjs --check
       - name: Enforce same-origin additive boundary
         shell: bash
         run: |
@@ -44,5 +55,6 @@ jobs:
           grep -Fq '"/graph-assets/dependency-graph.js"' static/dependency-graph-insights.js
           grep -Fq '/static/dependency-graph-insights.js' src/views/layout.rs
           grep -Fq '/static/dependency-graph-insights.css' src/views/layout.rs
+          grep -Fq '/static/claritas/zed-dependency-graph.component.json' src/views/layout.rs
           grep -Fq 'prefers-reduced-motion' static/dependency-graph-insights.css
           git diff --check

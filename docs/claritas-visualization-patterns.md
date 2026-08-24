@@ -1,11 +1,18 @@
 # Claritas visualization patterns in the Zed dependency graph
 
-This change borrows **design principles**, not runtime code, from the public
-Claritas presentation at
-`claritas-viz/claritas-viz.github.io@17d1c1672f90dac600e3e292e6081a7407f1be8f`.
-The Zed graph remains served entirely by `zed-web-server.rs` under the existing
-same-origin CSP and does not contact a Claritas service, CDN, or external
-visualization runtime.
+This change consumes the versioned `zed-dependency-graph@1.0.0` component
+contract and framework-neutral topology core produced by
+`claritas-viz/data-viz-server.rs@c68e6702f9df336a798208151aae80ab6f9942fe`.
+Claritas also publishes Rust/Leptos, Rust/Dioxus, and Dart/Flutter adapters for
+the same `zpkg/dependency-graph/v1` model.
+
+The contract and web source are copied into this repository and pinned by
+SHA-256 in `static/claritas/zed-dependency-graph.provenance.json`. CI verifies
+the vendored bytes, limits, targets, and trust declarations. This is a
+build-time source relationship, not a browser runtime dependency: the Zed graph
+remains served entirely by `zed-web-server.rs` under its same-origin CSP and
+does not contact GitHub, a Claritas service, CDN, or external visualization
+runtime.
 
 ## Adopted principles
 
@@ -24,7 +31,11 @@ model:
 - root and connected-component counts;
 - maximum dependency depth and layer width;
 - graph density and maximum-degree hub ratio; and
-- a Kahn-pass cycle ratio.
+- exact iterative strongly connected components and cyclic-node ratio.
+
+Depth is the longest path through the acyclic component graph, not shortest
+BFS distance. Duplicate relationships are ignored for topology scoring, and
+inputs fail closed above the shared 3,000-node/12,000-edge contract.
 
 Force layout is never recommended above the product's existing 260-node force
 budget.
@@ -58,3 +69,16 @@ exports, and accessible data continue to use the full loaded semantic model.
 - No React or separately hosted Claritas runtime.
 - The same package, project, and organization custom element is enhanced.
 - Reduced-motion preferences disable score-bar transitions.
+
+## Updating the vendored component
+
+1. Review and merge the corresponding Claritas component-bundle change.
+2. Copy the contract and framework-neutral web source from one immutable
+   Claritas commit.
+3. Update the revision and all SHA-256 values in the provenance document.
+4. Run `node scripts/check-claritas-component-bundle.mjs` and the dependency
+   graph test suite before opening the Zed change.
+
+The server advertises the same-origin contract with a non-executing
+`rel="alternate"` link. Consumers must never turn the bundle endpoint into a
+browser-side code loader.

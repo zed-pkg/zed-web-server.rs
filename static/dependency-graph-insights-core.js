@@ -2,6 +2,10 @@ const FORCE_LAYOUT_NODE_LIMIT = 260;
 const DEFAULT_MINIMAP_WIDTH = 196;
 const DEFAULT_MINIMAP_HEIGHT = 118;
 const DEFAULT_MINIMAP_PADDING = 10;
+const PROFILE_MAX_NODES = 3000;
+const PROFILE_MAX_EDGES = 12000;
+const PROFILE_MAX_TEXT_BYTES = 2048;
+const UTF8_ENCODER = new TextEncoder();
 
 function finiteNumber(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
@@ -12,121 +16,247 @@ function clamp(value, min, max) {
 }
 
 function nodeIdsFrom(nodes) {
-  if (nodes instanceof Map) return [...nodes.keys()];
-  if (nodes instanceof Set) return [...nodes];
-  if (Array.isArray(nodes)) {
-    return nodes.map((node) => (typeof node === "string" ? node : node?.id)).filter(Boolean);
+  let values;
+  if (nodes instanceof Map || nodes instanceof Set) {
+    if (nodes.size > PROFILE_MAX_NODES) {
+      throw new RangeError(`topology profile exceeds the ${PROFILE_MAX_NODES}-node contract limit`);
+    }
+    values = nodes instanceof Map ? [...nodes.keys()] : [...nodes];
   }
-  return [];
+  if (Array.isArray(nodes)) {
+    if (nodes.length > PROFILE_MAX_NODES) {
+      throw new RangeError(`topology profile exceeds the ${PROFILE_MAX_NODES}-node contract limit`);
+    }
+    values = nodes.map((node) => (typeof node === "string" ? node : node?.id));
+  }
+  if (!values) return [];
+  if (values.length > PROFILE_MAX_NODES) {
+    throw new RangeError(`topology profile exceeds the ${PROFILE_MAX_NODES}-node contract limit`);
+  }
+  if (!values.every(validGraphId)) {
+    throw new TypeError("topology profile contains an invalid node identifier");
+  }
+  return values;
+}
+
+function validGraphId(value) {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    UTF8_ENCODER.encode(value).byteLength <= PROFILE_MAX_TEXT_BYTES &&
+    !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(value)
+  );
 }
 
 function rootIdsFrom(roots, ids) {
   const known = new Set(ids);
+  if (
+    (roots instanceof Set && roots.size > PROFILE_MAX_NODES) ||
+    (Array.isArray(roots) && roots.length > PROFILE_MAX_NODES)
+  ) {
+    throw new RangeError(`topology profile exceeds the ${PROFILE_MAX_NODES}-root contract limit`);
+  }
   const values = roots instanceof Set || Array.isArray(roots) ? [...roots] : [];
-  return values.filter((id) => known.has(id));
+  if (values.length > PROFILE_MAX_NODES) {
+    throw new RangeError(`topology profile exceeds the ${PROFILE_MAX_NODES}-root contract limit`);
+  }
+  if (!values.every((id) => validGraphId(id) && known.has(id))) {
+    throw new TypeError("topology profile contains an invalid or unknown root identifier");
+  }
+  return [...new Set(values)];
 }
 
-function graphTopologyProfile(nodes, edges = [], roots = new Set()) {
-  const ids = [...new Set(nodeIdsFrom(nodes))];
-  const idSet = new Set(ids);
-  const safeEdges = Array.isArray(edges)
-    ? edges.filter(
-        (edge) => edge && idSet.has(edge.from) && idSet.has(edge.to)
-      )
-    : [];
-  const incoming = new Map(ids.map((id) => [id, 0]));
-  const outgoing = new Map(ids.map((id) => [id, []]));
-  const undirected = new Map(ids.map((id) => [id, new Set()]));
-  for (const edge of safeEdges) {
-    incoming.set(edge.to, (incoming.get(edge.to) || 0) + 1);
-    outgoing.get(edge.from).push(edge.to);
-    undirected.get(edge.from).add(edge.to);
-    undirected.get(edge.to).add(edge.from);
-  }
+function compareGraphIds(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
 
-  let rootIds = rootIdsFrom(roots, ids);
-  if (!rootIds.length) rootIds = ids.filter((id) => (incoming.get(id) || 0) === 0);
-  if (!rootIds.length && ids.length) rootIds = [ids[0]];
+function sortedNumbers(values) {
+  return [...values].sort((left, right) => left - right);
+}
 
-  const levels = new Map();
-  const queue = [];
-  for (const root of rootIds) {
-    if (levels.has(root)) continue;
-    levels.set(root, 0);
-    queue.push(root);
-  }
-  for (let cursor = 0; cursor < queue.length; cursor += 1) {
-    const id = queue[cursor];
-    const nextLevel = (levels.get(id) || 0) + 1;
-    for (const next of outgoing.get(id) || []) {
-      if (levels.has(next)) continue;
-      levels.set(next, nextLevel);
-      queue.push(next);
-    }
-  }
-  let fallbackLevel = levels.size ? Math.max(...levels.values()) + 1 : 0;
-  for (const id of ids) {
-    if (levels.has(id)) continue;
-    levels.set(id, fallbackLevel);
-    fallbackLevel += 1;
-  }
-
-  const widths = new Map();
-  for (const level of levels.values()) widths.set(level, (widths.get(level) || 0) + 1);
-
-  const remainingIncoming = new Map(incoming);
-  const acyclicQueue = ids.filter((id) => (remainingIncoming.get(id) || 0) === 0);
-  let processed = 0;
-  for (let cursor = 0; cursor < acyclicQueue.length; cursor += 1) {
-    const id = acyclicQueue[cursor];
-    processed += 1;
-    for (const next of outgoing.get(id) || []) {
-      const nextIncoming = (remainingIncoming.get(next) || 0) - 1;
-      remainingIncoming.set(next, nextIncoming);
-      if (nextIncoming === 0) acyclicQueue.push(next);
-    }
-  }
-
-  let componentCount = 0;
-  const visited = new Set();
-  for (const start of ids) {
-    if (visited.has(start)) continue;
-    componentCount += 1;
-    const componentQueue = [start];
-    visited.add(start);
-    for (let cursor = 0; cursor < componentQueue.length; cursor += 1) {
-      for (const next of undirected.get(componentQueue[cursor]) || []) {
-        if (visited.has(next)) continue;
-        visited.add(next);
-        componentQueue.push(next);
+function stronglyConnectedComponents(outgoing, incoming) {
+  const seen = new Uint8Array(outgoing.length);
+  const order = [];
+  for (let start = 0; start < outgoing.length; start += 1) {
+    if (seen[start]) continue;
+    seen[start] = 1;
+    const stack = [{ node: start, cursor: 0 }];
+    while (stack.length) {
+      const frame = stack[stack.length - 1];
+      if (frame.cursor < outgoing[frame.node].length) {
+        const next = outgoing[frame.node][frame.cursor];
+        frame.cursor += 1;
+        if (!seen[next]) {
+          seen[next] = 1;
+          stack.push({ node: next, cursor: 0 });
+        }
+      } else {
+        order.push(frame.node);
+        stack.pop();
       }
     }
   }
 
-  const degrees = ids.map(
-    (id) => (outgoing.get(id)?.length || 0) + (incoming.get(id) || 0)
-  );
+  seen.fill(0);
+  const components = [];
+  while (order.length) {
+    const start = order.pop();
+    if (seen[start]) continue;
+    seen[start] = 1;
+    const component = [];
+    const stack = [start];
+    while (stack.length) {
+      const node = stack.pop();
+      component.push(node);
+      for (let index = incoming[node].length - 1; index >= 0; index -= 1) {
+        const next = incoming[node][index];
+        if (!seen[next]) {
+          seen[next] = 1;
+          stack.push(next);
+        }
+      }
+    }
+    component.sort((left, right) => left - right);
+    components.push(component);
+  }
+  components.sort((left, right) => left[0] - right[0]);
+  return components;
+}
+
+function weakComponentCount(undirected) {
+  const seen = new Uint8Array(undirected.length);
+  let count = 0;
+  for (let start = 0; start < undirected.length; start += 1) {
+    if (seen[start]) continue;
+    count += 1;
+    seen[start] = 1;
+    const queue = [start];
+    for (let cursor = 0; cursor < queue.length; cursor += 1) {
+      for (const next of undirected[queue[cursor]]) {
+        if (!seen[next]) {
+          seen[next] = 1;
+          queue.push(next);
+        }
+      }
+    }
+  }
+  return count;
+}
+
+function condensationProfile(components, outgoing) {
+  const owner = new Uint32Array(outgoing.length);
+  components.forEach((component, componentId) => {
+    for (const node of component) owner[node] = componentId;
+  });
+  const graph = components.map(() => new Set());
+  const indegree = new Uint32Array(components.length);
+  for (let from = 0; from < outgoing.length; from += 1) {
+    for (const to of outgoing[from]) {
+      const source = owner[from];
+      const target = owner[to];
+      if (source !== target && !graph[source].has(target)) {
+        graph[source].add(target);
+        indegree[target] += 1;
+      }
+    }
+  }
+  const depth = new Uint32Array(components.length);
+  const widths = new Map();
+  const queue = [];
+  for (let component = 0; component < components.length; component += 1) {
+    if (indegree[component] === 0) queue.push(component);
+  }
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const component = queue[cursor];
+    widths.set(depth[component], (widths.get(depth[component]) || 0) + components[component].length);
+    for (const next of sortedNumbers(graph[component])) {
+      depth[next] = Math.max(depth[next], depth[component] + 1);
+      indegree[next] -= 1;
+      if (indegree[next] === 0) queue.push(next);
+    }
+  }
+  return {
+    maxDepth: depth.length ? Math.max(...depth) : 0,
+    maxWidth: widths.size ? Math.max(...widths.values()) : 0,
+  };
+}
+
+function graphTopologyProfile(nodes, edges = [], roots = new Set()) {
+  const ids = nodeIdsFrom(nodes).sort(compareGraphIds);
+  if (new Set(ids).size !== ids.length) {
+    throw new TypeError("topology profile contains duplicate node identifiers");
+  }
+  const indexById = new Map(ids.map((id, index) => [id, index]));
+  const safeEdges = [];
+  const edgeKeys = new Set();
+  if (!Array.isArray(edges)) {
+    throw new TypeError("topology profile relationships must be an array");
+  }
+  if (edges.length > PROFILE_MAX_EDGES) {
+    throw new RangeError(`topology profile exceeds the ${PROFILE_MAX_EDGES}-edge contract limit`);
+  }
+  for (const edge of edges) {
+    const kind = edge?.kind === undefined || edge.kind === "" ? "runtime" : edge.kind;
+    if (
+      !edge ||
+      !indexById.has(edge.from) ||
+      !indexById.has(edge.to) ||
+      !validGraphId(kind) ||
+      (edge.optional !== undefined && typeof edge.optional !== "boolean")
+    ) {
+      throw new TypeError("topology profile contains an invalid relationship");
+    }
+    const key = JSON.stringify([edge.from, edge.to, kind, edge.optional === true]);
+    if (edgeKeys.has(key)) continue;
+    edgeKeys.add(key);
+    safeEdges.push(edge);
+  }
+  const outgoingSets = ids.map(() => new Set());
+  const incomingSets = ids.map(() => new Set());
+  const undirected = ids.map(() => new Set());
+  const selfLoops = new Set();
+  for (const edge of safeEdges) {
+    const from = indexById.get(edge.from);
+    const to = indexById.get(edge.to);
+    outgoingSets[from].add(to);
+    incomingSets[to].add(from);
+    undirected[from].add(to);
+    undirected[to].add(from);
+    if (from === to) selfLoops.add(from);
+  }
+  const outgoing = outgoingSets.map(sortedNumbers);
+  const incoming = incomingSets.map(sortedNumbers);
+  let rootIds = rootIdsFrom(roots, ids);
+  if (!rootIds.length) rootIds = ids.filter((id) => incoming[indexById.get(id)].length === 0);
+  if (!rootIds.length && ids.length) rootIds = [ids[0]];
+  const components = stronglyConnectedComponents(outgoing, incoming);
+  const condensation = condensationProfile(components, outgoing);
+  const cyclicNodeCount = components
+    .filter((component) => component.length > 1 || selfLoops.has(component[0]))
+    .reduce((total, component) => total + component.length, 0);
+  const degrees = ids.map((_, index) => outgoing[index].length + incoming[index].length);
   const nodeCount = ids.length;
   const edgeCount = safeEdges.length;
+  const pairEdgeCount = outgoing.reduce((total, neighbors) => total + neighbors.length, 0);
   const maxDegree = degrees.length ? Math.max(...degrees) : 0;
-  const nonLeafCount = ids.filter((id) => (outgoing.get(id)?.length || 0) > 0).length;
-  const maxDepth = levels.size ? Math.max(...levels.values()) : 0;
-  const maxWidth = widths.size ? Math.max(...widths.values()) : 0;
+  const nonLeafCount = outgoing.filter((neighbors) => neighbors.length > 0).length;
   const possibleEdges = Math.max(1, nodeCount * Math.max(1, nodeCount - 1));
 
   return Object.freeze({
     nodeCount,
     edgeCount,
     rootCount: rootIds.length,
-    componentCount,
-    maxDepth,
-    maxWidth,
+    componentCount: weakComponentCount(undirected),
+    stronglyConnectedComponentCount: components.length,
+    cyclicNodeCount,
+    maxDepth: condensation.maxDepth,
+    maxWidth: condensation.maxWidth,
     maxDegree,
     averageDegree: nodeCount ? (edgeCount * 2) / nodeCount : 0,
     averageBranching: nonLeafCount ? edgeCount / nonLeafCount : 0,
-    density: edgeCount / possibleEdges,
+    density: pairEdgeCount / possibleEdges,
     hubRatio: nodeCount > 1 ? maxDegree / (nodeCount - 1) : 0,
-    cycleRatio: nodeCount ? Math.max(0, nodeCount - processed) / nodeCount : 0,
+    cycleRatio: nodeCount ? cyclicNodeCount / nodeCount : 0,
   });
 }
 
@@ -294,6 +424,9 @@ function minimapGeometry(
 
 export {
   FORCE_LAYOUT_NODE_LIMIT,
+  PROFILE_MAX_EDGES,
+  PROFILE_MAX_NODES,
+  PROFILE_MAX_TEXT_BYTES,
   graphTopologyProfile,
   minimapGeometry,
   recommendGraphLayout,
