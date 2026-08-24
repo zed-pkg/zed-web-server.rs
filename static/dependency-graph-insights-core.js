@@ -268,11 +268,13 @@ function minimapGeometry(
     width: worldViewport.width * scale,
     height: worldViewport.height * scale,
   };
+  const minimapViewportWidth = clamp(rawViewport.width, 1, width);
+  const minimapViewportHeight = clamp(rawViewport.height, 1, height);
   const minimapViewport = Object.freeze({
-    x: clamp(rawViewport.x, 0, width),
-    y: clamp(rawViewport.y, 0, height),
-    width: clamp(rawViewport.width, 1, width),
-    height: clamp(rawViewport.height, 1, height),
+    x: clamp(rawViewport.x, 0, Math.max(0, width - minimapViewportWidth)),
+    y: clamp(rawViewport.y, 0, Math.max(0, height - minimapViewportHeight)),
+    width: minimapViewportWidth,
+    height: minimapViewportHeight,
   });
 
   return Object.freeze({
