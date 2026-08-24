@@ -1,0 +1,87 @@
+name: one-shot DEN-3477 visual-search wiring
+
+on:
+  push:
+    branches:
+      - agent/den-3477-claritas-visual-search
+    paths:
+      - .github/workflows/one-shot-den-3477-visual-search.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: one-shot-den-3477-visual-search-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  wire:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: agent/den-3477-claritas-visual-search
+          persist-credentials: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
+        with:
+          node-version-file: .node-version
+      - name: Wire additive self-hosted modules into the Maud shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly one match, found {count}")
+              return text.replace(old, new, 1)
+
+          path = Path("src/views/layout.rs")
+          source = path.read_text()
+          source = replace_once(
+              source,
+              '                link rel="stylesheet" href="/graph-assets/dependency-graph.css";\n                link rel="icon" type="image/svg+xml" href="/static/favicon.svg";',
+              '                link rel="stylesheet" href="/graph-assets/dependency-graph.css";\n                link rel="stylesheet" href="/static/dependency-graph-insights.css";\n                link rel="icon" type="image/svg+xml" href="/static/favicon.svg";',
+              "visual-search stylesheet",
+          )
+          source = replace_once(
+              source,
+              '                script type="module" src="/graph-assets/dependency-graph.js" {}',
+              '                script type="module" src="/graph-assets/dependency-graph.js" {}\n                script type="module" src="/static/dependency-graph-insights.js" {}',
+              "visual-search module",
+          )
+          source = replace_once(
+              source,
+              '        assert!(markup.contains("/graph-assets/dependency-graph.js"));\n        assert!(markup.contains("&quot;allowEval&quot;:false"));',
+              '        assert!(markup.contains("/graph-assets/dependency-graph.js"));\n        assert!(markup.contains("/static/dependency-graph-insights.css"));\n        assert!(markup.contains("/static/dependency-graph-insights.js"));\n        assert!(markup.contains("&quot;allowEval&quot;:false"));',
+              "self-hosted asset regression assertions",
+          )
+          path.write_text(source)
+          PY
+      - name: Verify the bounded additive change
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check static/dependency-graph-insights-core.js
+          node --check static/dependency-graph-insights.js
+          node tests/dependency-graph-insights.mjs
+          grep -Fq '/static/dependency-graph-insights.css' src/views/layout.rs
+          grep -Fq '/static/dependency-graph-insights.js' src/views/layout.rs
+          ! grep -E 'fetch\(|import[[:space:]].*https?://' static/dependency-graph-insights.js
+          cargo fmt --all -- --check
+          git diff --check
+      - name: Commit the wiring and remove this one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/one-shot-den-3477-visual-search.yml
+          git add src/views/layout.rs
+          git commit -m 'feat(graph): wire topology-aware visual search'
+          git push origin HEAD:agent/den-3477-claritas-visual-search
