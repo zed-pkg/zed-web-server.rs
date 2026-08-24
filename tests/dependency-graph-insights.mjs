@@ -68,6 +68,19 @@ assert.equal(geometry.points.size, 3);
 assert.ok(geometry.points.get("left").x < geometry.points.get("right").x);
 assert.ok(geometry.viewport.width >= 1 && geometry.viewport.width <= 196);
 assert.ok(geometry.viewport.height >= 1 && geometry.viewport.height <= 118);
+assert.ok(geometry.viewport.x + geometry.viewport.width <= 196);
+assert.ok(geometry.viewport.y + geometry.viewport.height <= 118);
+const clippedGeometry = minimapGeometry(
+  new Map([
+    ["left", { x: -100, y: -50 }],
+    ["right", { x: 100, y: 50 }],
+  ]),
+  { x: -10000, y: -10000, k: 2 },
+  { width: 20, height: 20 },
+  { width: 196, height: 118, padding: 10 }
+);
+assert.ok(clippedGeometry.viewport.x + clippedGeometry.viewport.width <= 196);
+assert.ok(clippedGeometry.viewport.y + clippedGeometry.viewport.height <= 118);
 const center = geometry.worldAt(geometry.points.get("middle").x, geometry.points.get("middle").y);
 assert.ok(Math.abs(center.x) < 1e-9);
 assert.ok(Math.abs(center.y) < 1e-9);
@@ -88,5 +101,10 @@ assert.ok(!/import\s+(?:[^;]+from\s+)?["']https?:\/\//.test(pluginSource));
 assert.ok(styleSource.includes(".dg-visual-search"));
 assert.ok(styleSource.includes(".dg-minimap"));
 assert.ok(styleSource.includes("prefers-reduced-motion"));
+const pluginModule = await import(
+  new URL("../static/dependency-graph-insights.js", import.meta.url)
+);
+assert.equal(typeof pluginModule.updateVisualSearch, "function");
+assert.equal(typeof pluginModule.renderMinimap, "function");
 
 console.log("dependency graph visual-search tests passed");
