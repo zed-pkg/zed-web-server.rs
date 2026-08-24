@@ -1,0 +1,48 @@
+name: dependency graph visual intelligence
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/dependency-graph-insights.yml"
+      - "static/dependency-graph-insights-core.js"
+      - "static/dependency-graph-insights.js"
+      - "static/dependency-graph-insights.css"
+      - "tests/dependency-graph-insights.mjs"
+      - "src/views/layout.rs"
+      - "docs/claritas-visualization-patterns.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-graph-insights-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: deterministic visual search and minimap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
+        with:
+          node-version-file: .node-version
+      - name: Validate modules and deterministic topology scoring
+        run: |
+          node --check static/dependency-graph-insights-core.js
+          node --check static/dependency-graph-insights.js
+          node tests/dependency-graph-insights.mjs
+      - name: Enforce same-origin additive boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -E 'fetch\(|import[[:space:]].*https?://' static/dependency-graph-insights.js
+          grep -Fq '"/graph-assets/dependency-graph.js"' static/dependency-graph-insights.js
+          grep -Fq '/static/dependency-graph-insights.js' src/views/layout.rs
+          grep -Fq '/static/dependency-graph-insights.css' src/views/layout.rs
+          grep -Fq 'prefers-reduced-motion' static/dependency-graph-insights.css
+          git diff --check
