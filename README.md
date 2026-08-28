@@ -9,6 +9,26 @@ Pages include home and recent packages, `/search` with HTMX-live results
 (`/partials/search`), `/p/{org}/{name}` package pages, organization dashboards,
 project and package settings, and user settings.
 
+## Platform surfaces
+
+The UI is mobile-first and installable: a web manifest, an offline page, and a
+root-scoped service worker at `/sw.js` make the registry an app on a phone or a
+desktop. The worker never caches HTML — a package page can be private, and a
+shared on-device cache is the wrong place for anything whose visibility depends
+on who asked. `static/app.js` is progressive enhancement only (copy buttons,
+current-tab marking, worker registration); every page works with it blocked.
+
+`/console/storage` describes the configured artifact backend by rendering
+`zed-api-server`'s provider-agnostic report, so it reads the same on Cloudflare
+R2, S3, Google Cloud Storage, MinIO, a directory, or process memory. No vendor
+dashboard is embedded. `contracts/storage-status.v1.json` is the wire contract,
+carried verbatim by the API server and the Flutter app; each side asserts its
+own decoder accepts it.
+
+Feature parity against npm, crates.io, PyPI, and RubyGems — what is shipped,
+what is missing, and which repository each gap belongs to — is tracked in
+[registry-ui-parity.md](docs/registry-ui-parity.md).
+
 ## Shared Auth browser ceremonies
 
 Zed intentionally supports two distinct Shared Auth integrations:
