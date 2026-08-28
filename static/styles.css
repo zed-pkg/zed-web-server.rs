@@ -1,231 +1,759 @@
+/* zed-pkg registry UI.
+ *
+ * Mobile-first. Every rule below the reset applies to a phone; the two
+ * breakpoints only *add* room. That ordering is deliberate — the registry is
+ * increasingly opened from a phone while someone is reading a build log, and a
+ * layout that starts wide and is patched narrow always ends up with a few
+ * screens nobody checked.
+ *
+ * Brand: black, orange #FF7A1A, baby blue #8FD3F4. Dark by design, so the
+ * palette is declared once and `color-scheme` tells the browser to match its
+ * own form controls and scrollbars to it rather than flashing white.
+ */
+
 :root {
+  color-scheme: dark;
+
   --bg: #050506;
   --panel: #0e0e11;
+  --panel-raised: #16161b;
   --border: #26262b;
+  --border-strong: #3a3a42;
   --text: #f2f2f0;
   --muted: #9c9ca6;
   --orange: #ff7a1a;
   --blue: #8fd3f4;
+  --green: #7ee2b8;
+  --red: #ff6b6b;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* One spacing scale, so vertical rhythm survives new components. */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+
+  --radius: 8px;
+  --radius-lg: 12px;
+
+  /* Comfortable reading width for prose, wider for the graph studio. */
+  --wrap-max: 60rem;
+  --wrap-wide: 80rem;
+
+  /* Every interactive target is at least this tall. 44px is the smallest
+     reliably tappable size; the desktop styles do not shrink it. */
+  --touch: 44px;
+
+  --nav-h: 56px;
+  --tabbar-h: 56px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-* { box-sizing: border-box; margin: 0; padding: 0; }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
 
 body {
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   line-height: 1.6;
+  /* Room for the mobile tab bar; removed once it is hidden. */
+  padding-bottom: calc(var(--tabbar-h) + var(--safe-bottom));
+  overflow-wrap: break-word;
 }
 
-.wrap { max-width: 960px; margin: 0 auto; padding: 0 20px; }
-a { color: var(--blue); text-decoration: none; }
-a:hover { color: var(--orange); }
+a {
+  color: var(--blue);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--orange);
+}
+
+/* A visible focus ring is the only way a keyboard user can tell where they
+   are. It is never removed, only kept off pointer interactions. */
+:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+img,
+svg,
+canvas {
+  max-width: 100%;
+  height: auto;
+}
+
 .mono { font-family: var(--mono); }
 .muted { color: var(--muted); }
 .orange { color: var(--orange); }
 .blue { color: var(--blue); }
 
-nav { border-bottom: 1px solid var(--border); background: var(--panel); }
-.nav-inner { display: flex; align-items: center; height: 56px; gap: 24px; }
-.brand { font-family: var(--mono); font-weight: 700; font-size: 1.05rem; }
+.wrap {
+  width: 100%;
+  max-width: var(--wrap-max);
+  margin: 0 auto;
+  padding: 0 var(--s4);
+}
+/* Opt-in wide container for the dependency-graph studio and the console. */
+.wrap.wide { max-width: var(--wrap-wide); }
+
+/* Keyboard users reach the content without walking the whole header. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+  padding: var(--s3) var(--s4);
+  background: var(--orange);
+  color: var(--bg);
+  font-weight: 600;
+}
+.skip-link:focus {
+  left: var(--s4);
+  top: var(--s2);
+  color: var(--bg);
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
+nav {
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.nav-inner {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-height: var(--nav-h);
+  flex-wrap: wrap;
+  padding-top: var(--s2);
+  padding-bottom: var(--s2);
+}
+
+.brand {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 1.05rem;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--touch);
+}
 .brand-z { color: var(--text); }
 .brand-pkg { color: var(--orange); }
 .brand-tag {
-  margin-left: 10px; font-size: 0.7rem; color: var(--blue);
-  border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px;
+  margin-left: var(--s2);
+  font-size: 0.7rem;
+  color: var(--blue);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 10px;
 }
-.nav-links { margin-left: auto; display: flex; gap: 18px; font-size: 0.9rem; }
+
+/* The breadcrumb is the first thing to go when space is tight: the same trail
+   is reachable from the page itself, and truncating it to an ellipsis is worse
+   than hiding it. */
+.crumbs {
+  display: none;
+  align-items: center;
+  gap: var(--s2);
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  min-width: 0;
+}
+.crumb {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crumb:hover { color: var(--orange); }
+.crumb-sep { color: var(--border); }
+
+.nav-search {
+  order: 3;
+  flex: 1 1 100%;
+}
+.search-compact {
+  width: 100%;
+  min-height: var(--touch);
+  padding: var(--s2) var(--s3);
+  font-size: 16px; /* iOS zooms any focused input under 16px. */
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.search-compact:focus { outline: none; border-color: var(--orange); }
+
+.nav-links {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  font-size: 0.9rem;
+}
 .nav-links a { color: var(--muted); }
 .nav-links a:hover { color: var(--text); }
 
+.nav-cta {
+  color: var(--text) !important;
+  border: 1px solid var(--orange);
+  border-radius: 6px;
+  padding: var(--s2) var(--s4);
+  font-size: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--touch);
+}
+.nav-cta:hover { background: var(--orange); color: var(--bg) !important; }
+
 .banner.offline {
-  background: rgba(255, 122, 26, 0.12);
-  border-bottom: 1px solid rgba(255, 122, 26, 0.4);
+  background: rgb(255 122 26 / 12%);
+  border-bottom: 1px solid rgb(255 122 26 / 40%);
   color: var(--orange);
   font-family: var(--mono);
   font-size: 0.8rem;
   text-align: center;
-  padding: 6px 12px;
+  padding: var(--s2) var(--s3);
 }
 
-main { padding: 40px 20px 64px; }
-section { margin-bottom: 40px; }
-h1 { font-size: 1.7rem; margin-bottom: 10px; }
-h2 { font-size: 1.15rem; margin-bottom: 14px; }
-.hero p { max-width: 40rem; margin-bottom: 14px; }
+/* ── Dropdown menus (<details>, so the CSP needs no inline script) ───────── */
 
-.snippet {
-  font-family: var(--mono);
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--orange);
-  border-radius: 8px;
-  padding: 12px 16px;
-  margin: 12px 0 20px;
-  font-size: 0.9rem;
-  overflow-x: auto;
-}
-
-.search {
-  width: 100%;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 0.95rem;
-  padding: 12px 14px;
-  margin: 14px 0;
-}
-.search:focus { outline: none; border-color: var(--orange); }
-
-.pkg-list { list-style: none; }
-.pkg-list li {
-  display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;
-  border: 1px solid var(--border); background: var(--panel);
-  border-radius: 8px; padding: 12px 16px; margin-bottom: 8px;
-}
-.pkg-name { font-family: var(--mono); color: var(--orange); }
-.pkg-version { font-family: var(--mono); color: var(--blue); font-size: 0.82rem; }
-.pkg-desc { color: var(--muted); font-size: 0.88rem; }
-
-table.versions { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-table.versions th {
-  text-align: left; color: var(--muted); font-weight: 500;
-  border-bottom: 1px solid var(--border); padding: 8px 10px;
-}
-table.versions td { border-bottom: 1px solid var(--border); padding: 8px 10px; }
-table.versions tr.yanked td { color: var(--muted); text-decoration: line-through; }
-
-footer {
-  border-top: 1px solid var(--border);
-  color: var(--muted); font-size: 0.82rem; padding: 24px 0;
-}
-
-/* ── Header: breadcrumb, compact search, dropdown menus ─────────────────── */
-
-.crumbs { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 0.85rem; }
-.crumb { color: var(--muted); }
-.crumb:hover { color: var(--orange); }
-.crumb-sep { color: var(--border); }
-
-.nav-search { margin-left: auto; }
-.search-compact {
-  width: 200px; padding: 6px 12px; font-size: 0.85rem;
-  background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: 6px;
-}
-.search-compact:focus { outline: none; border-color: var(--orange); }
-
-.nav-cta {
-  color: var(--text) !important; border: 1px solid var(--orange);
-  border-radius: 6px; padding: 5px 14px; font-size: 0.85rem;
-}
-.nav-cta:hover { background: var(--orange); color: var(--bg) !important; }
-
-/* <details>/<summary> disclosure: a dropdown with no JavaScript, which keeps
-   the CSP free of any inline-script allowance. */
 .menu { position: relative; }
 .menu-button {
-  display: flex; align-items: center; gap: 6px; cursor: pointer;
-  list-style: none; font-size: 0.85rem; color: var(--muted);
-  border: 1px solid var(--border); border-radius: 6px; padding: 5px 12px;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.85rem;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: var(--s2) var(--s3);
+  min-height: var(--touch);
 }
 .menu-button::-webkit-details-marker { display: none; }
 .menu-button:hover { color: var(--text); border-color: var(--orange); }
 .caret { font-size: 0.65rem; color: var(--muted); }
-.avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; }
+.avatar { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; }
 
 .menu-panel {
-  position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
-  min-width: 240px; padding: 6px;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  min-width: 240px;
+  max-width: min(20rem, calc(100vw - var(--s6)));
+  padding: var(--s1);
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   box-shadow: 0 12px 32px rgb(0 0 0 / 55%);
 }
-.menu-panel a, .menu-signout {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; padding: 7px 10px; border-radius: 5px;
-  font-size: 0.88rem; color: var(--text);
-}
-.menu-panel a:hover, .menu-signout:hover { background: var(--bg); color: var(--orange); }
+.menu-panel a,
 .menu-signout {
-  width: 100%; background: none; border: none; cursor: pointer;
-  font: inherit; text-align: left; color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s2) var(--s3);
+  border-radius: 5px;
+  font-size: 0.88rem;
+  color: var(--text);
+  min-height: var(--touch);
 }
-.menu-label, .menu-empty {
-  display: block; padding: 6px 10px;
-  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+.menu-panel a:hover,
+.menu-signout:hover { background: var(--bg); color: var(--orange); }
+.menu-signout {
+  width: 100%;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  color: var(--muted);
+}
+.menu-label,
+.menu-empty {
+  display: block;
+  padding: var(--s2) var(--s3);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
   color: var(--muted);
 }
 .menu-role { font-size: 0.72rem; color: var(--muted); font-family: var(--mono); }
-.menu-sep { height: 1px; margin: 6px 4px; background: var(--border); }
+.menu-sep { height: 1px; margin: var(--s1) var(--s1); background: var(--border); }
 
-/* ── Console: cards, forms, lists, badges ───────────────────────────────── */
+/* ── Mobile tab bar ─────────────────────────────────────────────────────── */
 
-main h1 { margin: 28px 0 10px; font-size: 1.6rem; }
-main h2 { margin: 28px 0 12px; font-size: 1.1rem; color: var(--blue); }
-.lede { color: var(--muted); margin-bottom: 8px; }
+/* Installed as a PWA the registry has no browser chrome, so the primary
+   destinations have to live on the page. Hidden from wide viewports, where the
+   header already carries them. */
+.tabbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 35;
+  display: flex;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  padding-bottom: var(--safe-bottom);
+}
+.tabbar a {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: var(--tabbar-h);
+  padding: var(--s1);
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+.tabbar a[aria-current="page"] { color: var(--orange); }
+.tabbar .tab-glyph { font-size: 1.1rem; line-height: 1; }
+
+/* ── Page furniture ─────────────────────────────────────────────────────── */
+
+main { padding: var(--s5) 0 var(--s7); }
+section { margin-bottom: var(--s6); }
+
+h1 { font-size: clamp(1.4rem, 1.1rem + 1.4vw, 1.9rem); margin-bottom: var(--s2); line-height: 1.25; }
+h2 { font-size: clamp(1.05rem, 0.98rem + 0.4vw, 1.2rem); margin-bottom: var(--s3); }
+main h1 { margin: var(--s5) 0 var(--s2); }
+main h2 { margin: var(--s5) 0 var(--s3); color: var(--blue); }
+.lede { color: var(--muted); margin-bottom: var(--s2); max-width: 46rem; }
+.hero p { max-width: 40rem; margin-bottom: var(--s3); }
+
+footer {
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.82rem;
+  padding: var(--s5) 0;
+}
+
+/* ── Snippets and copy ──────────────────────────────────────────────────── */
+
+.snippet {
+  position: relative;
+  font-family: var(--mono);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--orange);
+  border-radius: var(--radius);
+  padding: var(--s3) var(--s4);
+  margin: var(--s3) 0 var(--s5);
+  font-size: 0.85rem;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* The command plus its copy button. The button is injected by app.js, so a
+   browser with scripting disabled simply sees a selectable command. */
+.snippet-row {
+  display: flex;
+  align-items: stretch;
+  gap: var(--s2);
+  margin: var(--s3) 0 var(--s5);
+}
+.snippet-row .snippet { flex: 1 1 auto; margin: 0; min-width: 0; }
+.copy {
+  flex: 0 0 auto;
+  min-width: var(--touch);
+  min-height: var(--touch);
+  padding: 0 var(--s3);
+  cursor: pointer;
+  background: var(--panel);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: 0.78rem;
+}
+.copy:hover { border-color: var(--orange); color: var(--orange); }
+.copy[data-copied="true"] { color: var(--green); border-color: var(--green); }
+
+/* ── Search ─────────────────────────────────────────────────────────────── */
+
+.search {
+  width: 100%;
+  min-height: var(--touch);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 16px;
+  padding: var(--s3) var(--s4);
+  margin: var(--s3) 0;
+}
+.search:focus { outline: none; border-color: var(--orange); }
+
+/* ── Package lists ──────────────────────────────────────────────────────── */
+
+.pkg-list { list-style: none; }
+.pkg-list li {
+  display: flex;
+  gap: var(--s2) var(--s3);
+  align-items: baseline;
+  flex-wrap: wrap;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: var(--s3) var(--s4);
+  margin-bottom: var(--s2);
+}
+.pkg-list li:hover { border-color: var(--border-strong); }
+.pkg-name { font-family: var(--mono); color: var(--orange); font-weight: 600; }
+.pkg-version { font-family: var(--mono); color: var(--blue); font-size: 0.82rem; }
+.pkg-desc { color: var(--muted); font-size: 0.88rem; flex: 1 1 100%; }
+
+/* ── Tables ─────────────────────────────────────────────────────────────── */
+
+/* A table is the right shape for versions and the wrong shape for a 375px
+   screen, so it scrolls inside its own box instead of widening the page. */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+table.versions {
+  width: 100%;
+  min-width: 34rem;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+table.versions th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 500;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+  padding: var(--s2) var(--s3);
+}
+table.versions td {
+  border-bottom: 1px solid var(--border);
+  padding: var(--s2) var(--s3);
+  vertical-align: top;
+}
+table.versions tr:last-child td { border-bottom: none; }
+table.versions tr.yanked td { color: var(--muted); text-decoration: line-through; }
+
+/* ── Cards, forms, buttons ──────────────────────────────────────────────── */
 
 .card {
-  margin: 18px 0; padding: 18px 20px;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  margin: var(--s4) 0;
+  padding: var(--s4);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
 }
 .card h2 { margin-top: 0; }
 
-.stack { display: flex; flex-direction: column; gap: 6px; max-width: 460px; }
-.stack label { font-size: 0.8rem; color: var(--muted); margin-top: 8px; }
-.stack input, .stack select {
-  padding: 8px 12px; font-size: 0.9rem;
-  background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: 6px;
+.stack { display: flex; flex-direction: column; gap: var(--s1); max-width: 30rem; }
+.stack label { font-size: 0.8rem; color: var(--muted); margin-top: var(--s2); }
+.stack input,
+.stack select {
+  min-height: var(--touch);
+  padding: var(--s2) var(--s3);
+  font-size: 16px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
 }
-.stack input:focus, .stack select:focus { outline: none; border-color: var(--orange); }
+.stack input:focus,
+.stack select:focus { outline: none; border-color: var(--orange); }
 
-.row { display: flex; gap: 10px; flex-wrap: wrap; }
+.row { display: flex; gap: var(--s2); flex-wrap: wrap; }
 .button {
-  display: inline-block; margin-top: 14px; padding: 8px 16px;
-  font-size: 0.88rem; cursor: pointer;
-  background: none; color: var(--text);
-  border: 1px solid var(--border); border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: var(--s3);
+  padding: var(--s2) var(--s4);
+  min-height: var(--touch);
+  font-size: 0.88rem;
+  cursor: pointer;
+  background: none;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
 }
 .button:hover:not(:disabled) { border-color: var(--orange); color: var(--orange); }
 .button.primary { border-color: var(--orange); color: var(--orange); align-self: flex-start; }
 .button.primary:hover { background: var(--orange); color: var(--bg); }
 .button:disabled { opacity: 0.45; cursor: not-allowed; }
 
-.pkg-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.pkg-head .button { margin-top: 0; margin-left: auto; }
-
 .badge {
-  font-family: var(--mono); font-size: 0.7rem;
-  color: var(--blue); border: 1px solid var(--border);
-  border-radius: 999px; padding: 2px 10px;
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--blue);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 10px;
+  white-space: nowrap;
 }
 .badge-private { color: var(--orange); border-color: var(--orange); }
 .warn { color: var(--orange); }
 
 .org-list { list-style: none; }
 .org-list li {
-  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
-  padding: 10px 0; border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  flex-wrap: wrap;
+  padding: var(--s2) 0;
+  border-bottom: 1px solid var(--border);
+  min-height: var(--touch);
 }
 .org-name { font-weight: 600; }
 
+/* ── Package page ───────────────────────────────────────────────────────── */
+
+.pkg-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  flex-wrap: wrap;
+}
+.pkg-head h1 {
+  font-family: var(--mono);
+  flex: 1 1 100%;
+  overflow-wrap: anywhere;
+}
+.pkg-head .button { margin-top: 0; }
+
+/* Facts read as a definition list on a phone and as a two-column grid once
+   there is room for the labels to sit beside their values. */
 .facts {
-  display: grid; grid-template-columns: max-content 1fr;
-  gap: 6px 20px; margin: 18px 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--s1) var(--s5);
+  margin: var(--s4) 0;
 }
 .facts dt {
-  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
   color: var(--muted);
 }
-.facts dd { font-size: 0.9rem; }
+.facts dd { font-size: 0.9rem; margin-bottom: var(--s2); overflow-wrap: anywhere; }
 
-@media (max-width: 720px) {
-  .nav-inner { height: auto; padding: 10px 0; flex-wrap: wrap; gap: 12px; }
-  .nav-search { margin-left: 0; width: 100%; }
-  .search-compact { width: 100%; }
+/* Tabs across the package sections. Plain links, so each is bookmarkable and
+   works without scripting. */
+.tabs {
+  display: flex;
+  gap: var(--s1);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-bottom: 1px solid var(--border);
+  margin: var(--s4) 0 var(--s4);
+  scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--touch);
+  padding: 0 var(--s3);
+  color: var(--muted);
+  font-size: 0.9rem;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+}
+.tab:hover { color: var(--text); }
+.tab[aria-current="page"] {
+  color: var(--orange);
+  border-bottom-color: var(--orange);
+}
+.tab-count {
+  margin-left: var(--s2);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+/* ── Console: stat tiles, meters, status ────────────────────────────────── */
+
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+  gap: var(--s3);
+  margin: var(--s4) 0;
+}
+.kpi {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--s3) var(--s4);
+}
+.kpi-label {
+  display: block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.kpi-value {
+  display: block;
+  font-family: var(--mono);
+  font-size: clamp(1.25rem, 1.1rem + 0.8vw, 1.6rem);
+  line-height: 1.2;
+  margin-top: var(--s1);
+}
+.kpi-note { display: block; font-size: 0.78rem; color: var(--muted); margin-top: var(--s1); }
+
+/* Status is never colour alone: each state carries its own glyph, so the
+   distinction survives a monochrome screen and colour-blindness both. */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: var(--s1) var(--s3);
+}
+.status-ok { color: var(--green); border-color: rgb(126 226 184 / 45%); }
+.status-warn { color: var(--orange); border-color: rgb(255 122 26 / 45%); }
+.status-bad { color: var(--red); border-color: rgb(255 107 107 / 45%); }
+.status-idle { color: var(--muted); }
+
+.meter {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+  margin-top: var(--s2);
+}
+.meter > span {
+  display: block;
+  height: 100%;
+  background: var(--orange);
+  border-radius: inherit;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--s1) var(--s5);
+  font-size: 0.88rem;
+}
+.kv dt { color: var(--muted); font-size: 0.78rem; }
+.kv dd { font-family: var(--mono); overflow-wrap: anywhere; margin-bottom: var(--s2); }
+
+.empty {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--s6) var(--s4);
+  text-align: center;
+  color: var(--muted);
+}
+
+/* ── Preferences ────────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --muted: #c9c9d2;
+    --border: #4a4a54;
+    --border-strong: #6c6c78;
+  }
+}
+
+/* ── Tablet and up ──────────────────────────────────────────────────────── */
+
+@media (min-width: 48rem) {
+  body { padding-bottom: 0; }
+  .tabbar { display: none; }
+
+  .wrap { padding: 0 var(--s5); }
+  .nav-inner { flex-wrap: nowrap; gap: var(--s5); }
+  .crumbs { display: flex; }
+  .nav-search { order: 0; margin-left: auto; flex: 0 1 14rem; }
+  .search-compact { font-size: 0.85rem; min-height: 36px; }
   .nav-links { margin-left: 0; }
-  .menu-panel { right: auto; left: 0; }
+
+  .facts { grid-template-columns: max-content 1fr; }
+  .facts dd { margin-bottom: 0; }
+  .kv { grid-template-columns: max-content 1fr; }
+  .kv dd { margin-bottom: 0; }
+
+  .pkg-head h1 { flex: 0 1 auto; }
+  .pkg-head .button:first-of-type { margin-left: auto; }
+}
+
+/* ── Desktop ────────────────────────────────────────────────────────────── */
+
+@media (min-width: 64rem) {
+  main { padding: var(--s6) 0 var(--s7); }
+
+  /* The package page becomes content plus a sticky metadata rail — the shape
+     every registry converges on because the install command and the links are
+     what people came for and should not scroll away. */
+  .pkg-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 20rem;
+    gap: var(--s6);
+    align-items: start;
+  }
+  .pkg-side {
+    position: sticky;
+    top: calc(var(--nav-h) + var(--s4));
+    max-height: calc(100vh - var(--nav-h) - var(--s6));
+    overflow-y: auto;
+  }
+  .nav-search { flex-basis: 20rem; }
+}
+
+/* ── Print ──────────────────────────────────────────────────────────────── */
+
+@media print {
+  nav,
+  .tabbar,
+  .copy,
+  footer { display: none; }
+  body { background: #fff; color: #000; padding: 0; }
+  .card,
+  .snippet { border-color: #ccc; background: #fff; }
 }

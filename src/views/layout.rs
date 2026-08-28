@@ -65,29 +65,49 @@ pub fn layout(
         html lang="en" {
             head {
                 meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
+                // `viewport-fit=cover` lets the layout paint into the notch and
+                // home-indicator areas, which the stylesheet then pads back out
+                // with env(safe-area-inset-*).
+                meta name="viewport"
+                    content="width=device-width, initial-scale=1, viewport-fit=cover";
+                meta name="theme-color" content="#050506";
+                meta name="color-scheme" content="dark";
+                // Installed on iOS the app has no browser chrome, so the status
+                // bar has to be told to match the page rather than stay light.
+                meta name="apple-mobile-web-app-capable" content="yes";
+                meta name="apple-mobile-web-app-status-bar-style" content="black-translucent";
+                meta name="apple-mobile-web-app-title" content="zed-pkg";
                 meta name="htmx-config"
                     content=r#"{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"selfRequestsOnly":true}"#;
                 title { (title) " · zed-pkg" }
                 link rel="stylesheet" href="/static/styles.css";
+                link rel="manifest" href="/static/manifest.webmanifest";
+                link rel="apple-touch-icon" href="/static/icon.svg";
                 link rel="stylesheet" href="/graph-assets/dependency-graph.css";
                 link rel="icon" type="image/svg+xml" href="/static/favicon.svg";
                 script src="/static/htmx.min.js" {}
+                // Progressive enhancement only: copy buttons, the current tab
+                // marker, and service-worker registration. Deferred so it never
+                // blocks first paint, and same-origin so `script-src 'self'`
+                // needs no widening.
+                script src="/static/app.js" defer {}
                 script type="module" src="/graph-assets/dependency-graph.js" {}
             }
             body {
+                a class="skip-link" href="#content" { "Skip to content" }
                 (header(viewer, context))
                 @if !db_online {
                     div class="banner offline" {
                         "registry offline: no database connection; showing empty state"
                     }
                 }
-                main class="wrap" { (content) }
+                main id="content" class="wrap" { (content) }
                 footer {
                     div class="wrap" {
                         "(c) 2026 zed-pkg contributors - MIT - MASH stack (Maud, Axum, SeaORM, HTMX)"
                     }
                 }
+                (tab_bar(viewer))
             }
         }
     }
@@ -116,6 +136,43 @@ fn header(viewer: &Viewer, context: &PageContext) -> Markup {
                     } @else {
                         a class="nav-cta" href="/shared-auth/auth/browser/sign-in" { "Sign in" }
                     }
+                }
+            }
+        }
+    }
+}
+
+/// The phone and installed-app navigation.
+///
+/// Hidden above the tablet breakpoint, where the header already carries the
+/// same destinations. It exists because an installed PWA has no browser chrome:
+/// without it there is no back button, no address bar, and no way to reach
+/// search from a package page. Entries are plain links, so the bar works before
+/// `app.js` runs; the script only marks which one is current.
+fn tab_bar(viewer: &Viewer) -> Markup {
+    html! {
+        nav class="tabbar" aria-label="Primary" {
+            a href="/" data-match="/" {
+                span class="tab-glyph" aria-hidden="true" { "◆" }
+                span { "Home" }
+            }
+            a href="/search" data-match="/search" {
+                span class="tab-glyph" aria-hidden="true" { "⌕" }
+                span { "Search" }
+            }
+            @if viewer.is_signed_in() {
+                a href="/dashboard" data-match="/dashboard" {
+                    span class="tab-glyph" aria-hidden="true" { "▤" }
+                    span { "Orgs" }
+                }
+                a href="/settings" data-match="/settings" {
+                    span class="tab-glyph" aria-hidden="true" { "☰" }
+                    span { "Account" }
+                }
+            } @else {
+                a href="/auth/sign-in" data-match="/auth" {
+                    span class="tab-glyph" aria-hidden="true" { "→" }
+                    span { "Sign in" }
                 }
             }
         }
@@ -335,6 +392,72 @@ mod tests {
         )
         .into_string();
         assert!(!online.contains("registry offline"));
+    }
+
+    #[test]
+    fn every_page_is_installable_and_reachable_by_keyboard() {
+        let markup = layout(
+            "t",
+            true,
+            &Viewer::Anonymous,
+            &PageContext::none(),
+            html! {},
+        )
+        .into_string();
+        assert!(markup.contains(r#"rel="manifest""#), "{markup}");
+        assert!(markup.contains("/static/manifest.webmanifest"));
+        assert!(markup.contains(r#"name="theme-color""#));
+        assert!(markup.contains("viewport-fit=cover"));
+        assert!(markup.contains(r#"class="skip-link""#));
+        assert!(markup.contains(r##"href="#content""##));
+        assert!(markup.contains(r#"id="content""#));
+    }
+
+    #[test]
+    fn the_mobile_tab_bar_matches_the_viewer() {
+        // Installed as an app there is no browser chrome, so an anonymous
+        // viewer still needs a way to sign in and a signed-in one a way to
+        // reach their orgs.
+        let anonymous = layout(
+            "t",
+            true,
+            &Viewer::Anonymous,
+            &PageContext::none(),
+            html! {},
+        )
+        .into_string();
+        assert!(anonymous.contains(r#"class="tabbar""#), "{anonymous}");
+        assert!(anonymous.contains(r#"href="/search""#));
+        assert!(anonymous.contains(r#"href="/auth/sign-in""#));
+        assert!(!anonymous.contains(r#"href="/settings""#));
+
+        let member = layout(
+            "t",
+            true,
+            &signed_in("owner"),
+            &PageContext::none(),
+            html! {},
+        )
+        .into_string();
+        assert!(member.contains(r#"href="/dashboard""#));
+        assert!(member.contains(r#"href="/settings""#));
+    }
+
+    #[test]
+    fn enhancement_scripts_stay_same_origin() {
+        // `script-src 'self'` is the whole CSP allowance; a CDN reference here
+        // would be blocked at runtime rather than caught in review.
+        let markup = layout(
+            "t",
+            true,
+            &Viewer::Anonymous,
+            &PageContext::none(),
+            html! {},
+        )
+        .into_string();
+        assert!(markup.contains(r#"src="/static/app.js""#), "{markup}");
+        assert!(!markup.contains("http://"), "{markup}");
+        assert!(!markup.contains("https://"), "{markup}");
     }
 
     #[test]
