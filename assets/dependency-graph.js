@@ -14,9 +14,10 @@ const MAX_PROJECTION_DIMENSION = 4096;
 const MAX_GRAPH_DOCUMENT_BYTES = 32 * 1024 * 1024;
 const MAX_DOCUMENT_CACHE_ENTRIES = 4;
 const FETCH_TIMEOUT_MS = 12000;
-const MAX_GRAPH_TEXT_LENGTH = 2048;
+const MAX_GRAPH_TEXT_BYTES = 2048;
 const MAX_EDGE_FEATURES = 256;
 const MAX_VIEW_STATE_TEXT_LENGTH = 1024;
+const GRAPH_TEXT_ENCODER = new TextEncoder();
 const QUERY_RESULT_PAGE_SIZE = 25;
 const UNMAINTAINED_AFTER_DAYS = 365;
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -757,13 +758,23 @@ class ZedDependencyGraph extends HTMLElementBase {
         assertIdentity(node?.id, true);
         assertOptionalGraphText(node.artifact_digest, "artifact digest");
         assertStringList(node.features, "resolved node features");
-        nodeIds.add(resolvedKey(node.id));
+        const nodeId = resolvedKey(node.id);
+        if (nodeIds.has(nodeId)) {
+          throw new Error("The resolved dependency graph contains a duplicate package identity.");
+        }
+        nodeIds.add(nodeId);
       }
+      const rootIds = new Set();
       for (const root of document.roots) {
         assertIdentity(root, true);
-        if (!nodeIds.has(resolvedKey(root))) {
+        const rootId = resolvedKey(root);
+        if (!nodeIds.has(rootId)) {
           throw new Error("The resolved dependency graph names a root outside its node set.");
         }
+        if (rootIds.has(rootId)) {
+          throw new Error("The resolved dependency graph contains a duplicate root identity.");
+        }
+        rootIds.add(rootId);
       }
       for (const edge of document.edges) {
         assertIdentity(edge?.from, true);
@@ -785,12 +796,14 @@ class ZedDependencyGraph extends HTMLElementBase {
   assertDocumentCapacity(document) {
     let incomingNodes = 0;
     let incomingEdges = 0;
+    let incomingRoots = 0;
     if (document.view === "declared") {
       incomingNodes = 1 + (Array.isArray(document.dependencies) ? document.dependencies.length : 0);
       incomingEdges = Array.isArray(document.dependencies) ? document.dependencies.length : 0;
     } else if (document.view === "resolved") {
       incomingNodes = Array.isArray(document.nodes) ? document.nodes.length : 0;
       incomingEdges = Array.isArray(document.edges) ? document.edges.length : 0;
+      incomingRoots = Array.isArray(document.roots) ? document.roots.length : 0;
     } else {
       return;
     }
@@ -803,6 +816,9 @@ class ZedDependencyGraph extends HTMLElementBase {
     }
     if (this.edges.length + incomingEdges > MAX_GRAPH_EDGES) {
       throw new Error(`The loaded topology exceeds the ${MAX_GRAPH_EDGES}-relationship browser limit.`);
+    }
+    if (incomingRoots > MAX_GRAPH_NODES) {
+      throw new Error(`The loaded topology exceeds the ${MAX_GRAPH_NODES}-root browser limit.`);
     }
   }
 
@@ -2908,8 +2924,9 @@ function assertGraphText(value, field) {
   if (
     typeof value !== "string" ||
     !value.length ||
-    value.length > MAX_GRAPH_TEXT_LENGTH ||
-    !isWellFormedUnicode(value)
+    GRAPH_TEXT_ENCODER.encode(value).byteLength > MAX_GRAPH_TEXT_BYTES ||
+    !isWellFormedUnicode(value) ||
+    /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(value)
   ) {
     throw new Error(`The dependency graph contains an invalid ${field}.`);
   }

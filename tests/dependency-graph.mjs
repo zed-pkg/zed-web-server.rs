@@ -365,6 +365,22 @@ assert.throws(
   () =>
     new ZedDependencyGraph().addDocument({
       ...document,
+      dependencies: [{ ...document.dependencies[0], name: "😀".repeat(513) }],
+    }),
+  /invalid package name/
+);
+assert.throws(
+  () =>
+    new ZedDependencyGraph().addDocument({
+      ...document,
+      dependencies: [{ ...document.dependencies[0], name: "spoof\u202ename" }],
+    }),
+  /invalid package name/
+);
+assert.throws(
+  () =>
+    new ZedDependencyGraph().addDocument({
+      ...document,
       dependencies: Array.from({ length: 3000 }, () => document.dependencies[0]),
     }),
   /3000-package browser limit/
@@ -394,6 +410,35 @@ assert.throws(
   /12000-relationship browser limit/
 );
 assert.equal(boundedEdgeGraph.nodes.size, 0, "edge-cap failures remain atomic");
+
+const resolvedDocument = {
+  schema: "zpkg/dependency-graph/v1",
+  view: "resolved",
+  nodes: [{ id: resolvedA }, { id: resolvedB }],
+  roots: [resolvedA],
+  edges: [],
+};
+assert.throws(
+  () => new ZedDependencyGraph().addDocument({
+    ...resolvedDocument,
+    nodes: [{ id: resolvedA }, { id: resolvedA }],
+  }),
+  /duplicate package identity/
+);
+assert.throws(
+  () => new ZedDependencyGraph().addDocument({
+    ...resolvedDocument,
+    roots: [resolvedA, resolvedA],
+  }),
+  /duplicate root identity/
+);
+assert.throws(
+  () => new ZedDependencyGraph().addDocument({
+    ...resolvedDocument,
+    roots: Array.from({ length: 3001 }, () => resolvedA),
+  }),
+  /3000-root browser limit/
+);
 
 const algorithmGraph = new ZedDependencyGraph();
 algorithmGraph.nodes = new Map(

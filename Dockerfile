@@ -36,7 +36,6 @@ COPY --from=build /work/zed-web-server.rs/static ./static
 USER zed
 ENV BIND_ADDR=0.0.0.0:8081
 EXPOSE 8081
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 
 # --- sops: decrypt at `docker run`, never at `docker build` ------------------
 # The image carries only CIPHERTEXT (env/enc/<SOPS_ENV>.env.enc) and the sops
@@ -46,9 +45,10 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 # See env/README.md.
 ARG SOPS_ENV=prod
 COPY --chmod=0755 --from=ghcr.io/getsops/sops:v3.10.2-alpine /usr/local/bin/sops /usr/local/bin/sops
-COPY --chmod=0755 scripts/sops-entrypoint.sh /usr/local/bin/sops-entrypoint.sh
-COPY --chmod=0644 env/enc/${SOPS_ENV}.env.enc /app/secrets/app.env
+COPY --chmod=0755 zed-web-server.rs/scripts/sops-entrypoint.sh /usr/local/bin/sops-entrypoint.sh
+COPY --chmod=0644 zed-web-server.rs/env/enc/${SOPS_ENV}.env.enc /app/secrets/app.env
 ENV SOPS_SECRETS_FILE=/app/secrets/app.env
 
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8081/healthz || exit 1
 ENTRYPOINT ["/usr/local/bin/sops-entrypoint.sh", "/usr/local/bin/zed-web-server"]

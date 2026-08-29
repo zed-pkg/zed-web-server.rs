@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "schema": "claritas/component-contract/v1",
+  "component": "zed-dependency-graph",
+  "version": "1.0.0",
+  "producer": "claritas-viz/data-viz-server.rs",
+  "input": {
+    "schema": "zpkg/dependency-graph/v1",
+    "mediaType": "application/vnd.zpkg.dependency-graph.v1+json",
+    "authorityRequired": true
+  },
+  "targets": [
+    {
+      "id": "rust-leptos",
+      "language": "rust",
+      "framework": "leptos",
+      "entrypoint": "rust/leptos.rs",
+      "manifest": "rust/Cargo.toml",
+      "feature": "leptos"
+    },
+    {
+      "id": "rust-dioxus",
+      "language": "rust",
+      "framework": "dioxus",
+      "entrypoint": "rust/dioxus.rs",
+      "manifest": "rust/Cargo.toml",
+      "feature": "dioxus"
+    },
+    {
+      "id": "flutter",
+      "language": "dart",
+      "framework": "flutter",
+      "entrypoint": "dart/claritas_dependency_graph.dart",
+      "manifest": "dart/pubspec.yaml"
+    },
+    {
+      "id": "web-esm",
+      "language": "javascript",
+      "framework": "web-component",
+      "entrypoint": "web/insights-core.js"
+    }
+  ],
+  "capabilities": [
+    "deterministic-topology-profile",
+    "exact-strongly-connected-components",
+    "user-controlled-layout-recommendation",
+    "bounded-overview-minimap",
+    "keyboard-accessible-fallback",
+    "explicit-large-graph-degradation",
+    "standalone-framework-manifests"
+  ],
+  "limits": {
+    "maxNodes": 3000,
+    "maxEdges": 12000,
+    "maxRenderedNodes": 750,
+    "maxRenderedEdges": 2500,
+    "maxMinimapNodes": 500,
+    "maxMinimapEdges": 900,
+    "maxTextBytes": 2048
+  },
+  "trust": {
+    "distribution": "vendored-source-only",
+    "integrity": "sha256",
+    "runtimeNetwork": false,
+    "dynamicCodeEvaluation": false,
+    "externalBrowserRuntime": false
+  },
+  "invariants": [
+    "The canonical zpkg graph remains the semantic authority.",
+    "Claritas recommendations never mutate graph identity or resolution.",
+    "A layout change requires an explicit user action.",
+    "All framework targets validate bounds and edge endpoints before rendering.",
+    "Zed serves vendored component bytes from its own origin and never loads Claritas at runtime."
+  ]
+}
