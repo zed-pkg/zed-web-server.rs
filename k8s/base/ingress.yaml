@@ -1,4 +1,6 @@
-# Public hosts for the registry web UI. Layer-2 per the contract; the
+# Exact public hosts for the registry web UI. user.zpkg.net is the primary
+# user-facing name; app.zpkg.net and web.zpkg.net are compatibility aliases.
+# Layer-2 per the contract; the
 # ingress-nginx controller + cert-manager ClusterIssuer are Layer-1. DNS lives
 # in zed-infra/terraform/cloudflare — keep records DNS-only until the
 # certificate is issued (ACME HTTP-01 ordering).
@@ -22,9 +24,29 @@ metadata:
 spec:
   ingressClassName: nginx
   tls:
-    - hosts: [web.zpkg.net]
+    - hosts: [user.zpkg.net, app.zpkg.net, web.zpkg.net]
       secretName: zed-web-server-tls
   rules:
+    - host: user.zpkg.net
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dd-zed-web-server
+                port:
+                  number: 8081
+    - host: app.zpkg.net
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dd-zed-web-server
+                port:
+                  number: 8081
     - host: web.zpkg.net
       http:
         paths:

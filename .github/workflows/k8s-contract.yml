@@ -19,6 +19,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Render primary zpkg.net hosts
+        run: kubectl kustomize k8s > /tmp/zpkg-net.yaml
+
       - name: Render AWS overlay
         run: kubectl kustomize k8s/overlays/aws > /tmp/aws.yaml
 
@@ -38,6 +41,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          for host in user.zpkg.net app.zpkg.net web.zpkg.net; do
+            test "$(grep -c "host: $host" /tmp/zpkg-net.yaml)" -eq 1
+            grep -q -- "- $host" /tmp/zpkg-net.yaml
+          done
+          test "$(grep -c 'name: dd-zed-web-server' /tmp/zpkg-net.yaml)" -ge 4
           grep -q 'registry.aws.zpkg.net' /tmp/aws.yaml
           grep -q 'host: web.aws.zpkg.net' /tmp/aws.yaml
           grep -q 'registry.hetzner.zpkg.net' /tmp/hetzner.yaml
