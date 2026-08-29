@@ -7,6 +7,7 @@ license = "MIT"
 repository = "https://github.com/zed-pkg/zed-web-server.rs"
 
 [dependencies]
+ores-transport = { git = "https://github.com/ORESoftware/ores-transport.git", branch = "main" }  # TODO(DEN): pin to a rev once ores-transport is pushed
 k8s-web-api-data-plane = { git = "https://github.com/ORESoftware/k8s-libs-and-shared-defs.git", rev = "55adadc9f6d223d40b28ae66097dfe16930951b1", package = "k8s-web-api-data-plane" }
 # Keep the shared wire contract immutable. The repository root is a virtual
 # polyglot workspace, and Cargo resolves its Rust package member directly.
