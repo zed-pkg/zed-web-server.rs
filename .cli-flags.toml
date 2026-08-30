@@ -1,0 +1,124 @@
+[identity]
+service = "zed-web-server"
+type_name = "RuntimeEnv"
+
+[help]
+url = "https://github.com/flags-2-env/flags-2-env"
+columns = ["options", "env", "type", "default", "description"]
+
+[parse]
+allow_unknown = false
+
+[env]
+ignore = ["DATABASE_URL", "SHARED_AUTH_HANDOFF_CLIENT_SECRET", "ZED_SESSION_SIGNING_SECRET"]
+
+[flags.help]
+env = "CLI_HELP_REQUESTED"
+long = "help"
+short = "h"
+type = "boolean"
+default = false
+help = "Print command-line help."
+
+[flags.version]
+env = "CLI_VERSION_REQUESTED"
+long = "version"
+short = "V"
+type = "boolean"
+default = false
+help = "Print the server version."
+
+[flags.bind-addr]
+env = "BIND_ADDR"
+long = "bind-addr"
+type = "string"
+default = "0.0.0.0:8081"
+help = "HTTP listener socket address."
+
+[flags.rust-log]
+env = "RUST_LOG"
+long = "rust-log"
+type = "string"
+default = "info"
+help = "Tracing filter."
+
+[flags.db-max-connections]
+env = "DB_MAX_CONNECTIONS"
+long = "db-max-connections"
+type = "integer"
+default = 10
+help = "Maximum read-only database pool connections."
+
+[flags.db-statement-timeout-ms]
+env = "DB_STATEMENT_TIMEOUT_MS"
+long = "db-statement-timeout-ms"
+type = "integer"
+default = 8000
+help = "Read-only database statement timeout in milliseconds."
+
+[flags.db-connect-max-wait-secs]
+env = "DB_CONNECT_MAX_WAIT_SECS"
+long = "db-connect-max-wait-secs"
+type = "integer"
+default = 30
+help = "Maximum database startup retry window in seconds."
+
+[flags.public-base-url]
+env = "PUBLIC_BASE_URL"
+long = "public-base-url"
+type = "string"
+default = "http://localhost:8081"
+help = "Credential-free public web origin."
+
+[flags.shared-auth-url]
+env = "SHARED_AUTH_URL"
+long = "shared-auth-url"
+type = "string"
+help = "Credential-free internal Shared Auth URL."
+
+[flags.shared-auth-public-url]
+env = "SHARED_AUTH_PUBLIC_URL"
+long = "shared-auth-public-url"
+type = "string"
+help = "Credential-free public Shared Auth URL."
+
+[flags.zed-api-url]
+env = "ZED_API_URL"
+long = "zed-api-url"
+type = "string"
+default = "http://127.0.0.1:8080"
+help = "Credential-free registry API URL."
+
+[flags.public-registry-url]
+env = "PUBLIC_REGISTRY_URL"
+long = "public-registry-url"
+type = "string"
+help = "Credential-free public package registry URL."
+
+[flags.shared-auth-handoff-client-id]
+env = "SHARED_AUTH_HANDOFF_CLIENT_ID"
+long = "shared-auth-handoff-client-id"
+type = "string"
+default = "zpkg"
+help = "Public Shared Auth handoff client identifier."
+
+[flags.shared-auth-delegate-client-id]
+env = "SHARED_AUTH_DELEGATE_CLIENT_ID"
+long = "shared-auth-delegate-client-id"
+type = "string"
+default = "zpkg-web"
+help = "Public Shared Auth delegation client identifier."
+
+[flags.shared-auth-audience]
+env = "SHARED_AUTH_AUDIENCE"
+long = "shared-auth-audience"
+type = "string"
+default = "zed-pkg"
+help = "Expected Shared Auth audience."
+
+[flags.shared-auth-scopes]
+env = "SHARED_AUTH_SCOPES"
+long = "shared-auth-scopes"
+type = "string"
+default = "zpkg:account"
+help = "Comma- or whitespace-separated delegated scopes."

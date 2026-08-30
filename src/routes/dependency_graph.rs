@@ -369,8 +369,8 @@ async fn authorize_package(
 }
 
 fn api_base(state: &WebState) -> String {
-    let zed_api_url = std::env::var("ZED_API_URL").ok();
-    let public_registry_url = std::env::var("PUBLIC_REGISTRY_URL").ok();
+    let zed_api_url = crate::flags::var("ZED_API_URL").ok();
+    let public_registry_url = crate::flags::var("PUBLIC_REGISTRY_URL").ok();
     configured_api_base(
         state
             .browser_auth

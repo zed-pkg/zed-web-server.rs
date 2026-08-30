@@ -1,6 +1,6 @@
 [package]
 org = "zed-pkg"
-name = "zed-web-server.rs"
+name = "zed-web-server"
 version = "0.1.0"
 description = "Zed account console and registry web server with Maud, Axum, HTMX, Shared Auth PKCE, and read-only registry projections"
 license = "MIT"
