@@ -220,6 +220,10 @@ async fn connect_with_retry(url: &str, policy: DatabaseStartupPolicy) -> Option<
 
 /// Run the read-only MASH registry UI.
 pub async fn run() -> Result<()> {
+    if let Some(output) = crate::flags::process_control().map_err(anyhow::Error::msg)? {
+        print!("{output}");
+        return Ok(());
+    }
     let rust_log = crate::flags::var("RUST_LOG").unwrap_or_else(|_| "info".to_owned());
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_new(rust_log).unwrap_or_else(|_| "info".into()))
@@ -341,7 +345,7 @@ mod tests {
     #[test]
     fn executable_remains_a_thin_tokio_adapter() {
         let main = include_str!("main.rs");
-        assert!(main.lines().count() <= 12);
+        assert!(main.lines().count() <= 6);
         for lifecycle_symbol in [
             "DatabaseConnection",
             "PgPoolOptions",
