@@ -286,11 +286,11 @@ class ZedDependencyGraph extends HTMLElementBase {
               ${Object.entries(KIND_LABELS)
                 .map(
                   ([kind, label]) => `<label>
-                    <input type="checkbox" data-kind="${kind}" checked> ${label}
+                    <input type="checkbox" data-kind="${kind}"${this.enabledKinds.has(kind) ? " checked" : ""}> ${label}
                   </label>`
                 )
                 .join("")}
-              <label><input type="checkbox" data-control="optional" checked> Optional edges</label>
+              <label><input type="checkbox" data-control="optional"${this.includeOptional ? " checked" : ""}> Optional edges</label>
             </div>
           </details>
         </div>
