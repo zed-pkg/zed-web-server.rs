@@ -1,0 +1,45 @@
+name: dependency graph restored controls
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/dependency-graph-controls.yml
+      - assets/dependency-graph.js
+      - static/dependency-graph.js.br
+      - scripts/build-graph-assets.mjs
+      - tests/dependency-graph-controls.mjs
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/dependency-graph-controls.yml
+      - assets/dependency-graph.js
+      - static/dependency-graph.js.br
+      - scripts/build-graph-assets.mjs
+      - tests/dependency-graph-controls.mjs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-graph-controls-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  controls:
+    name: restored filter controls and asset parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+      - name: Verify initial shell controls for every filter combination
+        run: |
+          node --check assets/dependency-graph.js
+          node --test tests/dependency-graph-controls.mjs
+      - name: Verify released Brotli assets match sources
+        run: node scripts/build-graph-assets.mjs --check
