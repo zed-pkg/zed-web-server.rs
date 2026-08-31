@@ -13,6 +13,8 @@ url = "https://github.com/zed-pkg/zed-web-server.rs"
 
 [dependencies]
 "zed-pkg/zed-interfaces" = "^0.1.0"
+# zed-lib-core is the package authority and exports the zed-orm-core Rust crate.
+# Do not model that crate as a second Zed package/source.
 "zed-pkg/zed-lib-core" = "^0.1.0"
 
 [publish]
