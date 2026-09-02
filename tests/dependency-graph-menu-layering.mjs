@@ -53,3 +53,23 @@ test("wrapped edge filters stay inside the intentionally clipped graph shell", (
     "the right-aligned Download menu must not be moved by the filter repair",
   );
 });
+
+test("narrow Download menu stays right-aligned inside a bounded full-width row", () => {
+  const narrowMedia = integrationCss.slice(
+    integrationCss.indexOf("@media (max-width: 500px)"),
+    integrationCss.indexOf("@media (prefers-reduced-motion: reduce)"),
+  );
+  assert.ok(narrowMedia, "the narrow-screen media block must exist");
+  assert.match(
+    narrowMedia,
+    /\.dg-export-menu\s*\{[^}]*flex\s*:\s*1\s+1\s+100%\s*;[^}]*min-width\s*:\s*0\s*;[^}]*margin-left\s*:\s*0\s*;/s,
+  );
+  assert.match(
+    narrowMedia,
+    /\.dg-export-menu\s*>\s*summary\s*\{[^}]*display\s*:\s*flex\s*;[^}]*width\s*:\s*max-content\s*;[^}]*margin-left\s*:\s*auto\s*;/s,
+  );
+  assert.match(
+    narrowMedia,
+    /\.dg-export-menu\s*>\s*div\s*\{[^}]*right\s*:\s*0\s*;[^}]*min-width\s*:\s*min\(230px,\s*calc\(100vw\s*-\s*32px\)\)\s*;[^}]*max-width\s*:\s*calc\(100vw\s*-\s*32px\)\s*;[^}]*box-sizing\s*:\s*border-box\s*;/s,
+  );
+});
