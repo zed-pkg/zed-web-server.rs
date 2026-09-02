@@ -278,6 +278,20 @@ zed-dependency-graph {
   pointer-events: none;
 }
 
+/*
+ * The base component right-aligns both popovers. Edge filters can wrap to the
+ * left edge of the query toolbar; right alignment then places their checkbox
+ * hit targets outside the intentionally clipped graph shell. Keep the filter
+ * panel inside its owning edge while preserving the Download menu's alignment.
+ */
+.dg-filter-panel {
+  right: auto;
+  left: 0;
+  min-width: min(230px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  box-sizing: border-box;
+}
+
 @media (max-width: 720px) {
   .dg-visual-search {
     top: 10px;
