@@ -1,4 +1,5 @@
 /target
+/.zed/
 
 # Local secrets. Credentials enter this repo only as sops ciphertext under
 # env/enc/*.env.enc. Plaintext never gets committed.

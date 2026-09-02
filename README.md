@@ -55,7 +55,18 @@ still boots and serves every page with a "registry offline" banner and empty
 states — useful for UI work with zero infrastructure and safer than accepting a
 write-capable browser-facing credential.
 
-## Configuration (env)
+## Configuration (CLI and environment)
+
+The process resolves non-secret settings through the pinned
+[flags-2-env](https://github.com/flags-2-env/flags-2-env) Rust binding before
+tracing, network, or database effects. Every option maps to the environment
+variable in [`.cli-flags.toml`](.cli-flags.toml); command-line values take
+precedence, and unknown options fail closed. Run `zed-web-server --help` for
+the audited option list.
+
+`DATABASE_URL`, `ZED_SESSION_SIGNING_SECRET`, and
+`SHARED_AUTH_HANDOFF_CLIENT_SECRET` remain environment-only and deliberately
+have no command-line form.
 
 | Var | Default |
 | --- | --- |
@@ -83,7 +94,7 @@ documented in [`docs/shared-auth/README.md`](docs/shared-auth/README.md).
 DATABASE_URL=postgres://zed_web_ro:...@localhost:5432/zed cargo run
 
 # or with no infrastructure at all (offline mode)
-cargo run
+cargo run -- --bind-addr 127.0.0.1:8081 --rust-log info
 ```
 
 `static/htmx.min.js` is vendored (htmx 2) so the UI has zero CDN

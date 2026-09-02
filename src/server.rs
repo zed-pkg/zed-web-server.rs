@@ -36,9 +36,9 @@ impl DatabaseStartupPolicy {
     }
 
     fn from_env() -> Self {
-        let max_connections = std::env::var("DB_MAX_CONNECTIONS").ok();
-        let statement_timeout_ms = std::env::var("DB_STATEMENT_TIMEOUT_MS").ok();
-        let max_wait_secs = std::env::var("DB_CONNECT_MAX_WAIT_SECS").ok();
+        let max_connections = crate::flags::var("DB_MAX_CONNECTIONS").ok();
+        let statement_timeout_ms = crate::flags::var("DB_STATEMENT_TIMEOUT_MS").ok();
+        let max_wait_secs = crate::flags::var("DB_CONNECT_MAX_WAIT_SECS").ok();
         Self::from_values(
             max_connections.as_deref(),
             statement_timeout_ms.as_deref(),
@@ -65,7 +65,7 @@ fn trimmed_base_url(value: Option<&str>) -> Option<String> {
 }
 
 fn required_env(name: &str) -> Result<String> {
-    let value = std::env::var(name).with_context(|| format!("{name} is required"))?;
+    let value = crate::flags::var(name).with_context(|| format!("{name} is required"))?;
     let value = value.trim().to_owned();
     if value.is_empty() {
         bail!("{name} cannot be empty");
@@ -129,7 +129,7 @@ fn browser_auth_config(
         return Ok(None);
     };
     let shared_auth_public_url =
-        trimmed_base_url(std::env::var("SHARED_AUTH_PUBLIC_URL").ok().as_deref())
+        trimmed_base_url(crate::flags::var("SHARED_AUTH_PUBLIC_URL").ok().as_deref())
             .unwrap_or_else(|| shared_auth_url.clone());
     let session_signing_secret = required_env("ZED_SESSION_SIGNING_SECRET")?;
     if session_signing_secret.len() < 32 {
@@ -140,16 +140,17 @@ fn browser_auth_config(
         shared_auth_url,
         shared_auth_public_url,
         public_origin: public_origin.to_owned(),
-        api_url: trimmed_base_url(std::env::var("ZED_API_URL").ok().as_deref())
+        api_url: trimmed_base_url(crate::flags::var("ZED_API_URL").ok().as_deref())
             .unwrap_or_else(|| "http://127.0.0.1:8080".to_owned()),
-        handoff_client_id: std::env::var("SHARED_AUTH_HANDOFF_CLIENT_ID")
+        handoff_client_id: crate::flags::var("SHARED_AUTH_HANDOFF_CLIENT_ID")
             .unwrap_or_else(|_| "zpkg".to_owned()),
         handoff_client_secret: required_env("SHARED_AUTH_HANDOFF_CLIENT_SECRET")?,
-        delegate_client_id: std::env::var("SHARED_AUTH_DELEGATE_CLIENT_ID")
+        delegate_client_id: crate::flags::var("SHARED_AUTH_DELEGATE_CLIENT_ID")
             .unwrap_or_else(|_| "zpkg-web".to_owned()),
-        audience: std::env::var("SHARED_AUTH_AUDIENCE").unwrap_or_else(|_| "zed-pkg".to_owned()),
+        audience: crate::flags::var("SHARED_AUTH_AUDIENCE")
+            .unwrap_or_else(|_| "zed-pkg".to_owned()),
         scopes: parse_scopes(
-            &std::env::var("SHARED_AUTH_SCOPES").unwrap_or_else(|_| "zpkg:account".to_owned()),
+            &crate::flags::var("SHARED_AUTH_SCOPES").unwrap_or_else(|_| "zpkg:account".to_owned()),
         )?,
         session_signing_secret,
         session_cookie_name: if secure_cookies {
@@ -219,13 +220,17 @@ async fn connect_with_retry(url: &str, policy: DatabaseStartupPolicy) -> Option<
 
 /// Run the read-only MASH registry UI.
 pub async fn run() -> Result<()> {
-    dotenvy::dotenv().ok();
+    if let Some(output) = crate::flags::process_control().map_err(anyhow::Error::msg)? {
+        print!("{output}");
+        return Ok(());
+    }
+    let rust_log = crate::flags::var("RUST_LOG").unwrap_or_else(|_| "info".to_owned());
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_env_filter(EnvFilter::try_new(rust_log).unwrap_or_else(|_| "info".into()))
         .init();
 
     let policy = DatabaseStartupPolicy::from_env();
-    let database = match std::env::var("DATABASE_URL") {
+    let database = match crate::flags::var("DATABASE_URL") {
         Ok(url) => connect_with_retry(&url, policy).await,
         Err(_) => {
             tracing::warn!("DATABASE_URL not set; serving in offline mode");
@@ -234,9 +239,10 @@ pub async fn run() -> Result<()> {
     };
 
     let public_origin = normalize_origin(
-        &std::env::var("PUBLIC_BASE_URL").unwrap_or_else(|_| "http://localhost:8081".to_owned()),
+        &crate::flags::var("PUBLIC_BASE_URL")
+            .unwrap_or_else(|_| "http://localhost:8081".to_owned()),
     )?;
-    let shared_auth_url = trimmed_base_url(std::env::var("SHARED_AUTH_URL").ok().as_deref());
+    let shared_auth_url = trimmed_base_url(crate::flags::var("SHARED_AUTH_URL").ok().as_deref());
     let browser_auth = browser_auth_config(shared_auth_url.clone(), &public_origin)?;
 
     let state = Arc::new(WebState {
@@ -249,7 +255,7 @@ pub async fn run() -> Result<()> {
         browser_auth,
         http: crate::proxy::client(),
     });
-    let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_owned());
+    let bind_addr = crate::flags::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_owned());
 
     let app = crate::routes::router(state);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;

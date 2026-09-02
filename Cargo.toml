@@ -19,7 +19,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 axum = "0.8"
-dotenvy = "0.15"
+flags2env = { version = "0.1.0", git = "https://github.com/flags-2-env/flags-2-env", rev = "d7bad9ea7dfc657653368237e08903514cdca1ec" }
 http-body = "1"
 maud = "0.27"
 # No default features: no auto-redirects wanted (policy is set to none at
@@ -29,7 +29,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tempfile = "3"
 tokio = { version = "1", features = ["full"] }
+toml = "0.8"
 tower-http = { version = "0.6", features = ["trace", "fs", "set-header", "timeout", "catch-panic"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
