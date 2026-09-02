@@ -1,0 +1,55 @@
+name: dependency graph restored controls
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/dependency-graph-controls.yml
+      - assets/dependency-graph.js
+      - assets/dependency-graph.css
+      - static/dependency-graph.js.br
+      - static/dependency-graph.css.br
+      - static/dependency-graph-insights.css
+      - scripts/build-graph-assets.mjs
+      - tests/dependency-graph-controls.mjs
+      - tests/dependency-graph-menu-layering.mjs
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/dependency-graph-controls.yml
+      - assets/dependency-graph.js
+      - assets/dependency-graph.css
+      - static/dependency-graph.js.br
+      - static/dependency-graph.css.br
+      - static/dependency-graph-insights.css
+      - scripts/build-graph-assets.mjs
+      - tests/dependency-graph-controls.mjs
+      - tests/dependency-graph-menu-layering.mjs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-graph-controls-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  controls:
+    name: restored filter controls and pointer-safe menus
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+      - name: Verify initial controls and popover geometry
+        run: |
+          node --check assets/dependency-graph.js
+          node --test \
+            tests/dependency-graph-controls.mjs \
+            tests/dependency-graph-menu-layering.mjs
+      - name: Verify released Brotli assets match sources
+        run: node scripts/build-graph-assets.mjs --check
