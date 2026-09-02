@@ -5,17 +5,23 @@ on:
     paths:
       - .github/workflows/dependency-graph-controls.yml
       - assets/dependency-graph.js
+      - assets/dependency-graph.css
       - static/dependency-graph.js.br
+      - static/dependency-graph.css.br
       - scripts/build-graph-assets.mjs
       - tests/dependency-graph-controls.mjs
+      - tests/dependency-graph-menu-layering.mjs
   push:
     branches: [main]
     paths:
       - .github/workflows/dependency-graph-controls.yml
       - assets/dependency-graph.js
+      - assets/dependency-graph.css
       - static/dependency-graph.js.br
+      - static/dependency-graph.css.br
       - scripts/build-graph-assets.mjs
       - tests/dependency-graph-controls.mjs
+      - tests/dependency-graph-menu-layering.mjs
   workflow_dispatch:
 
 permissions:
@@ -37,9 +43,11 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version-file: .node-version
-      - name: Verify initial shell controls for every filter combination
+      - name: Verify initial controls and menu layering
         run: |
           node --check assets/dependency-graph.js
-          node --test tests/dependency-graph-controls.mjs
+          node --test \
+            tests/dependency-graph-controls.mjs \
+            tests/dependency-graph-menu-layering.mjs
       - name: Verify released Brotli assets match sources
         run: node scripts/build-graph-assets.mjs --check
