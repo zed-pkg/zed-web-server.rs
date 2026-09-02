@@ -1,0 +1,84 @@
+name: materialize reviewed graph menu layering repair
+
+on:
+  push:
+    branches: [agent/den-3478-restore-filter-controls]
+    paths: [.github/workflows/materialize-graph-menu-layering.yml]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: materialize-graph-menu-layering
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: agent/den-3478-restore-filter-controls
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+      - name: Raise popover parents above later graph siblings
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git hash-object assets/dependency-graph.css)" = f98fa260fc021c905b155799f6794c7722bdac8c
+          node --input-type=module <<'JS'
+          import assert from "node:assert/strict";
+          import { readFileSync, writeFileSync } from "node:fs";
+
+          const path = "assets/dependency-graph.css";
+          let css = readFileSync(path, "utf8");
+          const anchor = `.dg-header,
+          .dg-toolbar,
+          .dg-querybar,
+          .dg-status,
+          .dg-state-fragment,
+          .dg-notice,
+          .dg-degradation,
+          .dg-query-summary,
+          .dg-stage,
+          .dg-legend,
+          .dg-accessible {
+            position: relative;
+            z-index: 1;
+          }
+          `;
+          const replacement = `${anchor}
+          /*
+           * Popovers are absolutely positioned children. Their parent stacking
+           * contexts must clear later status and graph siblings, otherwise the
+           * visible checkboxes are covered and cannot receive pointer input.
+           */
+          .dg-toolbar { z-index: 4; }
+          .dg-querybar { z-index: 3; }
+          `;
+          assert.equal(css.split(anchor).length, 2, "stacking anchor must be unique");
+          css = css.replace(anchor, replacement);
+          writeFileSync(path, css);
+          JS
+          node scripts/build-graph-assets.mjs
+          node --test \
+            tests/dependency-graph-controls.mjs \
+            tests/dependency-graph-menu-layering.mjs
+          node tests/dependency-graph.mjs
+          node scripts/check-claritas-component-bundle.mjs
+          node scripts/build-graph-assets.mjs --check
+          git diff --check
+          test "$(git diff --name-only | sort)" = "$(printf '%s\n' assets/dependency-graph.css static/dependency-graph.css.br | sort)"
+      - name: Commit only the repair and remove this materializer
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm -- .github/workflows/materialize-graph-menu-layering.yml
+          git add -- assets/dependency-graph.css static/dependency-graph.css.br
+          git diff --cached --check
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix(graph): layer filter popovers above graph content'
+          git push origin HEAD:refs/heads/agent/den-3478-restore-filter-controls
