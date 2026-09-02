@@ -33,6 +33,7 @@ mod home;
 mod package;
 mod search;
 mod session_status;
+mod storage;
 
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
      connect-src 'self'; img-src 'self' data: https:; frame-ancestors 'none'; base-uri 'none'; \
@@ -44,6 +45,13 @@ const MARKETING_AUTH_ENTRY: &str = "/auth/sign-in?return_to=%2Fdashboard";
 // deployment from being hidden behind a year-long cached copy of an older UI.
 const GRAPH_ASSET_CACHE: &str = "public, max-age=300, must-revalidate";
 const DEPENDENCY_GRAPH_JS: &[u8] = include_bytes!("../../assets/dependency-graph.js");
+/// The service worker is served from the origin root, not from `/static`.
+///
+/// A worker's default scope is the directory it was served from, so a copy at
+/// `/static/sw.js` could only ever control `/static/*` — useless for the
+/// offline navigation fallback. Serving the same bytes at `/sw.js` gives it
+/// root scope without needing a `Service-Worker-Allowed` header.
+const SERVICE_WORKER_JS: &[u8] = include_bytes!("../../static/sw.js");
 const DEPENDENCY_GRAPH_JS_BR: &[u8] = include_bytes!("../../static/dependency-graph.js.br");
 const DEPENDENCY_GRAPH_CSS: &[u8] = include_bytes!("../../assets/dependency-graph.css");
 const DEPENDENCY_GRAPH_CSS_BR: &[u8] = include_bytes!("../../static/dependency-graph.css.br");
@@ -196,6 +204,42 @@ async fn dependency_graph_js(headers: HeaderMap) -> Response {
     )
 }
 
+/// `GET /sw.js` — the offline shell worker, at root scope.
+///
+/// Revalidated rather than cached hard: a worker pinned for a year would keep
+/// serving a superseded precache list long after a deploy, and the worker is
+/// the one asset that cannot be corrected by shipping a new page.
+async fn service_worker(request_headers: HeaderMap) -> Response {
+    // Deliberately not routed through `graph_asset`: that helper labels the
+    // response `Content-Encoding: br` whenever the client accepts Brotli, and
+    // no Brotli variant of this file is built. Serving identity bytes under a
+    // Brotli label would break the worker for every modern browser.
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/javascript; charset=utf-8"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(GRAPH_ASSET_CACHE),
+    );
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&SERVICE_WORKER_JS.len().to_string())
+            .expect("a static asset length is a valid Content-Length"),
+    );
+    let etag = format!("\"{:016x}\"", fnv1a(SERVICE_WORKER_JS));
+    if let Ok(value) = HeaderValue::from_str(&etag) {
+        headers.insert(header::ETAG, value);
+    }
+    if if_none_match_matches(&request_headers, &etag) {
+        // Reuses the shared 304 body so representation metadata survives the
+        // conditional response without smuggling a payload alongside it.
+        return not_modified_with_representation_metadata(headers);
+    }
+    (headers, SERVICE_WORKER_JS).into_response()
+}
+
 async fn dependency_graph_css(headers: HeaderMap) -> Response {
     graph_asset(
         &headers,
@@ -275,6 +319,7 @@ pub fn router(state: Arc<WebState>) -> Router {
         .route("/signup", get(marketing_auth_entry))
         .route("/dashboard", get(marketing_dashboard))
         .route("/healthz", get(health::healthz))
+        .route("/sw.js", get(service_worker))
         .route(
             "/graph-assets/dependency-graph.js",
             get(dependency_graph_js),
@@ -325,6 +370,9 @@ pub fn router(state: Arc<WebState>) -> Router {
             get(console::package_settings),
         )
         .route("/settings", get(console::user_settings))
+        // Provider-agnostic artifact storage console. Reads the registry API's
+        // own report rather than embedding any vendor dashboard.
+        .route("/console/storage", get(storage::console))
         // Exact, credentialed CORS surface for the static marketing header.
         // It returns only a boolean, dashboard URL, and coarse recheck hint.
         .route(
@@ -476,6 +524,13 @@ mod tests {
         assert!(CONTENT_SECURITY_POLICY.contains("connect-src 'self'"));
         assert!(!CONTENT_SECURITY_POLICY.contains("unsafe-inline"));
         assert!(!CONTENT_SECURITY_POLICY.contains("claritas"));
+        // The installable shell adds a manifest and a service worker. Both fall
+        // back to `default-src 'self'` (manifest-src directly, worker-src via
+        // child-src then script-src), so the policy needs no widening — this
+        // asserts the fallback that makes that true has not been narrowed.
+        assert!(CONTENT_SECURITY_POLICY.contains("default-src 'self'"));
+        assert!(!CONTENT_SECURITY_POLICY.contains("manifest-src"));
+        assert!(!CONTENT_SECURITY_POLICY.contains("worker-src"));
     }
 
     #[test]

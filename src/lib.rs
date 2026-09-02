@@ -60,6 +60,8 @@
 //! startup, and code-first models in a server crate never become a second schema
 //! authority.
 
+// pub mod four_transports;  // not built: see docs/four-transports.md#status
+pub mod web_api_plane;
 mod browser_auth;
 mod proxy;
 mod routes;

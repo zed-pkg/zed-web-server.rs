@@ -1,0 +1,8 @@
+<!-- Maskable app icon: the same Z mark, inset to the 40% safe zone so a
+     launcher that crops to a circle or a squircle never clips a stroke. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="zed-pkg">
+  <rect width="128" height="128" fill="#0A0A0B"/>
+  <rect x="38" y="40" width="52" height="12" fill="#FF7A1A"/>
+  <polygon points="78,52 90,52 50,76 38,76" fill="#FF7A1A"/>
+  <rect x="38" y="76" width="52" height="12" fill="#8FD3F4"/>
+</svg>

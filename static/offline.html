@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Offline · zed-pkg</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>You are offline</h1>
+      <p class="lede">
+        The registry could not be reached. Package pages are never cached on
+        your device, because what you are allowed to see depends on who you are
+        signed in as.
+      </p>
+      <p class="lede">
+        Installs do not need this page: <code class="mono">zed install</code>
+        resolves from your lockfile and the local store, and
+        <code class="mono">zed local register</code> makes a checkout on this
+        machine resolvable with no network at all.
+      </p>
+      <p><a class="button" href="/">Try again</a></p>
+    </main>
+  </body>
+</html>

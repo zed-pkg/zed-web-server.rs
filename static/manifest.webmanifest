@@ -1,0 +1,33 @@
+{
+  "name": "zed-pkg registry",
+  "short_name": "zed-pkg",
+  "description": "Universal package registry and dependency studio.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "browser"],
+  "orientation": "any",
+  "background_color": "#050506",
+  "theme_color": "#050506",
+  "categories": ["developer", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    { "name": "Search packages", "url": "/search" },
+    { "name": "Dashboard", "url": "/dashboard" },
+    { "name": "Storage", "url": "/console/storage" }
+  ]
+}
