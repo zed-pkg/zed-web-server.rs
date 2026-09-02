@@ -333,6 +333,30 @@ zed-dependency-graph {
     width: 130px;
     height: 80px;
   }
+
+  /*
+   * A narrow wrapped toolbar can otherwise leave the Download details element
+   * on an intrinsically wide flex line. Give it a bounded full-width row so
+   * its right-aligned panel remains inside the clipped graph shell.
+   */
+  .dg-export-menu {
+    flex: 1 1 100%;
+    min-width: 0;
+    margin-left: 0;
+  }
+
+  .dg-export-menu > summary {
+    display: flex;
+    width: max-content;
+    margin-left: auto;
+  }
+
+  .dg-export-menu > div {
+    right: 0;
+    min-width: min(230px, calc(100vw - 32px));
+    max-width: calc(100vw - 32px);
+    box-sizing: border-box;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
