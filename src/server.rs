@@ -166,11 +166,14 @@ fn browser_auth_config(
     }))
 }
 
-/// Open and verify one Postgres pool through the canonical opaque read seam.
+/// P1 is selected here for approved registry views; open and verify one Postgres pool through the
+/// canonical opaque read seam.
 ///
 /// The `zed-orm-core` boundary applies `default_transaction_read_only=on` to
 /// every connection and verifies that PostgreSQL accepted the setting before
-/// returning a `ReadContext` to application state.
+/// returning a `ReadContext` to application state. Routes that need a mutation or policy outside
+/// the named read surface use P2 through `zed-api-server`; this connection must never become their
+/// fallback. P3 and P4 remain disabled until `docs/web-api-data-access.md` is revised and reviewed.
 async fn try_connect(url: &str, policy: DatabaseStartupPolicy) -> Result<ReadContext> {
     let connect_policy = ConnectPolicy::default()
         .with_max_connections(policy.max_connections)
