@@ -108,38 +108,43 @@ pub async fn exact_project_role(
 
 const CUSTOMER_REALM: &str = "customer";
 
-/// Resolve a valid product session into the local registry projection.
-///
-/// Every failure resolves to anonymous. A signed-in user seeing a signed-out
-/// page is visible; accidentally disclosing a private row is not.
-pub async fn resolve(state: &WebState, headers: &HeaderMap) -> Viewer {
+/// Account pages must distinguish an unavailable projection from a new user.
+/// Otherwise a failed membership read would offer first-time enrollment to an
+/// existing member. These errors deliberately contain no identity or DB data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountResolutionError {
+    DatabaseUnavailable,
+    ProjectionUnavailable,
+}
+
+pub async fn resolve_account(
+    state: &WebState,
+    headers: &HeaderMap,
+) -> Result<Viewer, AccountResolutionError> {
     let Some(subject) = crate::browser_auth::session_subject(state, headers) else {
-        return Viewer::Anonymous;
+        return Ok(Viewer::Anonymous);
     };
     let Some(db) = &state.db else {
-        return Viewer::Anonymous;
+        return Err(AccountResolutionError::DatabaseUnavailable);
     };
 
-    let user = match zed_orm_core::read::user_by_subject(db, CUSTOMER_REALM, subject).await {
-        Ok(Some(user)) => user,
-        Ok(None) => {
-            tracing::debug!(%subject, "no registry user projection for Shared Auth principal");
-            return Viewer::Anonymous;
-        }
-        Err(error) => {
-            tracing::warn!(%error, "registry user lookup failed");
-            return Viewer::Anonymous;
-        }
-    };
-
+    let user = zed_orm_core::read::user_by_subject(db, CUSTOMER_REALM, subject)
+        .await
+        .map_err(|_| AccountResolutionError::ProjectionUnavailable)?
+        .ok_or(AccountResolutionError::ProjectionUnavailable)?;
     let orgs = zed_orm_core::read::orgs_for_user(db, user.id)
         .await
-        .unwrap_or_else(|error| {
-            tracing::warn!(%error, "org membership lookup failed");
-            Vec::new()
-        });
+        .map_err(|_| AccountResolutionError::ProjectionUnavailable)?;
 
-    Viewer::SignedIn(Box::new(SignedInViewer { user, orgs }))
+    Ok(Viewer::SignedIn(Box::new(SignedInViewer { user, orgs })))
+}
+
+/// Public browsing may fall back to anonymous data. Account entry points use
+/// [`resolve_account`] to retain an actionable unavailable state.
+pub async fn resolve(state: &WebState, headers: &HeaderMap) -> Viewer {
+    resolve_account(state, headers)
+        .await
+        .unwrap_or(Viewer::Anonymous)
 }
 
 #[cfg(test)]

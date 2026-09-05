@@ -30,6 +30,7 @@ mod dependency_graph_fragments;
 mod dependency_graph_page;
 mod health;
 mod home;
+mod onboarding;
 mod package;
 mod search;
 mod session_status;
@@ -205,19 +206,19 @@ async fn dependency_graph_css(headers: HeaderMap) -> Response {
     )
 }
 
-/// `/dashboard` is intentionally organization-neutral. Resolve the product
-/// viewer server-side and send an existing member to the first visible org. A
-/// signed-in user without an org gets the personal settings/onboarding surface;
-/// an anonymous browser begins the PKCE/BFF ceremony.
+/// Keep the entry point organization-neutral. The user explicitly chooses a
+/// workspace; a bounded membership listing must not choose their tenant.
 async fn marketing_dashboard(State(state): State<Arc<WebState>>, headers: HeaderMap) -> Response {
-    let viewer = crate::session::resolve(&state, &headers).await;
-    if !viewer.is_signed_in() {
-        return Redirect::temporary(MARKETING_AUTH_ENTRY).into_response();
-    }
-    if let Some(org) = viewer.orgs().first() {
-        return Redirect::temporary(&format!("/dashboard/{}", org.slug)).into_response();
-    }
-    Redirect::temporary("/settings").into_response()
+    let response = match crate::session::resolve_account(&state, &headers).await {
+        Ok(crate::session::Viewer::Anonymous) => {
+            Redirect::temporary(MARKETING_AUTH_ENTRY).into_response()
+        }
+        Ok(crate::session::Viewer::SignedIn(_)) => {
+            Redirect::temporary("/onboarding/organization").into_response()
+        }
+        Err(_) => return onboarding::organization(State(state), headers).await,
+    };
+    onboarding::private_response(response)
 }
 
 /// Convert the dedicated same-origin Shared Auth UI prefix into the legacy
@@ -274,6 +275,7 @@ pub fn router(state: Arc<WebState>) -> Router {
         .route("/login", get(marketing_auth_entry))
         .route("/signup", get(marketing_auth_entry))
         .route("/dashboard", get(marketing_dashboard))
+        .merge(onboarding::router())
         .route("/healthz", get(health::healthz))
         .route(
             "/graph-assets/dependency-graph.js",

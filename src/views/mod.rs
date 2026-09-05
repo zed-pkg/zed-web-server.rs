@@ -3,5 +3,6 @@
 pub mod components;
 pub mod dependency_graph;
 pub mod layout;
+pub mod onboarding;
 
 pub use layout::{PageContext, layout};
