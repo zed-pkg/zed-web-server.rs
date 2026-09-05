@@ -110,6 +110,15 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked --all-targets
 ```
 
+The browser's individual and organization onboarding flows begin at
+`/onboarding`. They share the canonical Shared Auth customer identity and API
+write boundary; see [the browser boundary](docs/shared-auth-pkce-bff.md).
+
+The browser mutation protocol has an executable finite model, real Rust
+conformance tests, and negative controls. Run
+`node formal/check.mjs /absolute/path/to/fmctl`; see
+[formal verification](formal/README.md) for the pinned runners and proof limits.
+
 ## License
 
 MIT

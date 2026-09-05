@@ -1,0 +1,74 @@
+name: Formal browser mutation safety
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: formal-browser-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation-safety:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: zed-web-server.rs
+          persist-credentials: false
+      # The standalone ORESoftware/formal-methods.rs repository is private.
+      # This is the same immutable public incubator revision used by the Zed
+      # API gate, so forks need no new cross-repository credentials. The local
+      # gate is also tested with the standalone runner; see formal/README.md.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: opto-sync/opto-sync-clients
+          ref: c2146ef9f054d24e1488c216547852aa148285cf
+          path: formal-tools
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: |
+            zed-web-server.rs
+            formal-tools/tools/fmctl
+      - name: Build the pinned fmctl process boundary
+        run: cargo build --locked --manifest-path formal-tools/tools/fmctl/Cargo.toml --bin fmctl
+      - name: Check every finite Rust outcome and invalid session boundary
+        working-directory: zed-web-server.rs
+        run: cargo test --locked --lib mutation_conformance
+      - name: Verify, replay, and reject negative controls
+        working-directory: zed-web-server.rs
+        run: node formal/check.mjs "$GITHUB_WORKSPACE/formal-tools/tools/fmctl/target/debug/fmctl"
+      - name: Upload bounded verifier and replay evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: browser-mutation-formal-evidence
+          path: |
+            zed-web-server.rs/formal/
+            zed-web-server.rs/.formal-artifacts/fmctl/*.json
+            zed-web-server.rs/.formal-artifacts/fmctl/*.log
+            zed-web-server.rs/.formal-artifacts/*.itf.json
+            zed-web-server.rs/.formal-artifacts/negative-controls/*.qnt
+            zed-web-server.rs/.formal-artifacts/negative-controls/*.toml
+            zed-web-server.rs/.formal-artifacts/negative-controls/*.json
+            zed-web-server.rs/.formal-artifacts/negative-controls/*.log
+            zed-web-server.rs/.formal-artifacts/negative-controls/verification/fmctl/*.json
+            zed-web-server.rs/.formal-artifacts/negative-controls/verification/fmctl/*.log
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

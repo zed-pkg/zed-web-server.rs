@@ -229,3 +229,70 @@ main h2 { margin: 28px 0 12px; font-size: 1.1rem; color: var(--blue); }
   .nav-links { margin-left: 0; }
   .menu-panel { right: auto; left: 0; }
 }
+
+/* Account journeys work without client-side script or stored credentials. */
+.onboarding-hero { max-width: 720px; margin: 48px 0 28px; }
+.onboarding-hero h1 {
+  font-size: clamp(1.8rem, 4.8vw, 2.8rem);
+  line-height: 1.18;
+  letter-spacing: -0.035em;
+  margin: 12px 0 20px;
+  text-wrap: balance;
+}
+.onboarding-hero .lede { font-size: 1.05rem; line-height: 1.8; }
+.eyebrow {
+  color: var(--orange);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.onboarding-back { display: inline-block; margin-top: 24px; }
+.journey-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  margin-bottom: 24px;
+}
+.journey-card {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 12px;
+  padding: 28px;
+  margin: 0;
+  border-top: 3px solid var(--orange);
+}
+.journey-card:nth-child(2) { border-top-color: var(--blue); }
+.journey-card h2 { color: var(--text); margin: 8px 0 0; font-size: 1.35rem; }
+.journey-card > p { color: var(--muted); }
+.journey-features { margin: 12px 0 20px; padding-left: 20px; }
+.journey-features li + li { margin-top: 8px; }
+.journey-card .button { margin-top: auto; }
+.onboarding-status { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.onboarding-notice {
+  border: 1px solid var(--orange);
+  border-left-width: 4px;
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 24px;
+}
+.field-help { font-size: 0.8rem; color: var(--muted); }
+a:focus-visible, button:focus-visible, summary:focus-visible,
+input:focus-visible, select:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 4px;
+}
+.stack input, .stack select { min-width: 0; }
+.org-list li, .journey-card, .onboarding-notice { overflow-wrap: anywhere; }
+
+@media (max-width: 640px) {
+  .journey-grid { grid-template-columns: minmax(0, 1fr); }
+  .journey-card { padding: 22px; }
+  .onboarding-hero { margin-top: 28px; }
+  .journey-card .button { width: 100%; text-align: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+}

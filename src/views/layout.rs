@@ -120,6 +120,8 @@ fn header(viewer: &Viewer, context: &PageContext) -> Markup {
                         (create_menu(viewer, context))
                         (account_menu(viewer))
                     } @else {
+                        a href="/onboarding/individual" { "Individuals" }
+                        a href="/onboarding/organization" { "Organizations" }
                         a class="nav-cta" href="/shared-auth/auth/browser/sign-in" { "Sign in" }
                     }
                 }
@@ -163,7 +165,7 @@ fn create_menu(viewer: &Viewer, context: &PageContext) -> Markup {
                     a href={ "/orgs/" (slug) "/settings#new-package" } { "New package" }
                     div class="menu-sep" {}
                 }
-                a href="/settings#new-org" { "New organization" }
+                a href="/onboarding/organization" { "New organization" }
             }
         }
     }
@@ -200,6 +202,8 @@ fn account_menu(viewer: &Viewer) -> Markup {
                     }
                 }
                 div class="menu-sep" {}
+                a href="/onboarding/individual" { "Personal workspace" }
+                a href="/onboarding/organization" { "Choose organization" }
                 a href="/settings" { "User settings" }
                 form method="post" action="/shared-auth/auth/logout" {
                     button type="submit" class="menu-signout" { "Sign out" }

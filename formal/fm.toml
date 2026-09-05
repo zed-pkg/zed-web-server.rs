@@ -1,0 +1,51 @@
+schema_version = 1
+project = "zed-web-server"
+model = "browser-mutation-v1"
+language = "quint"
+spec = "formal/browser_mutation.qnt"
+main = "browser_mutation"
+init = "init"
+step = "step"
+invariants = ["mutation_safety"]
+witnesses = [
+  "applied_reached", "origin_rejected", "sign_in_reached",
+  "principal_change_rejected", "delegation_failure_keeps_rotation",
+  "api_failure_keeps_rotation", "api_redirect_is_rejected",
+]
+
+[toolchain]
+quint = "0.32.0"
+java = ">=17"
+node = "22"
+npx = "npx"
+
+[execution]
+timeout_seconds = 600
+max_output_bytes = 8388608
+artifacts_dir = ".formal-artifacts"
+
+[simulation]
+backend = "typescript"
+max_samples = 10000
+max_steps = 8
+
+[verification]
+backend = "tlc"
+exhaustive_finite_model = true
+
+[traces]
+format = "itf"
+model_based_testing_metadata = true
+backend = "typescript"
+seed = "0x734a1c3"
+count = 16
+max_steps = 8
+max_samples = 1000
+required_actions = ["init", "step"]
+
+[adapters.rust]
+strategy = "itf-json-driver"
+status = "active"
+command = ["node", "formal/replay.mjs"]
+observable_state = ["outcome", "refresh_called", "delegate_called", "api_called", "returned_cookie", "verified_cookie"]
+implementation = "Actual async BFF against loopback Shared Auth and registry API"

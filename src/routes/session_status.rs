@@ -108,7 +108,7 @@ pub async fn get(State(state): State<Arc<WebState>>, headers: HeaderMap) -> Resp
     let (may_be_authenticated, status, cookie_update) = match continuity {
         SessionContinuity::Anonymous(update) => (false, StatusCode::OK, update),
         SessionContinuity::Authenticated(update) => (true, StatusCode::OK, update),
-        SessionContinuity::Unavailable => (false, StatusCode::SERVICE_UNAVAILABLE, None),
+        SessionContinuity::Unavailable(update) => (false, StatusCode::SERVICE_UNAVAILABLE, update),
     };
     let database_unavailable = may_be_authenticated && state.db.is_none();
     let authenticated = if may_be_authenticated && !database_unavailable {
