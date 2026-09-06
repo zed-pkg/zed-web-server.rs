@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Build context is the parent source-graph directory used by the publish
 # workflow. Cargo.lock independently pins both cross-repository Rust inputs:
 #
@@ -51,4 +52,8 @@ ENV SOPS_SECRETS_FILE=/app/secrets/app.env
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8081/healthz || exit 1
+# ores-otel: in-process OTLP to the cluster collector. The *-sidecar.rs image is a separate loopback helper on 127.0.0.1:9090 — do not EXPOSE 4317/4318 or 9090.
+ENV OTEL_SERVICE_NAME=zed-web-server \
+    OTEL_EXPORTER_OTLP_ENDPOINT=http://dd-otel-collector.observability.svc.cluster.local:4318 \
+    RUST_LOG=info
 ENTRYPOINT ["/usr/local/bin/sops-entrypoint.sh", "/usr/local/bin/zed-web-server"]
