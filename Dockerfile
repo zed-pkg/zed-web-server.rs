@@ -56,4 +56,5 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 ENV OTEL_SERVICE_NAME=zed-web-server \
     OTEL_EXPORTER_OTLP_ENDPOINT=http://dd-otel-collector.observability.svc.cluster.local:4318 \
     RUST_LOG=info
-ENTRYPOINT ["/usr/local/bin/sops-entrypoint.sh", "/usr/local/bin/zed-web-server"]
+ENTRYPOINT ["/usr/local/bin/sops-entrypoint.sh"]
+CMD ["/usr/local/bin/zed-web-server"]
