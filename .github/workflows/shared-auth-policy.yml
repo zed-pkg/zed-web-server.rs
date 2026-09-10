@@ -1,0 +1,126 @@
+name: shared-auth policy
+
+on:
+  pull_request:
+    paths:
+      - '.shared-auth.toml'
+      - '.auth-shared.toml'
+      - '.ci/contracts/shared-auth-config.schema.json'
+      - '.github/workflows/shared-auth-policy.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.shared-auth.toml'
+      - '.auth-shared.toml'
+      - '.ci/contracts/shared-auth-config.schema.json'
+      - '.github/workflows/shared-auth-policy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shared-auth-policy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      # shared-auth/shared-auth-interfaces is private, so ordinary repository
+      # GITHUB_TOKEN cannot cross-checkout it. This checked-in file is evidence,
+      # not a second authority: its Git blob id must remain byte-identical to the
+      # reviewed upstream schema at authority commit 52b7ac7f... .
+      - name: Verify pinned Shared Auth schema evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object .ci/contracts/shared-auth-config.schema.json)" = \
+            "bed2e582e458e7023118ac5b3af583d2c0767e3e"
+
+      - name: Check out TJSV instance validator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ORESoftware/typespec-json-schema-validator
+          ref: 8bf7ebda4e35c0d11b5b5e5f865867bee4fc3085
+          path: .ci/tjsv
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.16.0'
+          package-manager-cache: false
+
+      - name: Parse canonical TOML and bind exact authority revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .shared-auth.toml
+          test ! -e .auth-shared.toml
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import tomllib
+
+          authority = '52b7ac7fbf0c7c169684f613eda923f3aa6c82e9'
+          path = pathlib.Path('.shared-auth.toml')
+          with path.open('rb') as source:
+              config = tomllib.load(source)
+
+          assert config.get('schema_version') == 1
+          compatibility = config.get('compatibility')
+          assert isinstance(compatibility, dict)
+          assert compatibility.get('repository') == 'https://github.com/shared-auth/shared-auth-interfaces'
+          assert compatibility.get('commit') == authority
+          assert 'range' not in compatibility
+
+          pathlib.Path('.ci/shared-auth-config.json').write_text(
+              json.dumps(config, sort_keys=True, separators=(',', ':')) + '\n',
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Validate consumer instance with TJSV fail-closed validator
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import {
+            SchemaResolver,
+            validateInstance,
+          } from './.ci/tjsv/src/instance-validator.mjs';
+
+          const schemaPath = '.ci/contracts/shared-auth-config.schema.json';
+          const collection = JSON.parse(readFileSync(schemaPath, 'utf8'));
+          const instance = JSON.parse(readFileSync('.ci/shared-auth-config.json', 'utf8'));
+          const resolver = new SchemaResolver();
+          const document = resolver.addDocument(collection, schemaPath);
+          const contract = collection.$defs?.SharedAuthConfigFile;
+          if (!contract) throw new Error('pinned schema evidence lacks $defs.SharedAuthConfigFile');
+          const result = validateInstance({
+            schema: contract,
+            instance,
+            resolver,
+            base: document.base,
+            formatAssertion: true,
+          });
+          if (!result.valid) {
+            console.error(JSON.stringify(result.errors, null, 2));
+            process.exit(1);
+          }
+          NODE
+
+      - name: Prove validation is read-only
+        run: git diff --exit-code HEAD
