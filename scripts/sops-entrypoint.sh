@@ -15,6 +15,11 @@
 # SOPS_AGE_KEY_FILE and the plaintext exists only in this process's memory.
 set -eu
 
+if [ "$#" -eq 0 ]; then
+  echo "sops-entrypoint: no command provided" >&2
+  exit 64
+fi
+
 : "${SOPS_SECRETS_FILE:=/app/secrets/app.env}"
 
 # No ciphertext baked in: run the command unchanged.
