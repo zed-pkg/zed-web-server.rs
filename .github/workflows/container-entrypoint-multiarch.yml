@@ -46,6 +46,12 @@ jobs:
         run: |
           set -euo pipefail
           sh -n scripts/sops-entrypoint.sh
+          set +e
+          no_command_output="$(SOPS_SECRETS_FILE=/tmp/not-present sh scripts/sops-entrypoint.sh 2>&1)"
+          no_command_status=$?
+          set -e
+          test "$no_command_status" -eq 64
+          test "$no_command_output" = "sops-entrypoint: no command provided"
           test "$(SOPS_SECRETS_FILE=/tmp/not-present sh scripts/sops-entrypoint.sh sh -c 'printf ok')" = "ok"
           set +e
           SOPS_SECRETS_FILE=/tmp/not-present sh scripts/sops-entrypoint.sh sh -c 'exit 23'
