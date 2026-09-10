@@ -1,0 +1,9 @@
+# Canonical Shared Auth consumer policy overlay.
+# Runtime endpoints, callback URLs, and credentials belong to RuntimeConfig / flags-2-env,
+# not this project policy file. Omitted policy sections inherit central Shared Auth defaults.
+
+schema_version = 1
+
+[compatibility]
+repository = "https://github.com/shared-auth/shared-auth-interfaces"
+commit = "52b7ac7fbf0c7c169684f613eda923f3aa6c82e9"
