@@ -1,0 +1,32 @@
+# Canonical Shared Auth frontend configuration v1.
+# Peer authorities: shared-auth/shared-auth-interfaces#49
+# Enforced with ORESoftware/typespec-json-schema-validator@4a5d049218adc2740d4cf78f612caf7f38f6f64c
+# Secret-free: runtime credentials remain in flags-2-env / RuntimeConfig / encrypted secret delivery.
+
+version = 1
+organization = "zed-pkg"
+domain = "zpkg.net"
+realm = "customer-auth"
+auth_origin = "https://auth.zpkg.net"
+callback_urls = ["https://app.zpkg.net/auth/callback/"]
+surfaces = ["mash"]
+
+[pages]
+login = "/login"
+signup = "/signup"
+recovery = "/password-recovery"
+
+[security]
+pkce_method = "S256"
+browser_session = "http-only-cookie"
+native_session = "os-secure-storage"
+minimum_assurance = "aal1"
+decision_mode = "availability-first"
+
+[bindings]
+authority_env = "SHARED_AUTH_BASE_URL"
+callback_env = "AUTH_CALLBACK_URL"
+
+[local]
+auth_origin = "http://127.0.0.1:8310"
+callback_urls = ["http://127.0.0.1:8410/auth/callback/"]
