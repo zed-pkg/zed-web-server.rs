@@ -51,7 +51,7 @@ while IFS='=' read -r key value; do
     '' | '#'* | sops_*) continue ;;
     *[!A-Za-z0-9_]* | [0-9]*) echo "sops-entrypoint: skipping invalid variable name" >&2; continue ;;
   esac
-  if [ -z "$(eval "printf '%s' \"\${$key+x}\"")" ]; then
+  if ! printenv "$key" >/dev/null 2>&1; then
     export "$key=$value"
   fi
 done <<EOF_SECRETS
