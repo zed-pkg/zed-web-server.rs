@@ -26,6 +26,21 @@ jobs:
       - name: Verify exact candidate
         shell: bash
         run: test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+      - name: Verify host and container Rust compiler authority
+        shell: python
+        run: |
+          import re
+          import tomllib
+          from pathlib import Path
+
+          toolchain = tomllib.loads(Path("rust-toolchain.toml").read_text())["toolchain"]["channel"]
+          dockerfile = Path("Dockerfile").read_text()
+          image = re.search(r"(?m)^FROM rust:([^\s]+) AS build$", dockerfile)
+          override = re.search(r"(?m)^ENV RUSTUP_TOOLCHAIN=([^\s]+)$", dockerfile)
+          assert image, "missing Rust build-stage image"
+          assert override, "missing RUSTUP_TOOLCHAIN build override"
+          assert image.group(1) == f"{toolchain}-slim-bookworm", (image.group(1), toolchain)
+          assert override.group(1) == toolchain, (override.group(1), toolchain)
       - name: Verify SOPS wrapper syntax and exit propagation
         shell: bash
         run: |
