@@ -19,7 +19,6 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 axum = "0.8"
-dotenvy = "0.15"
 http-body = "1"
 maud = "0.27"
 # No default features: no auto-redirects wanted (policy is set to none at
