@@ -8,6 +8,7 @@ allow_unknown = false
 # Server configuration must never implicitly consume a caller working-directory
 # .env file. Secret-bearing settings remain process/secret-store inputs only.
 [env]
+dotenv = false
 files = []
 ignore = [
   "DATABASE_URL",
