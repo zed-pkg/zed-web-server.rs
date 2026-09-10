@@ -1,0 +1,72 @@
+name: flags2env contract
+
+on:
+  pull_request:
+    paths:
+      - '.cli-flags.toml'
+      - 'scripts/validate-flags2env-contract.py'
+      - '.github/workflows/flags2env-contract.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.cli-flags.toml'
+      - 'scripts/validate-flags2env-contract.py'
+      - '.github/workflows/flags2env-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flags2env-contract-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Check out exact reviewed web candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.EXPECTED_SHA }}
+          persist-credentials: false
+      - name: Verify exact reviewed head
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Validate repository contract and negative cases
+        run: |
+          set -euo pipefail
+          python3 scripts/validate-flags2env-contract.py --self-test
+          python3 scripts/validate-flags2env-contract.py
+      - name: Check out production flags2env parser
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: flags-2-env/flags-2-env
+          ref: d7bad9ea7dfc657653368237e08903514cdca1ec
+          path: .deps/flags2env-production
+          persist-credentials: false
+      - name: Build and run production native audit
+        run: |
+          set -euo pipefail
+          make -C .deps/flags2env-production all
+          .deps/flags2env-production/build/flags2env audit .cli-flags.toml
+      - name: Check out reviewed forward parser
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: flags-2-env/flags-2-env
+          ref: 333c2ace93c362d274171ab0e0edf613d96a8e59
+          path: .deps/flags2env-forward
+          persist-credentials: false
+      - name: Run forward-compatibility native audit
+        run: |
+          set -euo pipefail
+          make -C .deps/flags2env-forward all
+          .deps/flags2env-forward/build/flags2env audit .cli-flags.toml
+      - name: Prove validation did not mutate reviewed source
+        run: git diff --exit-code HEAD -- .cli-flags.toml scripts/validate-flags2env-contract.py .github/workflows/flags2env-contract.yml
