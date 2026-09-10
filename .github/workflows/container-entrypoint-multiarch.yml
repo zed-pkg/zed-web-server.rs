@@ -37,6 +37,33 @@ jobs:
           status=$?
           set -e
           test "$status" -eq 23
+      - name: Verify decrypted values stay literal and explicit env wins
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/sops-entrypoint-regression"
+          mkdir -p "$work/bin"
+          : > "$work/app.env"
+          cat > "$work/bin/sops" <<'EOS'
+          #!/bin/sh
+          cat <<'EOF'
+          ZED_LITERAL=$(touch /tmp/zed-sops-should-not-exist)
+          ZED_EQUALS=left=right
+          ZED_OVERRIDE=from-secret
+          EOF
+          EOS
+          chmod +x "$work/bin/sops"
+          rm -f /tmp/zed-sops-should-not-exist
+          PATH="$work/bin:$PATH" \
+            SOPS_SECRETS_FILE="$work/app.env" \
+            SOPS_AGE_KEY=dummy \
+            ZED_OVERRIDE=from-orchestrator \
+            sh scripts/sops-entrypoint.sh sh -c '
+              test "$ZED_LITERAL" = "\$(touch /tmp/zed-sops-should-not-exist)"
+              test "$ZED_EQUALS" = "left=right"
+              test "$ZED_OVERRIDE" = "from-orchestrator"
+            '
+          test ! -e /tmp/zed-sops-should-not-exist
 
   docker-build:
     runs-on: ubuntu-24.04
