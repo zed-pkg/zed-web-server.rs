@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shared-auth/shared-auth-interfaces/schema/shared-auth-config.schema.json",
+  "$defs": {
+    "FactorMethod": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "FactorMethod",
+      "type": "string",
+      "enum": ["totp", "passkey", "security-key", "email-otp", "sms-otp", "backup-code"]
+    },
+    "AuthPage": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "AuthPage",
+      "type": "string",
+      "enum": ["sign-in", "sign-up", "challenge", "recovery", "consent", "error", "signed-out"]
+    },
+    "Theme": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "Theme",
+      "type": "string",
+      "enum": ["system", "light", "dark"]
+    },
+    "CommitRange": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "CommitRange",
+      "type": "object",
+      "properties": {
+        "base": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "head": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      },
+      "required": ["base", "head"],
+      "unevaluatedProperties": false
+    },
+    "ExactCompatibility": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "ExactCompatibility",
+      "type": "object",
+      "properties": {
+        "repository": {"type": "string", "const": "https://github.com/shared-auth/shared-auth-interfaces"},
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      },
+      "required": ["repository", "commit"],
+      "unevaluatedProperties": false
+    },
+    "RangeCompatibility": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "RangeCompatibility",
+      "type": "object",
+      "properties": {
+        "repository": {"type": "string", "const": "https://github.com/shared-auth/shared-auth-interfaces"},
+        "range": {"$ref": "CommitRange"}
+      },
+      "required": ["repository", "range"],
+      "unevaluatedProperties": false
+    },
+    "Compatibility": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "Compatibility",
+      "oneOf": [
+        {"$ref": "ExactCompatibility"},
+        {"$ref": "RangeCompatibility"}
+      ]
+    },
+    "TwoFactorPolicy": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "TwoFactorPolicy",
+      "type": "object",
+      "properties": {
+        "required": {"type": "boolean"},
+        "methods": {
+          "type": "array",
+          "items": {"$ref": "FactorMethod"},
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "ThreeFactorPolicy": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "ThreeFactorPolicy",
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "methods": {
+          "type": "array",
+          "items": {"$ref": "FactorMethod"},
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "FactorsPolicy": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "FactorsPolicy",
+      "type": "object",
+      "properties": {
+        "two_factor": {"$ref": "TwoFactorPolicy"},
+        "three_factor": {"$ref": "ThreeFactorPolicy"}
+      },
+      "unevaluatedProperties": false
+    },
+    "PagesPolicy": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "PagesPolicy",
+      "type": "object",
+      "properties": {
+        "show": {
+          "type": "array",
+          "items": {"$ref": "AuthPage"},
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "StylingPolicy": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "StylingPolicy",
+      "type": "object",
+      "properties": {
+        "theme": {"$ref": "Theme"},
+        "brand_name": {"type": "string", "minLength": 1, "maxLength": 80},
+        "accent_color": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"}
+      },
+      "unevaluatedProperties": false
+    },
+    "SharedAuthConfigFile": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "SharedAuthConfigFile",
+      "type": "object",
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "compatibility": {"$ref": "Compatibility"},
+        "factors": {"$ref": "FactorsPolicy"},
+        "pages": {"$ref": "PagesPolicy"},
+        "styling": {"$ref": "StylingPolicy"}
+      },
+      "required": ["schema_version", "compatibility"],
+      "unevaluatedProperties": false
+    }
+  }
+}
