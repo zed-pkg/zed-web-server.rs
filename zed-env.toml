@@ -1,0 +1,13 @@
+schema = 2
+
+[tasks.format]
+description = "Check Rust formatting"
+run = ["cargo fmt --all -- --check"]
+
+[tasks.lint]
+description = "Lint all locked Rust targets"
+run = ["cargo clippy --all-targets --locked -- -D warnings"]
+
+[tasks.test]
+description = "Run the package-level release test contract"
+run = ["cargo test --all-targets --locked"]
