@@ -45,7 +45,7 @@ dir = ".vendor/.zed"
 dir = "."
 adapter = "none"
 
+# Zed package manifests expose only the package-level test hook. Developer
+# task decomposition belongs in zed-env.toml schema 2.
 [scripts]
 test = "cargo test --all-targets --locked"
-lint = "cargo clippy --all-targets --locked -- -D warnings"
-format = "cargo fmt --all -- --check"
