@@ -222,7 +222,6 @@ async fn connect_with_retry(url: &str, policy: DatabaseStartupPolicy) -> Option<
 
 /// Run the read-only MASH registry UI.
 pub async fn run() -> Result<()> {
-    dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
@@ -268,6 +267,17 @@ pub async fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_does_not_implicitly_load_working_directory_dotenv() {
+        let source = include_str!("server.rs");
+        let legacy_loader = concat!("dotenvy", "::dotenv");
+        assert!(!source.contains(legacy_loader));
+
+        let contract = include_str!("../.cli-flags.toml");
+        assert!(contract.lines().any(|line| line.trim() == "dotenv = false"));
+        assert!(contract.lines().any(|line| line.trim() == "files = []"));
+    }
 
     #[test]
     fn database_policy_defaults_preserve_the_existing_runtime_contract() {
