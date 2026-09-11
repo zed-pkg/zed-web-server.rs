@@ -50,11 +50,16 @@ spec:
             - { name: BIND_ADDR, value: "0.0.0.0:8081" }
             - { name: PUBLIC_REGISTRY_URL, value: "https://registry.zpkg.net" }
             - { name: RUST_LOG, value: "info" }
-            # TEMPORARY bootstrap database shared with the registry API.
-            # Restore the ExternalSecret before enabling durable production
-            # metadata.
-            - { name: DATABASE_URL, value: "postgres://zed@zed-postgres.zed.svc.cluster.local:5432/zed" }
-            # Optional: shared-auth service URL; non-empty enables the /shared-auth gateway path (empty keeps it 503).
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  # This Secret is owned by k8s/externalsecret.yaml and must
+                  # contain the dedicated SELECT-only web principal. Never point
+                  # it at the API or migration identity.
+                  name: dd-zed-web-secrets
+                  key: ZED_WEB_DATABASE_URL
+            # Optional: shared-auth service URL; non-empty enables the Shared
+            # Auth back channel and proxy routes (empty keeps them unavailable).
             - { name: SHARED_AUTH_URL, value: "" }
           # The UI degrades gracefully without the DB (offline banner), so
           # /healthz stays 200 through a DB blip — neither probe flaps on it.

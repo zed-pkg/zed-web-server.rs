@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+#[cfg(test)]
 use axum::body::Body;
 use axum::extract::{Form, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
@@ -27,6 +28,9 @@ struct BrowserSession {
     refresh_token: String,
     shared_user_id: Uuid,
     issued_at: i64,
+    // Legacy cookies have no verification evidence and must recheck once.
+    #[serde(default)]
+    verified_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,10 +77,10 @@ struct DelegateResponse {
     access_token: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CreateOrgForm {
-    slug: String,
-    name: String,
+    pub(crate) slug: String,
+    pub(crate) name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -137,12 +141,242 @@ fn auth_unavailable() -> Response {
 
 pub fn session_subject(state: &WebState, headers: &HeaderMap) -> Option<Uuid> {
     let config = state.browser_auth.as_ref()?;
+    active_session(headers, config).map(|(session, _)| session.shared_user_id)
+}
+
+/// Every browser authority path shares the same signature and lifetime check.
+/// Checked subtraction also rejects signed but unrepresentable timestamps.
+fn active_session(
+    headers: &HeaderMap,
+    config: &BrowserAuthConfig,
+) -> Option<(BrowserSession, i64)> {
     let session =
         read_signed_cookie::<BrowserSession>(headers, &config.session_cookie_name, config)?;
-    let age = Utc::now().timestamp() - session.issued_at;
+    let age = Utc::now().timestamp().checked_sub(session.issued_at)?;
     (0..=SESSION_MAX_AGE_SECONDS)
         .contains(&age)
-        .then_some(session.shared_user_id)
+        .then_some((session, age))
+}
+
+/// The result of an authenticated API GET. The generated bearer token remains
+/// entirely inside this module; callers can only inspect the upstream result
+/// and apply the rotated opaque browser session.
+pub(crate) enum DelegatedGetOutcome {
+    Upstream(reqwest::Response),
+    Failed(Response),
+}
+
+pub(crate) struct RotatedSession(String);
+
+enum DelegationEvidence {
+    Verified,
+    Unverified,
+}
+
+fn rotated_session(
+    config: &BrowserAuthConfig,
+    refreshed: &RefreshResponse,
+    evidence: DelegationEvidence,
+) -> RotatedSession {
+    let now = Utc::now().timestamp();
+    let verified_at = match evidence {
+        DelegationEvidence::Verified => Some(now),
+        DelegationEvidence::Unverified => None,
+    };
+    RotatedSession(signed_cookie(
+        &config.session_cookie_name,
+        &BrowserSession {
+            refresh_token: refreshed.refresh_token.clone(),
+            shared_user_id: refreshed.shared_user_id,
+            issued_at: now,
+            verified_at,
+        },
+        SESSION_MAX_AGE_SECONDS,
+        config,
+    ))
+}
+
+impl RotatedSession {
+    pub(crate) fn apply(self, response: &mut Response) {
+        append_cookie(response, self.0);
+    }
+}
+
+/// Coarse continuity result for token-blind marketing session probes. The
+/// opaque cookie update may rotate or clear the product session, but no token,
+/// principal, audience, or provider detail crosses this module boundary.
+pub(crate) enum SessionContinuity {
+    Anonymous(Option<RotatedSession>),
+    Authenticated(Option<RotatedSession>),
+    Unavailable(Option<RotatedSession>),
+}
+
+/// Revalidate a product session only when its coarse foreground cadence is
+/// due. A due session must both refresh and delegate for the configured client,
+/// audience, and scopes before it remains authenticated. This catches revoked,
+/// provider-confused, wrong-client, and wrong-audience sessions without making
+/// every focus/visibility probe call Shared Auth.
+pub(crate) async fn verify_session_continuity(
+    state: &WebState,
+    headers: &HeaderMap,
+    recheck_after_seconds: i64,
+) -> SessionContinuity {
+    let Some(config) = auth_config(state) else {
+        return SessionContinuity::Unavailable(None);
+    };
+    let cookie_present = cookie_value(headers, &config.session_cookie_name).is_some();
+    let Some((session, _)) = active_session(headers, config) else {
+        let update = cookie_present
+            .then(|| RotatedSession(clear_cookie(&config.session_cookie_name, config)));
+        return SessionContinuity::Anonymous(update);
+    };
+
+    let recently_verified = session
+        .verified_at
+        .filter(|verified_at| *verified_at >= session.issued_at)
+        .and_then(|verified_at| Utc::now().timestamp().checked_sub(verified_at))
+        .is_some_and(|age| (0..recheck_after_seconds.max(1)).contains(&age));
+    if recently_verified {
+        return SessionContinuity::Authenticated(None);
+    }
+
+    let refreshed = match refresh(state, config, &session).await {
+        Ok(refreshed) => refreshed,
+        Err(response) => return continuity_failure(response, config, None),
+    };
+    if let Err(response) = delegate(state, config, &refreshed.access_token).await {
+        return continuity_failure(
+            response,
+            config,
+            Some(rotated_session(
+                config,
+                &refreshed,
+                DelegationEvidence::Unverified,
+            )),
+        );
+    }
+    SessionContinuity::Authenticated(Some(rotated_session(
+        config,
+        &refreshed,
+        DelegationEvidence::Verified,
+    )))
+}
+
+fn continuity_failure(
+    response: Response,
+    config: &BrowserAuthConfig,
+    rotation: Option<RotatedSession>,
+) -> SessionContinuity {
+    if matches!(
+        response.status(),
+        StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+    ) {
+        SessionContinuity::Anonymous(Some(RotatedSession(clear_cookie(
+            &config.session_cookie_name,
+            config,
+        ))))
+    } else {
+        SessionContinuity::Unavailable(rotation)
+    }
+}
+
+pub(crate) struct DelegatedGet {
+    outcome: DelegatedGetOutcome,
+    rotation: RotatedSession,
+}
+
+impl DelegatedGet {
+    pub(crate) fn into_parts(self) -> (DelegatedGetOutcome, RotatedSession) {
+        (self.outcome, self.rotation)
+    }
+}
+
+/// P2 is selected for private reads whose policy is owned by `zed-api-server` rather than a named
+/// P1 query. Keep this call stateless, bounded, origin-allowlisted, and limited to delegated
+/// credentials; API failure must not fall back to the read-only pool. Mutations use their dedicated
+/// P2 handlers and idempotency contracts. P3/P4 are not implicit alternatives.
+#[allow(clippy::result_large_err)] // Axum responses are returned directly at this HTTP boundary.
+pub(crate) async fn delegated_get(
+    state: &WebState,
+    headers: &HeaderMap,
+    method: Method,
+    url: reqwest::Url,
+    accept: &'static str,
+) -> Result<DelegatedGet, Response> {
+    let Some(config) = auth_config(state) else {
+        return Err(auth_unavailable());
+    };
+    if !matches!(method, Method::GET | Method::HEAD) {
+        return Err(error_json(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "delegated browser reads permit only GET and HEAD",
+        ));
+    }
+    if !delegated_url_allowed(config, &url) {
+        tracing::error!(%url, "refused to send delegated credentials outside the configured API");
+        return Err(error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "invalid delegated API destination",
+        ));
+    }
+    let Some((session, _)) = active_session(headers, config) else {
+        return Err(error_json(
+            StatusCode::UNAUTHORIZED,
+            "browser session is unavailable",
+        ));
+    };
+    let refreshed = refresh(state, config, &session).await?;
+    let delegated = match delegate(state, config, &refreshed.access_token).await {
+        Ok(token) => token,
+        Err(response) => {
+            return Ok(DelegatedGet {
+                outcome: DelegatedGetOutcome::Failed(response),
+                rotation: rotated_session(config, &refreshed, DelegationEvidence::Unverified),
+            });
+        }
+    };
+    let rotation = rotated_session(config, &refreshed, DelegationEvidence::Verified);
+    let mut request = state
+        .http
+        .request(method, url)
+        .bearer_auth(delegated)
+        .header(header::ACCEPT, accept)
+        .header(header::ACCEPT_ENCODING, "identity");
+    for etag in headers.get_all(header::IF_NONE_MATCH) {
+        request = request.header(header::IF_NONE_MATCH, etag);
+    }
+    let outcome = match request.send().await {
+        Ok(response) => DelegatedGetOutcome::Upstream(response),
+        Err(error) => {
+            tracing::warn!(%error, "delegated registry API read failed");
+            DelegatedGetOutcome::Failed(error_json(
+                StatusCode::BAD_GATEWAY,
+                "registry API unavailable",
+            ))
+        }
+    };
+    Ok(DelegatedGet { outcome, rotation })
+}
+
+fn delegated_url_allowed(config: &BrowserAuthConfig, candidate: &reqwest::Url) -> bool {
+    let Ok(base) = reqwest::Url::parse(&format!("{}/", config.api_url.trim_end_matches('/')))
+    else {
+        return false;
+    };
+    if candidate.origin() != base.origin()
+        || !candidate.username().is_empty()
+        || candidate.password().is_some()
+        || candidate.fragment().is_some()
+    {
+        return false;
+    }
+    let base_path = base.path().trim_end_matches('/');
+    base_path.is_empty()
+        || candidate.path() == base_path
+        || candidate
+            .path()
+            .strip_prefix(base_path)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 pub async fn sign_in(
@@ -295,6 +529,7 @@ pub async fn callback(
         refresh_token,
         shared_user_id: exchange.shared_user_id,
         issued_at: Utc::now().timestamp(),
+        verified_at: Some(Utc::now().timestamp()),
     };
     let session_cookie = signed_cookie(
         &config.session_cookie_name,
@@ -344,9 +579,35 @@ pub async fn create_org(
     headers: HeaderMap,
     Form(form): Form<CreateOrgForm>,
 ) -> Response {
-    mutate(
-        &state,
-        &headers,
+    create_org_outcome(&state, &headers, form)
+        .await
+        .into_response()
+}
+
+/// The HTTP redirect code alone is ambiguous: login and successful mutations
+/// both use 303. Keep the API-confirmed result explicit for browser flows.
+pub(crate) enum BrowserMutation {
+    Applied(Response),
+    SignIn(Response),
+    Failed(Response),
+}
+
+impl IntoResponse for BrowserMutation {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Applied(response) | Self::SignIn(response) | Self::Failed(response) => response,
+        }
+    }
+}
+
+pub(crate) async fn create_org_outcome(
+    state: &WebState,
+    headers: &HeaderMap,
+    form: CreateOrgForm,
+) -> BrowserMutation {
+    mutate_outcome(
+        state,
+        headers,
         Method::POST,
         "/api/v1/account/orgs".to_owned(),
         json!({
@@ -522,26 +783,44 @@ async fn mutate(
     path: String,
     body: Value,
 ) -> Response {
+    mutate_outcome(state, headers, method, path, body)
+        .await
+        .into_response()
+}
+
+async fn mutate_outcome(
+    state: &WebState,
+    headers: &HeaderMap,
+    method: Method,
+    path: String,
+    body: Value,
+) -> BrowserMutation {
     let Some(config) = auth_config(state) else {
-        return auth_unavailable();
+        return BrowserMutation::Failed(auth_unavailable());
     };
     if !same_origin_request(headers, config) {
-        return error_json(StatusCode::FORBIDDEN, "cross-origin mutation rejected");
+        return BrowserMutation::Failed(error_json(
+            StatusCode::FORBIDDEN,
+            "cross-origin mutation rejected",
+        ));
     }
-    let Some(session) =
-        read_signed_cookie::<BrowserSession>(headers, &config.session_cookie_name, config)
-    else {
-        return sign_in_redirect(headers);
+    let Some((session, _)) = active_session(headers, config) else {
+        return BrowserMutation::SignIn(sign_in_redirect(headers));
     };
 
     let refreshed = match refresh(state, config, &session).await {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(response) => return BrowserMutation::Failed(response),
     };
     let delegated = match delegate(state, config, &refreshed.access_token).await {
         Ok(token) => token,
-        Err(response) => return response,
+        Err(mut response) => {
+            rotated_session(config, &refreshed, DelegationEvidence::Unverified)
+                .apply(&mut response);
+            return BrowserMutation::Failed(response);
+        }
     };
+    let rotation = rotated_session(config, &refreshed, DelegationEvidence::Verified);
     let api = state
         .http
         .request(method, format!("{}{}", config.api_url, path))
@@ -550,41 +829,36 @@ async fn mutate(
         .send()
         .await;
 
-    let next_session = BrowserSession {
-        refresh_token: refreshed.refresh_token,
-        shared_user_id: refreshed.shared_user_id,
-        issued_at: Utc::now().timestamp(),
-    };
-    let cookie = signed_cookie(
-        &config.session_cookie_name,
-        &next_session,
-        SESSION_MAX_AGE_SECONDS,
-        config,
-    );
-
     match api {
         Ok(response) if response.status().is_success() => {
             let mut response = Redirect::to(&redirect_target(headers, config)).into_response();
-            append_cookie(&mut response, cookie);
-            response
+            rotation.apply(&mut response);
+            BrowserMutation::Applied(response)
         }
         Ok(response) => {
             let status = response.status();
-            let bytes = response.bytes().await.unwrap_or_default();
-            let mut downstream = Response::new(Body::from(bytes));
-            *downstream.status_mut() = status;
-            downstream.headers_mut().insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json; charset=utf-8"),
-            );
-            append_cookie(&mut downstream, cookie);
-            downstream
+            // The API may return database/provider details or an unbounded
+            // body. Neither is a browser error contract. Redirects also cannot
+            // acquire success semantics at this boundary.
+            let mapped = if status.is_client_error() || status.is_server_error() {
+                status
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            let mut downstream = error_json(mapped, "registry API mutation rejected");
+            if let Some(retry) = response.headers().get(header::RETRY_AFTER) {
+                downstream
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, retry.clone());
+            }
+            rotation.apply(&mut downstream);
+            BrowserMutation::Failed(downstream)
         }
         Err(error) => {
             tracing::warn!(%error, "registry API mutation failed");
             let mut response = error_json(StatusCode::BAD_GATEWAY, "registry API unavailable");
-            append_cookie(&mut response, cookie);
-            response
+            rotation.apply(&mut response);
+            BrowserMutation::Failed(response)
         }
     }
 }
@@ -606,6 +880,7 @@ fn sign_in_redirect(headers: &HeaderMap) -> Response {
     .into_response()
 }
 
+#[allow(clippy::result_large_err)] // Preserve the concrete Axum rejection response.
 async fn refresh(
     state: &WebState,
     config: &BrowserAuthConfig,
@@ -634,6 +909,7 @@ async fn refresh(
     Ok(refreshed)
 }
 
+#[allow(clippy::result_large_err)] // Preserve the concrete Axum rejection response.
 async fn delegate(
     state: &WebState,
     config: &BrowserAuthConfig,
@@ -664,17 +940,29 @@ async fn delegate(
     )
 }
 
+#[allow(clippy::result_large_err)] // Preserve the concrete Axum rejection response.
 async fn decode_json<T: for<'de> Deserialize<'de>>(
     response: reqwest::Response,
     operation: &str,
 ) -> Result<T, Response> {
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        tracing::warn!(%status, %operation, body = %body, "upstream authentication operation failed");
+        let response_bytes = response.content_length();
+        let request_id = response
+            .headers()
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("<missing>");
+        tracing::warn!(
+            %status,
+            %operation,
+            ?response_bytes,
+            %request_id,
+            "upstream authentication operation failed"
+        );
         let mapped = if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
             StatusCode::UNAUTHORIZED
-        } else if status.is_client_error() {
+        } else if status == StatusCode::BAD_REQUEST {
             StatusCode::BAD_REQUEST
         } else {
             StatusCode::BAD_GATEWAY
@@ -724,15 +1012,58 @@ fn callback_uri(config: &BrowserAuthConfig) -> String {
 }
 
 fn sanitize_return_to(value: &str) -> String {
-    if value.starts_with('/')
-        && !value.starts_with("//")
-        && !value.contains('\r')
-        && !value.contains('\n')
-    {
+    if return_target_is_local(value) {
         value.to_owned()
     } else {
         default_return_to()
     }
+}
+
+fn return_target_is_local(value: &str) -> bool {
+    let mut candidate = value.as_bytes().to_vec();
+    for _ in 0..=8 {
+        let Ok(text) = std::str::from_utf8(&candidate) else {
+            return false;
+        };
+        if !text.starts_with('/')
+            || text.starts_with("//")
+            || text.starts_with("/\\")
+            || text
+                .chars()
+                .any(|character| character == '\\' || character == '#' || character.is_control())
+        {
+            return false;
+        }
+
+        let (decoded, changed) = percent_decode_once(text);
+        if !changed {
+            return true;
+        }
+        candidate = decoded;
+    }
+    false
+}
+
+fn percent_decode_once(value: &str) -> (Vec<u8>, bool) {
+    let bytes = value.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    let mut changed = false;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) =
+                (hex_nibble(bytes[index + 1]), hex_nibble(bytes[index + 2]))
+        {
+            output.push((high << 4) | low);
+            index += 3;
+            changed = true;
+            continue;
+        }
+        output.push(bytes[index]);
+        index += 1;
+    }
+    (output, changed)
 }
 
 fn random_token() -> String {
@@ -858,7 +1189,9 @@ fn hex_decode(value: &str) -> Option<Vec<u8>> {
     }
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| Some((hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?))
         .collect()
 }
@@ -955,9 +1288,9 @@ fn sha256(input: &[u8]) -> [u8; 32] {
     padded.extend_from_slice(&bit_len.to_be_bytes());
 
     let mut state = INITIAL;
-    for chunk in padded.chunks_exact(64) {
+    for chunk in padded.as_chunks::<64>().0 {
         let mut words = [0_u32; 64];
-        for (index, word) in chunk.chunks_exact(4).enumerate() {
+        for (index, word) in chunk.as_chunks::<4>().0.iter().enumerate() {
             words[index] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
         }
         for index in 16..64 {
@@ -1019,10 +1352,16 @@ fn sha256(input: &[u8]) -> [u8; 32] {
 }
 
 #[cfg(test)]
+#[path = "browser_auth/mutation_conformance.rs"]
+mod mutation_conformance;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use axum::Router;
+    use axum::routing::post;
 
-    fn config() -> BrowserAuthConfig {
+    pub(super) fn config() -> BrowserAuthConfig {
         BrowserAuthConfig {
             shared_auth_url: "http://auth.internal".into(),
             shared_auth_public_url: "https://auth.example.test".into(),
@@ -1038,6 +1377,329 @@ mod tests {
             login_cookie_name: "__Host-zpkg_login".into(),
             secure_cookies: true,
         }
+    }
+
+    pub(super) fn continuity_state(config: BrowserAuthConfig) -> WebState {
+        WebState {
+            db: None,
+            registry_url: String::new(),
+            shared_auth_url: None,
+            session_path: "/auth/browser/session".into(),
+            browser_auth: Some(config),
+            http: crate::proxy::client(),
+        }
+    }
+
+    pub(super) fn session_headers(config: &BrowserAuthConfig, age_seconds: i64) -> HeaderMap {
+        let session = BrowserSession {
+            refresh_token: "opaque-refresh".into(),
+            shared_user_id: Uuid::nil(),
+            issued_at: Utc::now().timestamp() - age_seconds,
+            verified_at: Some(Utc::now().timestamp() - age_seconds),
+        };
+        let cookie = signed_cookie(
+            &config.session_cookie_name,
+            &session,
+            SESSION_MAX_AGE_SECONDS,
+            config,
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            cookie.split(';').next().unwrap().parse().unwrap(),
+        );
+        headers
+    }
+
+    async fn spawn_auth_stub(app: Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{address}")
+    }
+
+    #[tokio::test]
+    async fn continuity_probe_skips_upstream_before_the_coarse_cadence() {
+        let mut config = config();
+        config.shared_auth_url = "http://127.0.0.1:9".into();
+        let headers = session_headers(&config, 2999);
+        let state = continuity_state(config);
+        assert!(matches!(
+            verify_session_continuity(&state, &headers, 3000).await,
+            SessionContinuity::Authenticated(None)
+        ));
+    }
+
+    #[tokio::test]
+    async fn expired_and_future_dated_sessions_are_cleared_locally() {
+        for age in [-1, SESSION_MAX_AGE_SECONDS + 1] {
+            let mut config = config();
+            config.shared_auth_url = "http://127.0.0.1:9".into();
+            let headers = session_headers(&config, age);
+            let state = continuity_state(config);
+            match verify_session_continuity(&state, &headers, 3000).await {
+                SessionContinuity::Anonymous(Some(RotatedSession(cookie))) => {
+                    assert!(cookie.contains("Max-Age=0"));
+                }
+                _ => panic!("invalid local session age was not cleared"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn due_continuity_probe_refreshes_and_verifies_client_audience() {
+        let app = Router::new()
+            .route(
+                "/auth/refresh",
+                post(|axum::Json(body): axum::Json<Value>| async move {
+                    assert_eq!(body["refresh_token"], "opaque-refresh");
+                    axum::Json(json!({
+                        "access_token": "base-access",
+                        "refresh_token": "next-opaque-refresh",
+                        "shared_user_id": Uuid::nil(),
+                    }))
+                }),
+            )
+            .route(
+                "/auth/delegate",
+                post(|axum::Json(body): axum::Json<Value>| async move {
+                    assert_eq!(body["client_id"], "zpkg-web");
+                    assert_eq!(body["audience"], "zed-pkg");
+                    assert_eq!(body["scopes"], json!(["zpkg:account"]));
+                    axum::Json(json!({ "access_token": "delegated" }))
+                }),
+            );
+        let mut config = config();
+        config.shared_auth_url = spawn_auth_stub(app).await;
+        let headers = session_headers(&config, 3000);
+        let state = continuity_state(config);
+        match verify_session_continuity(&state, &headers, 3000).await {
+            SessionContinuity::Authenticated(Some(RotatedSession(cookie))) => {
+                assert!(cookie.contains("Max-Age=2592000"));
+                assert!(!cookie.contains("next-opaque-refresh"));
+            }
+            _ => panic!("due session was not refreshed and rotated"),
+        }
+    }
+
+    #[tokio::test]
+    async fn revoked_or_wrong_audience_sessions_fail_closed_and_clear_cookie() {
+        for app in [
+            Router::new().route("/auth/refresh", post(|| async { StatusCode::UNAUTHORIZED })),
+            Router::new()
+                .route(
+                    "/auth/refresh",
+                    post(|| async {
+                        axum::Json(json!({
+                            "access_token": "base-access",
+                            "refresh_token": "next-opaque-refresh",
+                            "shared_user_id": Uuid::nil(),
+                        }))
+                    }),
+                )
+                .route(
+                    "/auth/delegate",
+                    post(|| async { StatusCode::UNAUTHORIZED }),
+                ),
+            Router::new().route(
+                "/auth/refresh",
+                post(|| async {
+                    axum::Json(json!({
+                        "access_token": "base-access",
+                        "refresh_token": "next-opaque-refresh",
+                        "shared_user_id": Uuid::from_u128(1),
+                    }))
+                }),
+            ),
+        ] {
+            let mut config = config();
+            config.shared_auth_url = spawn_auth_stub(app).await;
+            let headers = session_headers(&config, 3000);
+            let state = continuity_state(config);
+            match verify_session_continuity(&state, &headers, 3000).await {
+                SessionContinuity::Anonymous(Some(RotatedSession(cookie))) => {
+                    assert!(cookie.contains("Max-Age=0"));
+                }
+                _ => panic!("invalid continuity was not cleared"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_auth_outage_is_explicit_and_does_not_destroy_cookie() {
+        for status in [
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::TOO_MANY_REQUESTS,
+        ] {
+            let app = Router::new().route("/auth/refresh", post(move || async move { status }));
+            let mut config = config();
+            config.shared_auth_url = spawn_auth_stub(app).await;
+            let headers = session_headers(&config, 3000);
+            let state = continuity_state(config);
+            assert!(matches!(
+                verify_session_continuity(&state, &headers, 3000).await,
+                SessionContinuity::Unavailable(None)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn onboarding_submits_only_canonical_fields_and_keeps_rotated_session_on_every_result() {
+        use axum::http::Request;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tower::ServiceExt;
+
+        for (path, api_status, expected) in [
+            (
+                "/onboarding/individual",
+                StatusCode::CREATED,
+                StatusCode::SEE_OTHER,
+            ),
+            (
+                "/onboarding/organization",
+                StatusCode::CREATED,
+                StatusCode::SEE_OTHER,
+            ),
+            (
+                "/onboarding/organization",
+                StatusCode::CONFLICT,
+                StatusCode::CONFLICT,
+            ),
+            (
+                "/onboarding/individual",
+                StatusCode::SERVICE_UNAVAILABLE,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let recorded_calls = calls.clone();
+            let upstream = Router::new()
+                .route("/auth/refresh", post(|| async {
+                    axum::Json(json!({
+                        "access_token": "base-access",
+                        "refresh_token": "next-opaque-refresh",
+                        "shared_user_id": Uuid::nil(),
+                    }))
+                }))
+                .route("/auth/delegate", post(|headers: HeaderMap, axum::Json(body): axum::Json<Value>| async move {
+                    assert_eq!(headers[header::AUTHORIZATION], "Bearer base-access");
+                    assert_eq!(body["client_id"], "zpkg-web");
+                    assert_eq!(body["audience"], "zed-pkg");
+                    assert_eq!(body["scopes"], json!(["zpkg:account"]));
+                    axum::Json(json!({ "access_token": "delegated" }))
+                }))
+                .route("/api/v1/account/orgs", post(move |headers: HeaderMap, axum::Json(body): axum::Json<Value>| {
+                    let calls = recorded_calls.clone();
+                    async move {
+                        assert_eq!(headers[header::AUTHORIZATION], "Bearer delegated");
+                        assert_eq!(body, json!({"slug":"acme", "name":"Acme Team", "description":null, "settings":{}}));
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        (api_status, axum::Json(json!({"internal_detail":"must-not-reach-browser"})))
+                    }
+                }));
+            let origin = spawn_auth_stub(upstream).await;
+            let mut config = config();
+            config.shared_auth_url = origin.clone();
+            config.api_url = origin;
+            let headers = session_headers(&config, 10);
+            let request = Request::post(path)
+                .header(header::COOKIE, headers[header::COOKIE].clone())
+                .header(header::ORIGIN, "https://app.zpkg.net")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                // Caller-supplied authority never enters the API DTO.
+                .body(Body::from(
+                    "slug=acme&name=Acme+Team&role=super_admin&subject=someone-else",
+                ))
+                .unwrap();
+            let response = crate::routes::router(Arc::new(continuity_state(config.clone())))
+                .oneshot(request)
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                "private, no-store"
+            );
+            if expected == StatusCode::SEE_OTHER {
+                assert_eq!(response.headers()[header::LOCATION], path);
+            }
+            let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
+            let mut next_headers = HeaderMap::new();
+            next_headers.insert(
+                header::COOKIE,
+                cookie.split(';').next().unwrap().parse().unwrap(),
+            );
+            let next = read_signed_cookie::<BrowserSession>(
+                &next_headers,
+                &config.session_cookie_name,
+                &config,
+            )
+            .unwrap();
+            assert_eq!(next.refresh_token, "next-opaque-refresh");
+            let body = axum::body::to_bytes(response.into_body(), 128 * 1024)
+                .await
+                .unwrap();
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            assert!(!body.contains("must-not-reach-browser"));
+            assert!(!body.contains("next-opaque-refresh"));
+            assert!(!body.contains("base-access"));
+        }
+    }
+
+    #[tokio::test]
+    async fn onboarding_rejects_cross_origin_and_preserves_the_selected_sign_in_journey() {
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        for path in ["/onboarding/individual", "/onboarding/organization"] {
+            let mut config = config();
+            // Nothing may call this authority when Origin or the cookie is absent.
+            config.shared_auth_url = "http://127.0.0.1:9".into();
+            for (origin, expected) in [
+                ("https://attacker.example", StatusCode::FORBIDDEN),
+                ("https://app.zpkg.net", StatusCode::SEE_OTHER),
+            ] {
+                let response = crate::routes::router(Arc::new(continuity_state(config.clone())))
+                    .oneshot(
+                        Request::post(path)
+                            .header(header::ORIGIN, origin)
+                            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                            .body(Body::from("slug=acme&name=Acme"))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), expected);
+                assert_eq!(
+                    response.headers()[header::CACHE_CONTROL],
+                    "private, no-store"
+                );
+                // Authentication is a GET flow: never replay this enrollment
+                // POST and its body to the sign-in endpoint via a 307.
+                if expected == StatusCode::SEE_OTHER {
+                    assert_eq!(
+                        response.headers()[header::LOCATION],
+                        format!("/auth/sign-in?return_to={}", percent_encode(path))
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_existing_session_without_its_account_projection_is_unavailable() {
+        let config = config();
+        let headers = session_headers(&config, 10);
+        let state = continuity_state(config);
+        assert!(matches!(
+            crate::session::resolve_account(&state, &headers).await,
+            Err(crate::session::AccountResolutionError::DatabaseUnavailable)
+        ));
+        assert!(matches!(
+            crate::session::resolve_account(&state, &HeaderMap::new()).await,
+            Ok(crate::session::Viewer::Anonymous)
+        ));
     }
 
     #[test]
@@ -1070,6 +1732,7 @@ mod tests {
             refresh_token: "refresh".into(),
             shared_user_id: Uuid::nil(),
             issued_at: 123,
+            verified_at: None,
         };
         let cookie = signed_cookie("test", &session, 60, &config);
         let pair = cookie.split(';').next().unwrap();
@@ -1086,12 +1749,74 @@ mod tests {
 
     #[test]
     fn return_targets_are_local_paths_only() {
-        assert_eq!(
-            sanitize_return_to("/dashboard/acme?tab=1"),
-            "/dashboard/acme?tab=1"
-        );
-        for invalid in ["https://evil.test", "//evil.test", "/ok\r\nLocation: bad"] {
+        for valid in [
+            "/",
+            "/dashboard/acme?tab=1",
+            "/search?q=hello%20world",
+            "/search?next=%2Fpackages",
+        ] {
+            assert_eq!(sanitize_return_to(valid), valid);
+        }
+        for invalid in [
+            "https://evil.test",
+            "//evil.test",
+            "/\\evil.test",
+            "/ok#fragment",
+            "/ok\r\nLocation: bad",
+            "/ok\tbad",
+            "/%2Fevil.test",
+            "/%5Cevil.test",
+            "/%255cevil.test",
+            "/ok%23fragment",
+            "/ok%0Abad",
+            "/ok%250Abad",
+            "/ok%00bad",
+            "/ok%7Fbad",
+        ] {
             assert_eq!(sanitize_return_to(invalid), "/");
         }
+    }
+
+    #[test]
+    fn delegated_reads_stay_on_the_configured_api_origin_and_base_path() {
+        let mut config = config();
+        config.api_url = "https://api.internal/base".into();
+        assert!(delegated_url_allowed(
+            &config,
+            &"https://api.internal/base/v1/packages/acme/http"
+                .parse()
+                .unwrap()
+        ));
+        assert!(!delegated_url_allowed(
+            &config,
+            &"https://api.internal/baseball/v1/packages/acme/http"
+                .parse()
+                .unwrap()
+        ));
+        assert!(!delegated_url_allowed(
+            &config,
+            &"https://evil.internal/base/v1/packages/acme/http"
+                .parse()
+                .unwrap()
+        ));
+    }
+
+    #[test]
+    fn rotated_private_read_session_is_applied_to_every_downstream_status() {
+        let mut response = StatusCode::BAD_GATEWAY.into_response();
+        RotatedSession("session=rotated; Path=/; HttpOnly".into()).apply(&mut response);
+        assert_eq!(
+            response.headers()[header::SET_COOKIE],
+            "session=rotated; Path=/; HttpOnly"
+        );
+    }
+
+    #[test]
+    fn authentication_failures_never_log_upstream_response_bodies() {
+        let source = include_str!("browser_auth.rs");
+        let body_log = ["body", " = %body"].concat();
+        let body_read = ["response", ".text().await"].concat();
+        assert!(!source.contains(&body_log));
+        assert!(!source.contains(&body_read));
     }
 }

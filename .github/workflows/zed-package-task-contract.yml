@@ -1,0 +1,58 @@
+name: Zed package and task contract
+
+on:
+  pull_request:
+    paths:
+      - '.zpkg.toml'
+      - 'zed-env.toml'
+      - '.github/workflows/zed-package-task-contract.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.zpkg.toml'
+      - 'zed-env.toml'
+      - '.github/workflows/zed-package-task-contract.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact reviewed head
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install checksum-pinned Zed v0.3.0
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/zed.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/zed-pkg/zed-cli/releases/download/v0.3.0/zed-x86_64-unknown-linux-musl.tar.gz \
+            -o "$archive"
+          echo "e380240c96242ab3b29e0e9d14c95ba946d086f20f0732e34d0e5cf47513efc7  $archive" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/zed-bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/zed-bin"
+          echo "$RUNNER_TEMP/zed-bin" >> "$GITHUB_PATH"
+      - name: Validate package and schema-2 task contracts
+        run: |
+          set -euo pipefail
+          zed validate
+          zed task list
+          zed task info format
+          zed task info lint
+          zed task info test
+          test "$(awk '/^\[scripts\]/{in_scripts=1; next} /^\[/{in_scripts=0} in_scripts && /^[A-Za-z0-9_-]+[[:space:]]*=/{count++; key=$1} END{print count ":" key}' .zpkg.toml)" = "1:test"
+      - name: Execute developer tasks through Zed
+        run: |
+          set -euo pipefail
+          zed task run format
+          zed task run lint
+      - name: Execute package-level test through Zed
+        run: zed task run test

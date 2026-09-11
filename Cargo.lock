@@ -3131,6 +3131,7 @@ dependencies = [
 [[package]]
 name = "zed-interfaces"
 version = "0.1.0"
+source = "git+https://github.com/zed-pkg/zed-interfaces.git?rev=7d31f80dd8a310f218931165a3ad636a2f32b932#7d31f80dd8a310f218931165a3ad636a2f32b932"
 dependencies = [
  "hex",
  "schemars",
@@ -3145,12 +3146,13 @@ dependencies = [
 [[package]]
 name = "zed-orm-core"
 version = "0.1.0"
-source = "git+https://github.com/zed-pkg/zed-lib-core.git?rev=700f1f9578c6633a20693a5b1f52970ab845a740#700f1f9578c6633a20693a5b1f52970ab845a740"
+source = "git+https://github.com/zed-pkg/zed-lib-core.git?rev=9ca75929b0be79aaa0b8af60c2810a8ac0c34198#9ca75929b0be79aaa0b8af60c2810a8ac0c34198"
 dependencies = [
  "chrono",
  "sea-orm",
  "serde_json",
  "uuid",
+ "zed-interfaces",
 ]
 
 [[package]]
@@ -3160,7 +3162,7 @@ dependencies = [
  "anyhow",
  "axum",
  "chrono",
- "dotenvy",
+ "http-body",
  "maud",
  "reqwest",
  "semver",

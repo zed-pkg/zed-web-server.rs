@@ -17,7 +17,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  ZED_INTERFACES_SHA: 5394b2e7b070354ee79a4c6ac79c26d6264970cd
+  ZED_INTERFACES_SHA: 7d31f80dd8a310f218931165a3ad636a2f32b932
+  ZED_LIB_CORE_SHA: 9ca75929b0be79aaa0b8af60c2810a8ac0c34198
 
 jobs:
   test:
@@ -34,19 +35,79 @@ jobs:
           ref: ${{ env.ZED_INTERFACES_SHA }}
           path: zed-interfaces
           persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: zed-pkg/zed-lib-core
+          ref: ${{ env.ZED_LIB_CORE_SHA }}
+          path: zed-lib-core
+          persist-credentials: false
       - name: Verify the complete source graph
         shell: bash
         run: |
           set -euo pipefail
           test "$(git -C zed-web-server.rs rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git -C zed-interfaces rev-parse HEAD)" = "$ZED_INTERFACES_SHA"
+          test "$(git -C zed-lib-core rev-parse HEAD)" = "$ZED_LIB_CORE_SHA"
+          cd zed-web-server.rs
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import tomllib
+
+          manifest = tomllib.loads(Path("Cargo.toml").read_text())
+          lock = Path("Cargo.lock").read_text()
+          pins = {
+              "zed-interfaces": (
+                  "https://github.com/zed-pkg/zed-interfaces.git",
+                  os.environ["ZED_INTERFACES_SHA"],
+              ),
+              "zed-orm-core": (
+                  "https://github.com/zed-pkg/zed-lib-core.git",
+                  os.environ["ZED_LIB_CORE_SHA"],
+              ),
+          }
+          for package, (repository, revision) in pins.items():
+              spec = manifest["dependencies"][package]
+              assert "path" not in spec, spec
+              assert spec["git"] == repository, spec
+              assert spec["rev"] == revision, spec
+              source = f"git+{repository}?rev={revision}#{revision}"
+              assert source in lock, f"Cargo.lock does not pin {package} at {revision}"
+          PY
       - name: Validate workflow syntax
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
         with:
-          args: zed-web-server.rs/.github/workflows/ci.yml
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+          args: zed-web-server.rs/.github/workflows/ci.yml zed-web-server.rs/.github/workflows/publish-container.yml
+      - name: Resolve repository Rust toolchain
+        id: rust_toolchain
+        working-directory: zed-web-server.rs
+        shell: python
+        run: |
+          import os
+          import tomllib
+          from pathlib import Path
+
+          toolchain = tomllib.loads(Path("rust-toolchain.toml").read_text())["toolchain"]
+          channel = toolchain["channel"]
+          components = toolchain.get("components", [])
+          assert channel, "rust-toolchain.toml must declare a channel"
+          assert components == ["rustfmt", "clippy"], components
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"channel={channel}", file=output)
+              print(f"components={','.join(components)}", file=output)
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
-          components: rustfmt, clippy
+          toolchain: ${{ steps.rust_toolchain.outputs.channel }}
+          components: ${{ steps.rust_toolchain.outputs.components }}
+      - name: Verify selected Rust compiler
+        working-directory: zed-web-server.rs
+        shell: bash
+        env:
+          EXPECTED_RUST: ${{ steps.rust_toolchain.outputs.channel }}
+        run: |
+          set -euo pipefail
+          actual="$(rustc --version | awk '{print $2}')"
+          test "$actual" = "$EXPECTED_RUST"
       - name: Install mold (fast linker)
         uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
         with:
@@ -59,9 +120,20 @@ jobs:
       - name: Resolve only the committed lockfile
         working-directory: zed-web-server.rs
         run: cargo metadata --locked --format-version 1 >/dev/null
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
+        with:
+          node-version-file: zed-web-server.rs/.node-version
+      - name: Verify dependency-graph assets match reviewable sources
+        working-directory: zed-web-server.rs
+        run: node scripts/build-graph-assets.mjs --check
       - name: Format
         working-directory: zed-web-server.rs
         run: cargo fmt --all -- --check
+      - name: Test self-hosted dependency graph workspace
+        working-directory: zed-web-server.rs
+        run: |
+          node --check assets/dependency-graph.js
+          node tests/dependency-graph.mjs
       - name: Check all targets
         working-directory: zed-web-server.rs
         run: cargo check --locked --all-targets

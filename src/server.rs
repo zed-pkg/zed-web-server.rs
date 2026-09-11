@@ -84,6 +84,23 @@ fn normalize_origin(value: &str) -> Result<String> {
     if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
         bail!("PUBLIC_BASE_URL must be an origin without a path, query, or fragment");
     }
+
+    let host = url
+        .host_str()
+        .context("PUBLIC_BASE_URL must include a host")?;
+    let host_without_ipv6_brackets = host
+        .strip_prefix('[')
+        .and_then(|candidate| candidate.strip_suffix(']'))
+        .unwrap_or(host);
+    let is_loopback = host_without_ipv6_brackets.eq_ignore_ascii_case("localhost")
+        || host_without_ipv6_brackets
+            .parse::<std::net::IpAddr>()
+            .map(|address| address.is_loopback())
+            .unwrap_or(false);
+    if url.scheme() == "http" && !is_loopback {
+        bail!("PUBLIC_BASE_URL must use https outside loopback development");
+    }
+
     Ok(url.origin().ascii_serialization())
 }
 
@@ -149,6 +166,14 @@ fn browser_auth_config(
     }))
 }
 
+/// P1 is selected here for approved registry views; open and verify one Postgres pool through the
+/// canonical opaque read seam.
+///
+/// The `zed-orm-core` boundary applies `default_transaction_read_only=on` to
+/// every connection and verifies that PostgreSQL accepted the setting before
+/// returning a `ReadContext` to application state. Routes that need a mutation or policy outside
+/// the named read surface use P2 through `zed-api-server`; this connection must never become their
+/// fallback. P3 and P4 remain disabled until `docs/web-api-data-access.md` is revised and reviewed.
 async fn try_connect(url: &str, policy: DatabaseStartupPolicy) -> Result<ReadContext> {
     let connect_policy = ConnectPolicy::default()
         .with_max_connections(policy.max_connections)
@@ -157,6 +182,11 @@ async fn try_connect(url: &str, policy: DatabaseStartupPolicy) -> Result<ReadCon
     Ok(zed_orm_core::connect_read_only_with_policy(url, connect_policy).await?)
 }
 
+/// Retry the initial read-only Postgres connection until the bounded deadline.
+///
+/// An unavailable database or a failed read-only verification both preserve
+/// the existing registry-offline behavior: availability may degrade, but the
+/// browser-facing process never widens itself into a writer.
 async fn connect_with_retry(url: &str, policy: DatabaseStartupPolicy) -> Option<ReadContext> {
     let started = Instant::now();
     let mut attempt = 0_u32;
@@ -165,7 +195,7 @@ async fn connect_with_retry(url: &str, policy: DatabaseStartupPolicy) -> Option<
         match try_connect(url, policy).await {
             Ok(database) => {
                 if attempt > 1 {
-                    tracing::info!(attempt, "connected to Postgres after retry");
+                    tracing::info!(attempt, "connected to read-only Postgres after retry");
                 }
                 return Some(database);
             }
@@ -174,12 +204,16 @@ async fn connect_with_retry(url: &str, policy: DatabaseStartupPolicy) -> Option<
                     %error,
                     attempts = attempt,
                     elapsed_s = started.elapsed().as_secs(),
-                    "Postgres unreachable within DB_CONNECT_MAX_WAIT_SECS; serving in offline mode"
+                    "read-only Postgres unavailable or misconfigured within DB_CONNECT_MAX_WAIT_SECS; serving in offline mode"
                 );
                 return None;
             }
             Err(error) => {
-                tracing::warn!(%error, attempt, "Postgres not ready yet; retrying in 2s");
+                tracing::warn!(
+                    %error,
+                    attempt,
+                    "read-only Postgres not ready or not read-only; retrying in 2s"
+                );
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
         }
@@ -188,7 +222,6 @@ async fn connect_with_retry(url: &str, policy: DatabaseStartupPolicy) -> Option<
 
 /// Run the read-only MASH registry UI.
 pub async fn run() -> Result<()> {
-    dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
@@ -236,6 +269,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn runtime_does_not_implicitly_load_working_directory_dotenv() {
+        let source = include_str!("server.rs");
+        let legacy_loader = concat!("dotenvy", "::dotenv");
+        assert!(!source.contains(legacy_loader));
+
+        let contract = include_str!("../.cli-flags.toml");
+        assert!(contract.lines().any(|line| line.trim() == "dotenv = false"));
+        assert!(contract.lines().any(|line| line.trim() == "files = []"));
+    }
+
+    #[test]
     fn database_policy_defaults_preserve_the_existing_runtime_contract() {
         assert_eq!(
             DatabaseStartupPolicy::from_values(None, None, None),
@@ -272,11 +316,25 @@ mod tests {
     }
 
     #[test]
-    fn origins_are_exact_and_pathless() {
+    fn origins_are_exact_pathless_and_secure_outside_loopback() {
         assert_eq!(
             normalize_origin("https://app.zpkg.net/").unwrap(),
             "https://app.zpkg.net"
         );
+        assert_eq!(
+            normalize_origin("http://localhost:8081/").unwrap(),
+            "http://localhost:8081"
+        );
+        assert_eq!(
+            normalize_origin("http://127.0.0.1:8081/").unwrap(),
+            "http://127.0.0.1:8081"
+        );
+        assert_eq!(
+            normalize_origin("http://[::1]:8081/").unwrap(),
+            "http://[::1]:8081"
+        );
+        assert!(normalize_origin("http://app.zpkg.net").is_err());
+        assert!(normalize_origin("http://10.0.0.5:8081").is_err());
         assert!(normalize_origin("https://app.zpkg.net/path").is_err());
         assert!(normalize_origin("javascript:alert(1)").is_err());
         assert!(normalize_origin("https://user@app.zpkg.net").is_err());

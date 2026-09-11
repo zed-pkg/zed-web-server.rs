@@ -30,7 +30,7 @@ pub async fn page(State(state): State<Arc<WebState>>, headers: HeaderMap) -> Htm
                 @if signed_in.orgs.is_empty() {
                     p class="muted" {
                         "You are not a member of any organization yet. "
-                        a href="/settings#new-org" { "Create one" } "."
+                        a href="/onboarding" { "Set up your workspace" } "."
                     }
                 } @else {
                     ul class="org-list" {

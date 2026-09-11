@@ -26,6 +26,7 @@ pub async fn org_redirect(Path(org): Path<String>) -> Redirect {
 
 /// Shared preamble: resolve the viewer, require the database, require the org,
 /// and require membership. Returns the rendered rejection when any step fails.
+#[allow(clippy::result_large_err)] // The caller returns this concrete Axum response unchanged.
 async fn org_scope(
     state: &WebState,
     headers: &HeaderMap,
@@ -122,6 +123,9 @@ pub async fn dashboard(
         div class="pkg-head" {
             h1 { (org.name) }
             span class="badge" { (viewer.role_in(&org.slug).unwrap_or("member")) }
+            a class="button" href={ "/dashboard/" (org.slug) "/dependency-graph" } {
+                "Dependency graph"
+            }
             @if can_manage {
                 a class="button" href={ "/orgs/" (org.slug) "/settings" } { "Org settings" }
             }
@@ -312,7 +316,13 @@ pub async fn project_settings(
     let api = &state.registry_url;
 
     let content = html! {
-        h1 { "Settings — " (project.name) }
+        div class="pkg-head" {
+            h1 { "Settings — " (project.name) }
+            a class="button"
+              href={ "/orgs/" (org.slug) "/projects/" (project.slug) "/dependency-graph" } {
+                "Dependency graph"
+            }
+        }
         p class="muted" { "Project in " a href={ "/dashboard/" (org.slug) } { (org.name) } }
 
         h2 { "Packages" }

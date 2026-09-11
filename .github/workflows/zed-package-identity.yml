@@ -1,0 +1,56 @@
+name: zed package identity
+
+on:
+  pull_request:
+    paths:
+      - .zpkg.toml
+      - Cargo.toml
+      - .github/workflows/zed-package-identity.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  identity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.EXPECTED_HEAD }}
+          persist-credentials: false
+      - name: Verify exact reviewed head
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+      - name: Cross-check Cargo and Zed package identity
+        shell: python
+        run: |
+          import tomllib
+          from pathlib import Path
+
+          cargo = tomllib.loads(Path("Cargo.toml").read_text())
+          zpkg = tomllib.loads(Path(".zpkg.toml").read_text())
+
+          cargo_package = cargo["package"]
+          zed_package = zpkg["package"]
+
+          assert zed_package["org"] == "zed-pkg", zed_package
+          assert zed_package["name"] == cargo_package["name"], (
+              zed_package["name"],
+              cargo_package["name"],
+          )
+          assert zed_package["version"] == cargo_package["version"], (
+              zed_package["version"],
+              cargo_package["version"],
+          )
+          assert zed_package["repository"]["url"] == cargo_package["repository"], (
+              zed_package["repository"]["url"],
+              cargo_package["repository"],
+          )
+
+          print(
+              f"admitted {zed_package['org']}/{zed_package['name']}@{zed_package['version']}"
+          )

@@ -66,10 +66,20 @@ pub fn layout(
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
+                meta name="htmx-config"
+                    content=r#"{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"selfRequestsOnly":true}"#;
                 title { (title) " · zed-pkg" }
                 link rel="stylesheet" href="/static/styles.css";
+                link rel="stylesheet" href="/graph-assets/dependency-graph.css";
+                link rel="stylesheet" href="/static/dependency-graph-insights.css";
+                link rel="alternate"
+                    type="application/vnd.claritas.component-contract+json"
+                    href="/static/claritas/zed-dependency-graph.component.json"
+                    title="Claritas Zed dependency graph component contract";
                 link rel="icon" type="image/svg+xml" href="/static/favicon.svg";
                 script src="/static/htmx.min.js" {}
+                script type="module" src="/graph-assets/dependency-graph.js" {}
+                script type="module" src="/static/dependency-graph-insights.js" {}
             }
             body {
                 (header(viewer, context))
@@ -110,6 +120,8 @@ fn header(viewer: &Viewer, context: &PageContext) -> Markup {
                         (create_menu(viewer, context))
                         (account_menu(viewer))
                     } @else {
+                        a href="/onboarding/individual" { "Individuals" }
+                        a href="/onboarding/organization" { "Organizations" }
                         a class="nav-cta" href="/shared-auth/auth/browser/sign-in" { "Sign in" }
                     }
                 }
@@ -153,7 +165,7 @@ fn create_menu(viewer: &Viewer, context: &PageContext) -> Markup {
                     a href={ "/orgs/" (slug) "/settings#new-package" } { "New package" }
                     div class="menu-sep" {}
                 }
-                a href="/settings#new-org" { "New organization" }
+                a href="/onboarding/organization" { "New organization" }
             }
         }
     }
@@ -190,6 +202,8 @@ fn account_menu(viewer: &Viewer) -> Markup {
                     }
                 }
                 div class="menu-sep" {}
+                a href="/onboarding/individual" { "Personal workspace" }
+                a href="/onboarding/organization" { "Choose organization" }
                 a href="/settings" { "User settings" }
                 form method="post" action="/shared-auth/auth/logout" {
                     button type="submit" class="menu-signout" { "Sign out" }
@@ -331,5 +345,25 @@ mod tests {
         )
         .into_string();
         assert!(!online.contains("registry offline"));
+    }
+
+    #[test]
+    fn dependency_graph_assets_are_self_hosted() {
+        let markup = layout(
+            "t",
+            true,
+            &Viewer::Anonymous,
+            &PageContext::none(),
+            html! {},
+        )
+        .into_string();
+        assert!(markup.contains("/graph-assets/dependency-graph.css"));
+        assert!(markup.contains("/graph-assets/dependency-graph.js"));
+        assert!(markup.contains("/static/dependency-graph-insights.css"));
+        assert!(markup.contains("/static/dependency-graph-insights.js"));
+        assert!(markup.contains("/static/claritas/zed-dependency-graph.component.json"));
+        assert!(markup.contains("&quot;allowEval&quot;:false"));
+        assert!(markup.contains("&quot;allowScriptTags&quot;:false"));
+        assert!(!markup.contains("claritas-viz"));
     }
 }
