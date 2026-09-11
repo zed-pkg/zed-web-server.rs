@@ -13,7 +13,10 @@ use anyhow::{Context, Result, bail};
 use tracing_subscriber::EnvFilter;
 use zed_orm_core::{ConnectPolicy, ReadContext};
 
-use crate::state::{BrowserAuthConfig, WebState};
+use crate::{
+    cli::{PublicRuntimeConfig, RuntimeConfig, StartupIntent},
+    state::{BrowserAuthConfig, WebState},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct DatabaseStartupPolicy {
@@ -23,6 +26,15 @@ struct DatabaseStartupPolicy {
 }
 
 impl DatabaseStartupPolicy {
+    fn from_public(config: &PublicRuntimeConfig) -> Self {
+        Self {
+            max_connections: config.db_max_connections,
+            statement_timeout_ms: config.db_statement_timeout_ms,
+            max_wait: Duration::from_secs(config.db_connect_max_wait_secs),
+        }
+    }
+
+    #[cfg(test)]
     fn from_values(
         max_connections: Option<&str>,
         statement_timeout_ms: Option<&str>,
@@ -34,25 +46,16 @@ impl DatabaseStartupPolicy {
             max_wait: Duration::from_secs(parse_u64_or(max_wait_secs, 30)),
         }
     }
-
-    fn from_env() -> Self {
-        let max_connections = std::env::var("DB_MAX_CONNECTIONS").ok();
-        let statement_timeout_ms = std::env::var("DB_STATEMENT_TIMEOUT_MS").ok();
-        let max_wait_secs = std::env::var("DB_CONNECT_MAX_WAIT_SECS").ok();
-        Self::from_values(
-            max_connections.as_deref(),
-            statement_timeout_ms.as_deref(),
-            max_wait_secs.as_deref(),
-        )
-    }
 }
 
+#[cfg(test)]
 fn parse_u32_or(value: Option<&str>, default: u32) -> u32 {
     value
         .and_then(|candidate| candidate.parse::<u32>().ok())
         .unwrap_or(default)
 }
 
+#[cfg(test)]
 fn parse_u64_or(value: Option<&str>, default: u64) -> u64 {
     value
         .and_then(|candidate| candidate.parse::<u64>().ok())
@@ -64,8 +67,8 @@ fn trimmed_base_url(value: Option<&str>) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
-fn required_env(name: &str) -> Result<String> {
-    let value = std::env::var(name).with_context(|| format!("{name} is required"))?;
+fn required_value(name: &str, value: Option<&str>) -> Result<String> {
+    let value = value.with_context(|| format!("{name} is required"))?;
     let value = value.trim().to_owned();
     if value.is_empty() {
         bail!("{name} cannot be empty");
@@ -122,16 +125,19 @@ fn parse_scopes(value: &str) -> Result<Vec<String>> {
 }
 
 fn browser_auth_config(
+    runtime: &RuntimeConfig,
     shared_auth_url: Option<String>,
     public_origin: &str,
 ) -> Result<Option<BrowserAuthConfig>> {
     let Some(shared_auth_url) = shared_auth_url else {
         return Ok(None);
     };
-    let shared_auth_public_url =
-        trimmed_base_url(std::env::var("SHARED_AUTH_PUBLIC_URL").ok().as_deref())
-            .unwrap_or_else(|| shared_auth_url.clone());
-    let session_signing_secret = required_env("ZED_SESSION_SIGNING_SECRET")?;
+    let shared_auth_public_url = trimmed_base_url(runtime.public.shared_auth_public_url.as_deref())
+        .unwrap_or_else(|| shared_auth_url.clone());
+    let session_signing_secret = required_value(
+        "ZED_SESSION_SIGNING_SECRET",
+        runtime.session_signing_secret.as_deref(),
+    )?;
     if session_signing_secret.len() < 32 {
         bail!("ZED_SESSION_SIGNING_SECRET must contain at least 32 bytes");
     }
@@ -140,17 +146,16 @@ fn browser_auth_config(
         shared_auth_url,
         shared_auth_public_url,
         public_origin: public_origin.to_owned(),
-        api_url: trimmed_base_url(std::env::var("ZED_API_URL").ok().as_deref())
+        api_url: trimmed_base_url(Some(&runtime.public.zed_api_url))
             .unwrap_or_else(|| "http://127.0.0.1:8080".to_owned()),
-        handoff_client_id: std::env::var("SHARED_AUTH_HANDOFF_CLIENT_ID")
-            .unwrap_or_else(|_| "zpkg".to_owned()),
-        handoff_client_secret: required_env("SHARED_AUTH_HANDOFF_CLIENT_SECRET")?,
-        delegate_client_id: std::env::var("SHARED_AUTH_DELEGATE_CLIENT_ID")
-            .unwrap_or_else(|_| "zpkg-web".to_owned()),
-        audience: std::env::var("SHARED_AUTH_AUDIENCE").unwrap_or_else(|_| "zed-pkg".to_owned()),
-        scopes: parse_scopes(
-            &std::env::var("SHARED_AUTH_SCOPES").unwrap_or_else(|_| "zpkg:account".to_owned()),
+        handoff_client_id: runtime.public.handoff_client_id.clone(),
+        handoff_client_secret: required_value(
+            "SHARED_AUTH_HANDOFF_CLIENT_SECRET",
+            runtime.handoff_client_secret.as_deref(),
         )?,
+        delegate_client_id: runtime.public.delegate_client_id.clone(),
+        audience: runtime.public.audience.clone(),
+        scopes: parse_scopes(&runtime.public.scopes)?,
         session_signing_secret,
         session_cookie_name: if secure_cookies {
             "__Host-zpkg_session".to_owned()
@@ -222,24 +227,35 @@ async fn connect_with_retry(url: &str, policy: DatabaseStartupPolicy) -> Option<
 
 /// Run the read-only MASH registry UI.
 pub async fn run() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .init();
+    let runtime = crate::cli::resolve_process()?;
+    match runtime.startup_intent()? {
+        StartupIntent::Help => {
+            print!("{}", crate::cli::help_text());
+            return Ok(());
+        }
+        StartupIntent::Version => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        StartupIntent::Serve => {}
+    }
 
-    let policy = DatabaseStartupPolicy::from_env();
-    let database = match std::env::var("DATABASE_URL") {
-        Ok(url) => connect_with_retry(&url, policy).await,
-        Err(_) => {
+    let filter = EnvFilter::try_new(runtime.public.rust_log.clone())
+        .map_err(|_| anyhow::anyhow!("RUST_LOG contains an invalid tracing filter"))?;
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    let policy = DatabaseStartupPolicy::from_public(&runtime.public);
+    let database = match runtime.database_url.as_deref() {
+        Some(url) => connect_with_retry(url, policy).await,
+        None => {
             tracing::warn!("DATABASE_URL not set; serving in offline mode");
             None
         }
     };
 
-    let public_origin = normalize_origin(
-        &std::env::var("PUBLIC_BASE_URL").unwrap_or_else(|_| "http://localhost:8081".to_owned()),
-    )?;
-    let shared_auth_url = trimmed_base_url(std::env::var("SHARED_AUTH_URL").ok().as_deref());
-    let browser_auth = browser_auth_config(shared_auth_url.clone(), &public_origin)?;
+    let public_origin = normalize_origin(&runtime.public.public_base_url)?;
+    let shared_auth_url = trimmed_base_url(runtime.public.shared_auth_url.as_deref());
+    let browser_auth = browser_auth_config(&runtime, shared_auth_url.clone(), &public_origin)?;
 
     let state = Arc::new(WebState {
         db: database,
@@ -251,7 +267,7 @@ pub async fn run() -> Result<()> {
         browser_auth,
         http: crate::proxy::client(),
     });
-    let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_owned());
+    let bind_addr = runtime.public.bind_addr.clone();
 
     let app = crate::routes::router(state);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
@@ -269,10 +285,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_does_not_implicitly_load_working_directory_dotenv() {
+    fn runtime_uses_one_flags2env_boundary_and_no_scattered_process_env_reads() {
         let source = include_str!("server.rs");
+        let raw_env_read = concat!("std::env", "::var");
         let legacy_loader = concat!("dotenvy", "::dotenv");
+        assert!(!source.contains(raw_env_read));
         assert!(!source.contains(legacy_loader));
+        assert!(source.contains("crate::cli::resolve_process()"));
 
         let contract = include_str!("../.cli-flags.toml");
         assert!(contract.lines().any(|line| line.trim() == "dotenv = false"));
@@ -304,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_database_policy_values_fall_back_independently() {
+    fn malformed_database_policy_values_fall_back_independently_in_legacy_helper() {
         assert_eq!(
             DatabaseStartupPolicy::from_values(Some("many"), Some("-1"), Some("later")),
             DatabaseStartupPolicy {
