@@ -78,9 +78,36 @@ jobs:
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
         with:
           args: zed-web-server.rs/.github/workflows/ci.yml zed-web-server.rs/.github/workflows/publish-container.yml
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: Resolve repository Rust toolchain
+        id: rust_toolchain
+        working-directory: zed-web-server.rs
+        shell: python
+        run: |
+          import os
+          import tomllib
+          from pathlib import Path
+
+          toolchain = tomllib.loads(Path("rust-toolchain.toml").read_text())["toolchain"]
+          channel = toolchain["channel"]
+          components = toolchain.get("components", [])
+          assert channel, "rust-toolchain.toml must declare a channel"
+          assert components == ["rustfmt", "clippy"], components
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"channel={channel}", file=output)
+              print(f"components={','.join(components)}", file=output)
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
-          components: rustfmt, clippy
+          toolchain: ${{ steps.rust_toolchain.outputs.channel }}
+          components: ${{ steps.rust_toolchain.outputs.components }}
+      - name: Verify selected Rust compiler
+        working-directory: zed-web-server.rs
+        shell: bash
+        env:
+          EXPECTED_RUST: ${{ steps.rust_toolchain.outputs.channel }}
+        run: |
+          set -euo pipefail
+          actual="$(rustc --version | awk '{print $2}')"
+          test "$actual" = "$EXPECTED_RUST"
       - name: Install mold (fast linker)
         uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
         with:

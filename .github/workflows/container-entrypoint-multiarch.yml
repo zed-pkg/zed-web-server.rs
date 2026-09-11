@@ -1,0 +1,148 @@
+name: Container entrypoint and multi-arch
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-entrypoint-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  entrypoint-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact candidate
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+      - name: Verify host and container Rust compiler authority
+        shell: python
+        run: |
+          import re
+          import tomllib
+          from pathlib import Path
+
+          toolchain = tomllib.loads(Path("rust-toolchain.toml").read_text())["toolchain"]["channel"]
+          dockerfile = Path("Dockerfile").read_text()
+          image = re.search(r"(?m)^FROM rust:([^\s]+) AS build$", dockerfile)
+          override = re.search(r"(?m)^ENV RUSTUP_TOOLCHAIN=([^\s]+)$", dockerfile)
+          assert image, "missing Rust build-stage image"
+          assert override, "missing RUSTUP_TOOLCHAIN build override"
+          assert image.group(1) == f"{toolchain}-slim-bookworm", (image.group(1), toolchain)
+          assert override.group(1) == toolchain, (override.group(1), toolchain)
+      - name: Verify SOPS wrapper syntax and exit propagation
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh -n scripts/sops-entrypoint.sh
+          set +e
+          no_command_output="$(SOPS_SECRETS_FILE=/tmp/not-present sh scripts/sops-entrypoint.sh 2>&1)"
+          no_command_status=$?
+          set -e
+          test "$no_command_status" -eq 64
+          test "$no_command_output" = "sops-entrypoint: no command provided"
+          test "$(SOPS_SECRETS_FILE=/tmp/not-present sh scripts/sops-entrypoint.sh sh -c 'printf ok')" = "ok"
+          set +e
+          SOPS_SECRETS_FILE=/tmp/not-present sh scripts/sops-entrypoint.sh sh -c 'exit 23'
+          status=$?
+          set -e
+          test "$status" -eq 23
+      - name: Verify decrypted values stay literal and explicit env wins
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/sops-entrypoint-regression"
+          mkdir -p "$work/bin"
+          : > "$work/app.env"
+          cat > "$work/bin/sops" <<'EOS'
+          #!/bin/sh
+          cat <<'EOF'
+          ZED_LITERAL=$(touch /tmp/zed-sops-should-not-exist)
+          ZED_EQUALS=left=right
+          ZED_OVERRIDE=from-secret
+          EOF
+          EOS
+          chmod +x "$work/bin/sops"
+          rm -f /tmp/zed-sops-should-not-exist
+          PATH="$work/bin:$PATH" \
+            SOPS_SECRETS_FILE="$work/app.env" \
+            SOPS_AGE_KEY=dummy \
+            ZED_OVERRIDE=from-orchestrator \
+            sh scripts/sops-entrypoint.sh sh -c '
+              test "$ZED_LITERAL" = "\$(touch /tmp/zed-sops-should-not-exist)"
+              test "$ZED_EQUALS" = "left=right"
+              test "$ZED_OVERRIDE" = "from-orchestrator"
+            '
+          test ! -e /tmp/zed-sops-should-not-exist
+
+  docker-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact candidate
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+      - name: Stage the documented parent build context
+        shell: bash
+        run: |
+          set -euo pipefail
+          context="$RUNNER_TEMP/zed-web-context"
+          mkdir -p "$context/zed-web-server.rs"
+          tar --exclude=.git -cf - . | tar -xf - -C "$context/zed-web-server.rs"
+          echo "CONTEXT=$context" >> "$GITHUB_ENV"
+      - name: Build with docker build
+        run: docker build --progress=plain --file "$CONTEXT/zed-web-server.rs/Dockerfile" --tag zed-web-server:ci "$CONTEXT"
+      - name: Verify image execution metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect zed-web-server:ci --format '{{json .Config.Entrypoint}}')" = '["/usr/local/bin/sops-entrypoint.sh"]'
+          test "$(docker image inspect zed-web-server:ci --format '{{json .Config.Cmd}}')" = '["/usr/local/bin/zed-web-server"]'
+
+  buildx-multiarch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact candidate
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Stage the documented parent build context
+        shell: bash
+        run: |
+          set -euo pipefail
+          context="$RUNNER_TEMP/zed-web-context"
+          mkdir -p "$context/zed-web-server.rs"
+          tar --exclude=.git -cf - . | tar -xf - -C "$context/zed-web-server.rs"
+          echo "CONTEXT=$context" >> "$GITHUB_ENV"
+      - name: Build amd64 and arm64 OCI image
+        run: |
+          docker buildx build \
+            --file "$CONTEXT/zed-web-server.rs/Dockerfile" \
+            --platform linux/amd64,linux/arm64 \
+            --progress=plain \
+            --output type=oci,dest=/tmp/zed-web-server.oci.tar \
+            "$CONTEXT"
+          test -s /tmp/zed-web-server.oci.tar

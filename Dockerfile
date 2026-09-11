@@ -6,10 +6,9 @@
 #
 # The toolchain must satisfy `edition = "2024"` (>= 1.85) and the shared
 # workspace dependencies' MSRV, so the base is pinned to 1.97.1.
-# RUSTUP_TOOLCHAIN overrides the repo's floating rust-toolchain.toml channel so
-# the build uses the toolchain already present in the image.
+# RUSTUP_TOOLCHAIN matches rust-toolchain.toml and the exact builder image.
 # `-bookworm` keeps the build glibc compatible with the Debian 12 runtime stage.
-FROM rust:1.97-slim-bookworm AS build
+FROM rust:1.97.1-slim-bookworm AS build
 ENV RUSTUP_TOOLCHAIN=1.97.1
 WORKDIR /work
 COPY zed-web-server.rs ./zed-web-server.rs
@@ -56,4 +55,5 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 ENV OTEL_SERVICE_NAME=zed-web-server \
     OTEL_EXPORTER_OTLP_ENDPOINT=http://dd-otel-collector.observability.svc.cluster.local:4318 \
     RUST_LOG=info
-ENTRYPOINT ["/usr/local/bin/sops-entrypoint.sh", "/usr/local/bin/zed-web-server"]
+ENTRYPOINT ["/usr/local/bin/sops-entrypoint.sh"]
+CMD ["/usr/local/bin/zed-web-server"]

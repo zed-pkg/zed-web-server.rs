@@ -1,9 +1,12 @@
 #!/bin/sh
 # Container entrypoint: decrypt secrets at RUN time, then exec the real command.
 #
-# Pair with a Dockerfile that sets
-#   ENTRYPOINT ["/usr/local/bin/sops-entrypoint.sh", "<the real entrypoint>"]
-# so this script receives the real command as "$@" and hands off with exec.
+# Pair with a Dockerfile that keeps the wrapper and default command separate:
+#   ENTRYPOINT ["/usr/local/bin/sops-entrypoint.sh"]
+#   CMD ["<the real entrypoint>"]
+# Docker appends CMD to ENTRYPOINT, so this script receives the command as "$@"
+# and hands off with exec. Operators may replace CMD without replacing the
+# decryption wrapper.
 #
 # Decryption happens here and never at build time: a secret decrypted during
 # `docker build` is baked into an image layer forever. The image carries only
@@ -11,6 +14,11 @@
 # sops binary; the age key arrives at `docker run` via SOPS_AGE_KEY or
 # SOPS_AGE_KEY_FILE and the plaintext exists only in this process's memory.
 set -eu
+
+if [ "$#" -eq 0 ]; then
+  echo "sops-entrypoint: no command provided" >&2
+  exit 64
+fi
 
 : "${SOPS_SECRETS_FILE:=/app/secrets/app.env}"
 
@@ -48,7 +56,7 @@ while IFS='=' read -r key value; do
     '' | '#'* | sops_*) continue ;;
     *[!A-Za-z0-9_]* | [0-9]*) echo "sops-entrypoint: skipping invalid variable name" >&2; continue ;;
   esac
-  if [ -z "$(eval "printf '%s' \"\${$key+x}\"")" ]; then
+  if ! printenv "$key" >/dev/null 2>&1; then
     export "$key=$value"
   fi
 done <<EOF_SECRETS
