@@ -41,50 +41,8 @@ jobs:
           assert override, "missing RUSTUP_TOOLCHAIN build override"
           assert image.group(1) == f"{toolchain}-slim-bookworm", (image.group(1), toolchain)
           assert override.group(1) == toolchain, (override.group(1), toolchain)
-      - name: Verify SOPS wrapper syntax and exit propagation
-        shell: bash
-        run: |
-          set -euo pipefail
-          sh -n scripts/sops-entrypoint.sh
-          set +e
-          no_command_output="$(SOPS_SECRETS_FILE=/tmp/not-present sh scripts/sops-entrypoint.sh 2>&1)"
-          no_command_status=$?
-          set -e
-          test "$no_command_status" -eq 64
-          test "$no_command_output" = "sops-entrypoint: no command provided"
-          test "$(SOPS_SECRETS_FILE=/tmp/not-present sh scripts/sops-entrypoint.sh sh -c 'printf ok')" = "ok"
-          set +e
-          SOPS_SECRETS_FILE=/tmp/not-present sh scripts/sops-entrypoint.sh sh -c 'exit 23'
-          status=$?
-          set -e
-          test "$status" -eq 23
-      - name: Verify decrypted values stay literal and explicit env wins
-        shell: bash
-        run: |
-          set -euo pipefail
-          work="$RUNNER_TEMP/sops-entrypoint-regression"
-          mkdir -p "$work/bin"
-          : > "$work/app.env"
-          cat > "$work/bin/sops" <<'EOS'
-          #!/bin/sh
-          cat <<'EOF'
-          ZED_LITERAL=$(touch /tmp/zed-sops-should-not-exist)
-          ZED_EQUALS=left=right
-          ZED_OVERRIDE=from-secret
-          EOF
-          EOS
-          chmod +x "$work/bin/sops"
-          rm -f /tmp/zed-sops-should-not-exist
-          PATH="$work/bin:$PATH" \
-            SOPS_SECRETS_FILE="$work/app.env" \
-            SOPS_AGE_KEY=dummy \
-            ZED_OVERRIDE=from-orchestrator \
-            sh scripts/sops-entrypoint.sh sh -c '
-              test "$ZED_LITERAL" = "\$(touch /tmp/zed-sops-should-not-exist)"
-              test "$ZED_EQUALS" = "left=right"
-              test "$ZED_OVERRIDE" = "from-orchestrator"
-            '
-          test ! -e /tmp/zed-sops-should-not-exist
+      - name: Verify SOPS required-secret, literal-value, environment, exec, and argv-layout contracts
+        run: node --test scripts/sops-entrypoint.test.mjs scripts/container-argv.test.mjs
 
   docker-build:
     runs-on: ubuntu-24.04
@@ -112,8 +70,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(docker image inspect zed-web-server:ci --format '{{json .Config.Entrypoint}}')" = '["/usr/local/bin/sops-entrypoint.sh"]'
-          test "$(docker image inspect zed-web-server:ci --format '{{json .Config.Cmd}}')" = '["/usr/local/bin/zed-web-server"]'
+          test "$(docker image inspect zed-web-server:ci --format '{{json .Config.Entrypoint}}')" = '["/usr/local/bin/sops-entrypoint.sh","/usr/local/bin/zed-web-server"]'
+          test "$(docker image inspect zed-web-server:ci --format '{{json .Config.Cmd}}')" = '[]'
 
   buildx-multiarch:
     runs-on: ubuntu-24.04
