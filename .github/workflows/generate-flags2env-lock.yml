@@ -1,0 +1,76 @@
+name: Generate flags2env lock candidate
+
+on:
+  push:
+    branches:
+      - fix/DEN-390-executable-flags2env-boot
+    paths:
+      - Cargo.toml
+      - .github/workflows/generate-flags2env-lock.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: web-flags2env-lock-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact candidate branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/DEN-390-executable-flags2env-boot
+          persist-credentials: true
+          fetch-depth: 1
+
+      - name: Verify exact triggering head
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Install exact repository Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+
+      - name: Resolve only through Cargo and certify the resulting graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --all-targets
+          cargo fmt --all -- --check
+          cargo check --locked --all-targets
+          cargo test --locked --all-targets
+          cargo clippy --locked --all-targets -- -D warnings
+          git diff --check
+
+      - name: Require Cargo.lock as the only generated change
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed="$(git status --porcelain | awk '{print $2}' | sort -u)"
+          test "$changed" = 'Cargo.lock' || {
+            printf 'unexpected generated paths:\n%s\n' "$changed" >&2
+            exit 1
+          }
+          git diff -- Cargo.lock
+
+      - name: Commit the Cargo-generated lock candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.lock
+          git commit -m 'build(DEN-390): commit Cargo-generated flags2env lock'
+          git push origin HEAD:fix/DEN-390-executable-flags2env-boot
