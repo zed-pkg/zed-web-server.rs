@@ -61,6 +61,7 @@
 //! authority.
 
 mod browser_auth;
+mod cli;
 mod proxy;
 mod routes;
 pub mod server;
