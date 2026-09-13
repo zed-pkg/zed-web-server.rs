@@ -70,8 +70,37 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(docker image inspect zed-web-server:ci --format '{{json .Config.Entrypoint}}')" = '["/usr/local/bin/sops-entrypoint.sh","/usr/local/bin/zed-web-server"]'
-          test "$(docker image inspect zed-web-server:ci --format '{{json .Config.Cmd}}')" = '[]'
+          entrypoint="$(docker image inspect zed-web-server:ci --format '{{json .Config.Entrypoint}}')"
+          cmd="$(docker image inspect zed-web-server:ci --format '{{json .Config.Cmd}}')"
+          echo "Config.Entrypoint=${entrypoint} Config.Cmd=${cmd}"
+          test "$entrypoint" = '["/usr/local/bin/sops-entrypoint.sh","/usr/local/bin/zed-web-server"]'
+          # The image builder omits an empty CMD from the image config, so the
+          # Dockerfile's `CMD []` inspects as null. Either spelling means "no
+          # default arguments"; anything else would be replaced by runtime args.
+          case "$cmd" in
+            null | '[]') ;;
+            *) echo "::error::image CMD must be empty, found ${cmd}"; exit 1 ;;
+          esac
+      - name: Verify runtime arguments reach the binary through the wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `docker create` resolves the process argv exactly as `docker run`
+          # (and a Kubernetes `args:` list) would, without starting the service.
+          expect_argv() {
+            local expected_args="$1"
+            shift
+            local id path args
+            id="$(docker create zed-web-server:ci "$@")"
+            path="$(docker container inspect "$id" --format '{{json .Path}}')"
+            args="$(docker container inspect "$id" --format '{{json .Args}}')"
+            docker rm "$id" > /dev/null
+            echo "runtime args [$*] -> Path=${path} Args=${args}"
+            test "$path" = '"/usr/local/bin/sops-entrypoint.sh"'
+            test "$args" = "$expected_args"
+          }
+          expect_argv '["/usr/local/bin/zed-web-server"]'
+          expect_argv '["/usr/local/bin/zed-web-server","--extra-runtime-flag"]' --extra-runtime-flag
 
   buildx-multiarch:
     runs-on: ubuntu-24.04
