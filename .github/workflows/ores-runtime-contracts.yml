@@ -22,10 +22,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ORES_CLI_REV: 19063469d3bf399415d520386e4e9423c4c5fde6
   ZED_CLI_REV: a1c5b7a3c72b957944b76911fcbc723dd9c16541
   FLAGS2ENV_REV: 333c2ace93c362d274171ab0e0edf613d96a8e59
-  ORES_CLI_TOOLCHAIN: 1.95.0
+  ORES_CLI_PACKAGE: oresoftware/ores-cli@=0.1.0
   EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
@@ -63,19 +62,15 @@ jobs:
           git -C "$RUNNER_TEMP/flags2env" checkout --detach "$FLAGS2ENV_REV"
           make -C "$RUNNER_TEMP/flags2env" all
 
-      - name: Install ores-cli Rust toolchain
+      - name: Install ores-cli through zed-pkg
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install "$ORES_CLI_TOOLCHAIN" --profile minimal --no-self-update
-
-      - name: Build pinned ores-cli and oresc without installer side effects
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone --filter=blob:none https://github.com/ORESoftware/ores-cli.git "$RUNNER_TEMP/ores-cli"
-          git -C "$RUNNER_TEMP/ores-cli" checkout --detach "$ORES_CLI_REV"
-          rustup run "$ORES_CLI_TOOLCHAIN" cargo build --manifest-path "$RUNNER_TEMP/ores-cli/Cargo.toml" --locked --release --bin oresc --bin ores-cli
+          mkdir -p "$RUNNER_TEMP/ores-tool"
+          cd "$RUNNER_TEMP/ores-tool"
+          "$RUNNER_TEMP/zed-cli/target/release/zed" install "$ORES_CLI_PACKAGE"
+          "$RUNNER_TEMP/zed-cli/target/release/zed" run oresc --no-json doctor >/dev/null
+          "$RUNNER_TEMP/zed-cli/target/release/zed" run ores-cli --no-json doctor >/dev/null
 
       - name: Validate Zed and flags2env authorities
         shell: bash
@@ -98,8 +93,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          "$RUNNER_TEMP/ores-cli/target/release/oresc" --no-json audit repo --path . --profile baseline
-          "$RUNNER_TEMP/ores-cli/target/release/ores-cli" --no-json audit repo --path . --profile baseline
+          cd "$RUNNER_TEMP/ores-tool"
+          "$RUNNER_TEMP/zed-cli/target/release/zed" run oresc --no-json audit repo --path "$GITHUB_WORKSPACE" --profile baseline
+          "$RUNNER_TEMP/zed-cli/target/release/zed" run ores-cli --no-json audit repo --path "$GITHUB_WORKSPACE" --profile baseline
+          "$RUNNER_TEMP/zed-cli/target/release/zed" run oresc --no-json audit repo --path "$GITHUB_WORKSPACE" --profile source
 
       - name: Prove smoke checks are read-only
         shell: bash
@@ -107,5 +104,4 @@ jobs:
           set -euo pipefail
           git diff --exit-code HEAD
           git -C "$RUNNER_TEMP/zed-cli" diff --exit-code HEAD
-          git -C "$RUNNER_TEMP/ores-cli" diff --exit-code HEAD
           git -C "$RUNNER_TEMP/flags2env" diff --exit-code HEAD -- . ':(exclude)build/**'
