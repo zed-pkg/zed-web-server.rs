@@ -1,0 +1,71 @@
+name: ORES runtime contracts
+
+on:
+  pull_request:
+    paths:
+      - '.zpkg.toml'
+      - '.zpkg.lock'
+      - '.cli-flags.toml'
+      - '.ores-*.toml'
+      - '.shared-auth.toml'
+      - '.auth-shared.toml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/ores-runtime-contracts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ores-runtime-contracts-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ORES_CLI_REV: 19063469d3bf399415d520386e4e9423c4c5fde6
+  ZED_CLI_REV: a1c5b7a3c72b957944b76911fcbc723dd9c16541
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install pinned zed CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/zed-pkg/zed-cli.git "$RUNNER_TEMP/zed-cli"
+          git -C "$RUNNER_TEMP/zed-cli" checkout --detach "$ZED_CLI_REV"
+          cargo install --path "$RUNNER_TEMP/zed-cli" --locked --root "$RUNNER_TEMP/zed-bin"
+
+      - name: Install pinned ores-cli / oresc
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/ORESoftware/ores-cli.git "$RUNNER_TEMP/ores-cli"
+          git -C "$RUNNER_TEMP/ores-cli" checkout --detach "$ORES_CLI_REV"
+          CARGO_INSTALL_ROOT="$RUNNER_TEMP/ores-bin" "$RUNNER_TEMP/ores-cli/post-install.sh"
+
+      - name: Validate zed-pkg, flags-2-env and ORES runtime contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/zed-bin/bin:$RUNNER_TEMP/ores-bin/bin:$PATH"
+          test -f .zpkg.toml
+          test -f .cli-flags.toml
+          zed validate
+          oresc audit repo --path . --profile baseline
+          oresc audit repo --path . --profile source
+
+          if test -f .shared-auth.toml && test -f .auth-shared.toml; then
+            echo 'keep only canonical .shared-auth.toml; .auth-shared.toml is compatibility-only' >&2
+            exit 1
+          fi
+
+          if grep -R --line-number --fixed-strings 'github.com/ORESoftware/flags-2-env' Cargo.toml Cargo.lock .zpkg.toml 2>/dev/null; then
+            echo 'flags-2-env consumers must use the canonical flags-2-env/flags-2-env source' >&2
+            exit 1
+          fi
