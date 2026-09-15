@@ -20,7 +20,7 @@ url = "https://github.com/zed-pkg/zed-web-server.rs"
 [publish]
 include_readme = true
 tag_format = "v{version}"
-smoke_test = "test -f \"$ZED_PKG_TEST_TARGET/src/routes/console.rs\" && test -f \"$ZED_PKG_TEST_TARGET/src/session.rs\""
+smoke_test = "sh \"$ZED_PKG_TEST_TARGET/scripts/tests/smoke-published-artifact.sh\""
 exclude = [
   ".env",
   ".env.*",
