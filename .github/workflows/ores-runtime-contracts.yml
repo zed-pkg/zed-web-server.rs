@@ -32,6 +32,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
+      # Optional fallback credential for private GitHub package sources. Zed must
+      # still be able to use the registry path when this secret is unavailable.
       ZED_PKG_GITHUB_TOKEN: ${{ secrets.SYNC_FLEET_TOKEN }}
     steps:
       - name: Checkout exact repository head
@@ -46,6 +48,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           test -f .zpkg.toml
+          test -f .zpkg.lock
           test -f .cli-flags.toml
 
       - name: Build pinned zed CLI
@@ -63,12 +66,6 @@ jobs:
           git clone --filter=blob:none https://github.com/flags-2-env/flags-2-env.git "$RUNNER_TEMP/flags2env"
           git -C "$RUNNER_TEMP/flags2env" checkout --detach "$FLAGS2ENV_REV"
           make -C "$RUNNER_TEMP/flags2env" all
-
-      - name: Require fleet read credential
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "$ZED_PKG_GITHUB_TOKEN"
 
       - name: Install ores-cli through zed-pkg
         shell: bash
