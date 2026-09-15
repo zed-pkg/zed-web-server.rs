@@ -7,5 +7,7 @@ publish = false
 license = "MIT"
 description = "Template contract composition bundle for zed-web-server"
 
+[workspace]
+
 [lints.rust]
 unsafe_code = "forbid"
