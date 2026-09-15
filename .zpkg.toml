@@ -2,7 +2,6 @@
 org = "zed-pkg"
 name = "zed-web-server"
 version = "0.1.0"
-kind = "server"
 description = "Zed account console and registry web server with Maud, Axum, HTMX, Shared Auth PKCE, and read-only registry projections"
 license = "MIT"
 keywords = ["zed-pkg", "registry", "web", "htmx", "pkce"]
