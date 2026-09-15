@@ -1,0 +1,11 @@
+[package]
+name = "zed-web-server-template-contracts"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+license = "MIT"
+description = "Template contract composition bundle for zed-web-server"
+
+[lints.rust]
+unsafe_code = "forbid"
