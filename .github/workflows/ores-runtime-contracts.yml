@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
-      ZED_PKG_GITHUB_TOKEN: ${{ secrets.FLEET_GITHUB_READ_TOKEN }}
+      ZED_PKG_GITHUB_TOKEN: ${{ secrets.SYNC_FLEET_TOKEN }}
     steps:
       - name: Checkout exact repository head
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
