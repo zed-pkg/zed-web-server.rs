@@ -68,19 +68,27 @@ fn web_role_and_shared_policies_are_structurally_fail_closed() {
     let settings = &stack["settings"];
     let capabilities = stack["requiredCapabilities"].as_array().expect("capabilities array");
     let reps = settings["contentRepresentations"].as_array().expect("representations array");
-    assert!(capabilities.iter().any(|v| v == "cache-etag"));
-    assert!(reps.iter().any(|v| v == "text/html"));
-    assert_eq!(settings["idempotency"]["enabled"], false);
-    assert_eq!(settings["idempotency"]["requiredMethods"], json!("[]"));
-    assert_eq!(settings["faultInjection"]["enabled"], false);
-    assert_eq!(settings["testAuthBypass"]["enabled"], false);
+    assert!(capabilities.iter().any(|v| v.as_str() == Some("cache-etag")));
+    assert!(reps.iter().any(|v| v.as_str() == Some("text/html")));
+    assert_eq!(settings["idempotency"]["enabled"].as_bool(), Some(false));
+    assert!(
+        settings["idempotency"]["requiredMethods"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
+    );
+    assert_eq!(settings["faultInjection"]["enabled"].as_bool(), Some(false));
+    assert_eq!(settings["testAuthBypass"]["enabled"].as_bool(), Some(false));
     let bypass = settings["testAuthBypass"]["headerName"].as_str().expect("bypass header");
     assert!(bypass.starts_with("x-ores-"));
     assert_eq!(bypass, bypass.to_ascii_lowercase());
-    assert_eq!(stack["integrations"]["sharedAuth"]["mode"], "disabled");
-    assert_eq!(stack["integrations"]["sharedAuth"]["failOpen"], false);
-    assert_eq!(stack["integrations"]["oresOtel"]["enabled"], true);
-    assert!(stack["integrations"]["oresOtel"]["serviceName"].as_str().is_some_and(|v| !v.is_empty()));
+    assert_eq!(stack["integrations"]["sharedAuth"]["mode"].as_str(), Some("disabled"));
+    assert_eq!(stack["integrations"]["sharedAuth"]["failOpen"].as_bool(), Some(false));
+    assert_eq!(stack["integrations"]["oresOtel"]["enabled"].as_bool(), Some(true));
+    assert!(
+        stack["integrations"]["oresOtel"]["serviceName"]
+            .as_str()
+            .is_some_and(|v| !v.is_empty())
+    );
     assert!(no_nulls(&stack));
 }
 
@@ -116,14 +124,4 @@ fn canonical_shared_auth_config_has_no_authored_alias() {
         .expect("template-contracts must have a repository parent");
     assert!(root.join(".shared-auth.toml").is_file());
     assert!(!root.join(".auth-shared.toml").exists());
-}
-
-fn json_literal(input: &str) -> JsonValue {
-    serde_json::from_str(input).expect("test JSON literal")
-}
-
-macro_rules! json {
-    ($literal:literal) => {
-        json_literal($literal)
-    };
 }
