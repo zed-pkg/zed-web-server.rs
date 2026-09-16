@@ -9,17 +9,37 @@ jobs:
     name: zed-latest-deps
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env: {ZED_PKG_INTERACTIVE: "false", GITHUB_TOKEN: "${{ github.token }}"}
+    env:
+      ZED_PKG_INTERACTIVE: "false"
+      GITHUB_TOKEN: "${{ github.token }}"
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      ZED_CLI_COMMIT: afb74f9827d3501d01227e58025331df9fa4b833
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {fetch-depth: 0, persist-credentials: false}
-      - name: Install pinned Zed CLI v0.3.0
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact candidate
         shell: bash
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Check out pinned fixed Zed CLI source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: zed-pkg/zed-cli
+          ref: ${{ env.ZED_CLI_COMMIT }}
+          path: .zed-cli-source
+          persist-credentials: false
+      - name: Build and install pinned fixed Zed CLI
+        shell: bash
+        working-directory: .zed-cli-source
         run: |
           set -euo pipefail
-          a="$RUNNER_TEMP/zed.tar.gz"; d="$RUNNER_TEMP/zed-release"
-          curl --fail --location --retry 3 --retry-all-errors -o "$a" https://github.com/zed-pkg/zed-cli/releases/download/v0.3.0/zed-x86_64-unknown-linux-gnu.tar.gz
-          printf '%s  %s\n' f87576bc289e43ed647902527e7be70566445d2f1fd11249f067ab35547d4b8a "$a" | sha256sum --check --strict
-          mkdir -p "$d" "$HOME/.local/bin"; tar -xzf "$a" -C "$d"; z="$(find "$d" -type f -name zed -perm -111 -print -quit)"; test -n "$z"; install -m 0755 "$z" "$HOME/.local/bin/zed"; echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          test "$(git rev-parse HEAD)" = "$ZED_CLI_COMMIT"
+          cargo build --locked --bin zed
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 target/debug/zed "$HOME/.local/bin/zed"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: zed --version
       - run: bash .githooks/pre-push --ci
