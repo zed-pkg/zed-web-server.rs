@@ -1,0 +1,88 @@
+name: Zed published artifact smoke
+
+on:
+  pull_request:
+    paths:
+      - '.zpkg.toml'
+      - 'scripts/tests/smoke-published-artifact.sh'
+      - '.github/workflows/zed-package-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.zpkg.toml'
+      - 'scripts/tests/smoke-published-artifact.sh'
+      - '.github/workflows/zed-package-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  r2g:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      ZED_PKG_INTERACTIVE: "false"
+      ZED_PKG_REGISTRY: file://${{ runner.temp }}/zed-registry
+      ZED_INTERFACES_TAG_COMMIT: 5394b2e7b070354ee79a4c6ac79c26d6264970cd
+      ZED_LIB_CORE_TAG_COMMIT: 700f1f9578c6633a20693a5b1f52970ab845a740
+    steps:
+      - name: Check out exact reviewed head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact reviewed head
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Install checksum-pinned Zed v0.3.0
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/zed.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/zed-pkg/zed-cli/releases/download/v0.3.0/zed-x86_64-unknown-linux-musl.tar.gz \
+            -o "$archive"
+          echo "e380240c96242ab3b29e0e9d14c95ba946d086f20f0732e34d0e5cf47513efc7  $archive" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/zed-bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/zed-bin"
+          echo "$RUNNER_TEMP/zed-bin" >> "$GITHUB_PATH"
+
+      - name: Seed immutable direct dependency registry
+        run: |
+          set -euo pipefail
+          registry="$RUNNER_TEMP/zed-registry"
+          interfaces="$RUNNER_TEMP/zed-interfaces"
+          core="$RUNNER_TEMP/zed-lib-core"
+          rm -rf "$registry" "$interfaces" "$core"
+          mkdir -p "$registry"
+
+          git clone --branch v0.1.0 --depth 1 https://github.com/zed-pkg/zed-interfaces.git "$interfaces"
+          test "$(git -C "$interfaces" rev-parse HEAD)" = "$ZED_INTERFACES_TAG_COMMIT"
+          test "$(git -C "$interfaces" describe --tags --exact-match)" = "v0.1.0"
+          (
+            cd "$interfaces"
+            zed validate
+            zed publish
+          )
+
+          git clone --branch v0.1.0 --depth 1 https://github.com/zed-pkg/zed-lib-core.git "$core"
+          test "$(git -C "$core" rev-parse HEAD)" = "$ZED_LIB_CORE_TAG_COMMIT"
+          test "$(git -C "$core" describe --tags --exact-match)" = "v0.1.0"
+          (
+            cd "$core"
+            zed validate
+            zed publish
+          )
+
+      - name: Validate authored package contract
+        run: zed validate
+
+      - name: Build deterministic package artifact
+        run: zed pack
+
+      - name: Round-trip artifact and execute publish smoke test
+        run: zed r2g
