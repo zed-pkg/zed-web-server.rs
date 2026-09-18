@@ -312,8 +312,14 @@ pub(crate) async fn delegated_get(
             "delegated browser reads permit only GET and HEAD",
         ));
     }
-    if !delegated_url_allowed(config, &url) {
-        tracing::error!(%url, "refused to send delegated credentials outside the configured API");
+    if let Some(refusal) = delegated_url_refusal(config, &url) {
+        // The destination is assembled from request path segments and is only
+        // taken for a private package, so the record carries the fixed refusal
+        // reason rather than the assembled URL.
+        tracing::error!(
+            refusal,
+            "refused to send delegated credentials outside the configured API"
+        );
         return Err(error_json(
             StatusCode::SERVICE_UNAVAILABLE,
             "invalid delegated API destination",
@@ -348,7 +354,12 @@ pub(crate) async fn delegated_get(
     let outcome = match request.send().await {
         Ok(response) => DelegatedGetOutcome::Upstream(response),
         Err(error) => {
-            tracing::warn!(%error, "delegated registry API read failed");
+            let kind = upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                "delegated registry API read failed"
+            );
             DelegatedGetOutcome::Failed(error_json(
                 StatusCode::BAD_GATEWAY,
                 "registry API unavailable",
@@ -358,25 +369,75 @@ pub(crate) async fn delegated_get(
     Ok(DelegatedGet { outcome, rotation })
 }
 
-fn delegated_url_allowed(config: &BrowserAuthConfig, candidate: &reqwest::Url) -> bool {
+/// The class of a `reqwest` transport failure, as a fixed slug.
+///
+/// Every reqwest failure in this module is stripped with `without_url()`,
+/// because `reqwest::Error`'s `Display` appends ` for url (<the full request
+/// URL>)` and the delegated read's URL is a private package coordinate
+/// assembled from request path segments. That stripping has a cost:
+/// `without_url()` renders as the bare string "error sending request" for
+/// every send failure, since `Display` covers only the top error and never its
+/// source chain. A refused connection, an unresolvable host and a timeout then
+/// read identically, which is exactly the distinction an operator needs.
+///
+/// Each slug below is a literal chosen here and returned as `&'static str`,
+/// derived only from reqwest's own predicates, so none of them can carry a
+/// piece of the request. Recording one restores the distinction without
+/// putting anything caller-supplied back into the record.
+///
+/// `is_timeout` and `is_connect` are tested before `is_request` because a
+/// connect failure also answers true to `is_request`.
+fn upstream_failure_kind(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_redirect() {
+        "redirect"
+    } else if error.is_decode() {
+        "decode"
+    } else if error.is_body() {
+        "body"
+    } else if error.is_request() {
+        "request"
+    } else {
+        "other"
+    }
+}
+
+/// Why a delegated destination was refused, as a fixed slug.
+///
+/// The slugs below are the whole vocabulary: each one is a literal chosen here,
+/// never a piece of the candidate URL. That is what makes the refusal safe to
+/// record. A delegated read is assembled from request path segments (the
+/// package org, name and version) and is only ever taken for a private
+/// package, so the assembled URL is caller-supplied and names a private
+/// coordinate; the reason says what was wrong without reproducing it.
+fn delegated_url_refusal(
+    config: &BrowserAuthConfig,
+    candidate: &reqwest::Url,
+) -> Option<&'static str> {
     let Ok(base) = reqwest::Url::parse(&format!("{}/", config.api_url.trim_end_matches('/')))
     else {
-        return false;
+        return Some("api_base_unparseable");
     };
-    if candidate.origin() != base.origin()
-        || !candidate.username().is_empty()
-        || candidate.password().is_some()
-        || candidate.fragment().is_some()
-    {
-        return false;
+    if candidate.origin() != base.origin() {
+        return Some("origin_mismatch");
+    }
+    if !candidate.username().is_empty() || candidate.password().is_some() {
+        return Some("url_userinfo_present");
+    }
+    if candidate.fragment().is_some() {
+        return Some("url_fragment_present");
     }
     let base_path = base.path().trim_end_matches('/');
-    base_path.is_empty()
+    let on_base_path = base_path.is_empty()
         || candidate.path() == base_path
         || candidate
             .path()
             .strip_prefix(base_path)
-            .is_some_and(|suffix| suffix.starts_with('/'))
+            .is_some_and(|suffix| suffix.starts_with('/'));
+    (!on_base_path).then_some("outside_api_base_path")
 }
 
 pub async fn sign_in(
@@ -466,7 +527,12 @@ pub async fn callback(
             Err(response) => return response,
         },
         Err(error) => {
-            tracing::warn!(%error, "Shared Auth handoff redemption failed");
+            let kind = upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                "Shared Auth handoff redemption failed"
+            );
             return error_json(
                 StatusCode::BAD_GATEWAY,
                 "authentication upstream unavailable",
@@ -486,7 +552,12 @@ pub async fn callback(
             Err(response) => return response,
         },
         Err(error) => {
-            tracing::warn!(%error, "Shared Auth exchange failed");
+            let kind = upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                "Shared Auth exchange failed"
+            );
             return error_json(
                 StatusCode::BAD_GATEWAY,
                 "authentication upstream unavailable",
@@ -520,7 +591,12 @@ pub async fn callback(
             );
         }
         Err(error) => {
-            tracing::warn!(%error, "registry API unavailable during login");
+            let kind = upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                "registry API unavailable during login"
+            );
             return error_json(StatusCode::BAD_GATEWAY, "registry API unavailable");
         }
     }
@@ -563,7 +639,12 @@ pub async fn logout(State(state): State<Arc<WebState>>, headers: HeaderMap) -> R
             .send()
             .await;
         if let Err(error) = result {
-            tracing::warn!(%error, "Shared Auth logout request failed");
+            let kind = upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                "Shared Auth logout request failed"
+            );
         }
     }
     let mut response = Redirect::to("/").into_response();
@@ -855,7 +936,12 @@ async fn mutate_outcome(
             BrowserMutation::Failed(downstream)
         }
         Err(error) => {
-            tracing::warn!(%error, "registry API mutation failed");
+            let kind = upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                "registry API mutation failed"
+            );
             let mut response = error_json(StatusCode::BAD_GATEWAY, "registry API unavailable");
             rotation.apply(&mut response);
             BrowserMutation::Failed(response)
@@ -893,7 +979,12 @@ async fn refresh(
         .send()
         .await
         .map_err(|error| {
-            tracing::warn!(%error, "Shared Auth refresh failed");
+            let kind = upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                "Shared Auth refresh failed"
+            );
             error_json(
                 StatusCode::BAD_GATEWAY,
                 "authentication upstream unavailable",
@@ -927,7 +1018,12 @@ async fn delegate(
         .send()
         .await
         .map_err(|error| {
-            tracing::warn!(%error, "Shared Auth delegation failed");
+            let kind = upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                "Shared Auth delegation failed"
+            );
             error_json(
                 StatusCode::BAD_GATEWAY,
                 "authentication upstream unavailable",
@@ -1781,24 +1877,310 @@ mod tests {
     fn delegated_reads_stay_on_the_configured_api_origin_and_base_path() {
         let mut config = config();
         config.api_url = "https://api.internal/base".into();
-        assert!(delegated_url_allowed(
-            &config,
-            &"https://api.internal/base/v1/packages/acme/http"
+        assert!(
+            delegated_url_refusal(
+                &config,
+                &"https://api.internal/base/v1/packages/acme/http"
+                    .parse()
+                    .unwrap()
+            )
+            .is_none()
+        );
+        assert_eq!(
+            delegated_url_refusal(
+                &config,
+                &"https://api.internal/baseball/v1/packages/acme/http"
+                    .parse()
+                    .unwrap()
+            ),
+            Some("outside_api_base_path")
+        );
+        assert_eq!(
+            delegated_url_refusal(
+                &config,
+                &"https://evil.internal/base/v1/packages/acme/http"
+                    .parse()
+                    .unwrap()
+            ),
+            Some("origin_mismatch")
+        );
+    }
+
+    #[test]
+    fn a_delegated_refusal_reason_never_reproduces_the_candidate_url() {
+        let mut config = config();
+        config.api_url = "https://api.internal/base".into();
+        // Everything a caller controls about the destination: the package
+        // coordinate path segments, the query, userinfo, the fragment, and the
+        // origin itself.
+        let cases = [
+            (
+                "https://api.internal/baseball/v1/packages/acme-secret/http-secret/versions/9.9.9-secret/dependency-graph?view=declared&format=json-secret",
+                "outside_api_base_path",
+            ),
+            (
+                "https://evil.internal/base/v1/packages/acme-secret/http-secret",
+                "origin_mismatch",
+            ),
+            (
+                "https://api.internal/base/v1/packages/acme-secret#frag-secret",
+                "url_fragment_present",
+            ),
+        ];
+        for (candidate, expected) in cases {
+            let candidate: reqwest::Url = candidate.parse().unwrap();
+            let refusal = delegated_url_refusal(&config, &candidate)
+                .unwrap_or_else(|| panic!("{candidate} must be refused"));
+            assert_eq!(refusal, expected);
+            // The reason is one of a fixed set chosen in this module, so no
+            // part of the caller's URL can travel with it into a record.
+            assert!(
+                !refusal.contains("secret"),
+                "the refusal reason reproduced the candidate URL: {refusal}"
+            );
+            assert!(
+                [
+                    "api_base_unparseable",
+                    "origin_mismatch",
+                    "url_userinfo_present",
+                    "url_fragment_present",
+                    "outside_api_base_path",
+                ]
+                .contains(&refusal),
+                "unknown refusal reason: {refusal}"
+            );
+        }
+        assert!(
+            delegated_url_refusal(
+                &config,
+                &"https://api.internal/base/v1/packages/acme/http"
+                    .parse()
+                    .unwrap()
+            )
+            .is_none()
+        );
+    }
+    /// In-memory `tracing` sink, so a test can assert on the exact fields a
+    /// log line records rather than on the source that produces it.
+    #[derive(Clone, Default)]
+    struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl CapturedLogs {
+        fn contents(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+    }
+
+    impl std::io::Write for CapturedLogs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// The refusal record names the fixed reason and no part of the rejected
+    /// destination. This asserts on the emitted log line, not on
+    /// `delegated_url_refusal`'s return value, so restoring the previous
+    /// `tracing::error!(%url, ...)` turns it red.
+    #[tokio::test]
+    async fn the_refusal_record_carries_the_reason_and_not_the_destination() {
+        let mut config = config();
+        config.api_url = "https://api.internal/base".into();
+        let state = continuity_state(config);
+
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::ERROR)
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
+
+        // Everything about the destination is caller-assembled: the org, the
+        // package name, the version, and the origin.
+        let refused: reqwest::Url =
+            "https://evil.internal/base/v1/packages/acme-secret/http-secret/versions/9.9.9-secret"
                 .parse()
-                .unwrap()
-        ));
-        assert!(!delegated_url_allowed(
-            &config,
-            &"https://api.internal/baseball/v1/packages/acme/http"
-                .parse()
-                .unwrap()
-        ));
-        assert!(!delegated_url_allowed(
-            &config,
-            &"https://evil.internal/base/v1/packages/acme/http"
-                .parse()
-                .unwrap()
-        ));
+                .unwrap();
+        let outcome = delegated_get(
+            &state,
+            &HeaderMap::new(),
+            Method::GET,
+            refused,
+            "application/json",
+        )
+        .await;
+        assert!(outcome.is_err(), "the destination must be refused");
+        drop(guard);
+
+        let captured = logs.contents();
+        assert!(
+            captured.contains("refused to send delegated credentials outside the configured API"),
+            "the refusal was not logged: {captured:?}"
+        );
+        assert!(
+            captured.contains("origin_mismatch"),
+            "the refusal reason is missing: {captured:?}"
+        );
+        for leaked in [
+            "evil.internal",
+            "acme-secret",
+            "http-secret",
+            "9.9.9-secret",
+            "api.internal",
+        ] {
+            assert!(
+                !captured.contains(leaked),
+                "the refusal record carries {leaked:?}: {captured:?}"
+            );
+        }
+    }
+
+    /// `reqwest::Error`'s `Display` appends ` for url (<the full request URL>)`,
+    /// so every reqwest failure logged in this module must be stripped with
+    /// `without_url()`. The delegated read at line ~357 is the sharpest case:
+    /// its URL is the private package coordinate the refusal check above
+    /// deliberately keeps out of the record. Those closures are inline and
+    /// cannot be called directly, so this asserts against the source.
+    #[test]
+    fn every_reqwest_failure_in_this_module_is_logged_without_its_url() {
+        const SRC: &str = include_str!("browser_auth.rs");
+        const REQWEST_MESSAGES: &[&str] = &[
+            "delegated registry API read failed",
+            "Shared Auth handoff redemption failed",
+            "Shared Auth exchange failed",
+            "registry API unavailable during login",
+            "Shared Auth logout request failed",
+            "registry API mutation failed",
+            "Shared Auth refresh failed",
+            "Shared Auth delegation failed",
+        ];
+        for message in REQWEST_MESSAGES {
+            assert!(
+                !SRC.contains(&format!("%error, \"{message}\"")),
+                "`{message}` interpolates a reqwest error with its URL"
+            );
+        }
+        // Count in the implementation only; this test module names the same
+        // fragments in its own assertions.
+        let implementation = &SRC[..SRC.find("\nmod tests {").expect("tests module")];
+        assert_eq!(
+            implementation.matches("error.without_url()").count(),
+            REQWEST_MESSAGES.len(),
+            "a reqwest log site was added or removed without updating this list"
+        );
+        // Stripping the URL leaves reqwest's Display as the bare "error sending
+        // request" for every send failure, so each site must also record the
+        // fixed class slug or the record says nothing an operator can act on.
+        assert_eq!(
+            implementation
+                .matches("let kind = upstream_failure_kind(&error);")
+                .count(),
+            REQWEST_MESSAGES.len(),
+            "a reqwest log site no longer records its failure class, so the \
+             record cannot tell a timeout from a refused connection"
+        );
+    }
+
+    /// The delegated read's upstream failure is the sharpest reqwest site in
+    /// this module: its URL is the private package coordinate the refusal
+    /// check deliberately keeps out of the record. Drive a real transport
+    /// failure through the whole function -- stub Shared Auth so the refresh
+    /// and delegation succeed, then point the registry API at a closed port --
+    /// and assert on the line that is actually emitted. The class must be
+    /// there, and no part of the destination may be.
+    #[tokio::test]
+    async fn a_delegated_upstream_failure_records_its_class_and_not_the_destination() {
+        let auth = Router::new()
+            .route(
+                "/auth/refresh",
+                post(|| async {
+                    axum::Json(json!({
+                        "access_token": "base-access",
+                        "refresh_token": "next-opaque-refresh",
+                        "shared_user_id": Uuid::nil(),
+                    }))
+                }),
+            )
+            .route(
+                "/auth/delegate",
+                post(|| async { axum::Json(json!({ "access_token": "delegated" })) }),
+            );
+
+        // Bind then drop so the registry origin is known-closed while still
+        // being the configured API, which is what the refusal check compares.
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let registry = closed.local_addr().unwrap();
+        drop(closed);
+
+        let mut config = config();
+        config.shared_auth_url = spawn_auth_stub(auth).await;
+        config.api_url = format!("http://{registry}");
+        let headers = session_headers(&config, 10);
+        let state = continuity_state(config);
+
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
+
+        // Every segment here is caller-assembled from the request path.
+        let target: reqwest::Url = format!(
+            "http://{registry}/v1/packages/acme-secret/http-secret/versions/9.9.9-secret?view=declared"
+        )
+        .parse()
+        .unwrap();
+        let outcome = delegated_get(&state, &headers, Method::GET, target, "application/json")
+            .await
+            .expect("the destination is on the configured API");
+        assert!(
+            matches!(outcome.outcome, DelegatedGetOutcome::Failed(_)),
+            "the closed registry port must surface as a failed read"
+        );
+        drop(guard);
+
+        let captured = logs.contents();
+        assert!(
+            captured.contains("delegated registry API read failed"),
+            "the upstream failure was not logged: {captured:?}"
+        );
+        // Stripping the URL leaves reqwest's Display as the bare "error sending
+        // request", so the class is the only thing left to act on.
+        assert!(
+            captured.contains("kind=\"connect\""),
+            "the failure class is missing, so the record says nothing an \
+             operator can act on: {captured:?}"
+        );
+        for leaked in [
+            "acme-secret",
+            "http-secret",
+            "9.9.9-secret",
+            "view=declared",
+            "for url",
+            &registry.to_string(),
+        ] {
+            assert!(
+                !captured.contains(leaked),
+                "the record carries {leaked:?}: {captured:?}"
+            );
+        }
     }
 
     #[test]
