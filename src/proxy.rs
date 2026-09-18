@@ -155,7 +155,7 @@ pub async fn forward(State(state): State<Arc<WebState>>, req: Request) -> Respon
 /// used to tell them apart. Each slug below is a literal chosen here, never a
 /// piece of the request, so recording it restores that distinction without
 /// putting anything caller-supplied back in the log.
-fn upstream_failure_kind(error: &reqwest::Error) -> &'static str {
+pub(crate) fn upstream_failure_kind(error: &reqwest::Error) -> &'static str {
     if error.is_timeout() {
         "timeout"
     } else if error.is_connect() {
