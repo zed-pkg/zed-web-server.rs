@@ -354,7 +354,12 @@ pub(crate) async fn delegated_get(
     let outcome = match request.send().await {
         Ok(response) => DelegatedGetOutcome::Upstream(response),
         Err(error) => {
-            tracing::warn!(error = %error.without_url(), "delegated registry API read failed");
+            let kind = upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                "delegated registry API read failed"
+            );
             DelegatedGetOutcome::Failed(error_json(
                 StatusCode::BAD_GATEWAY,
                 "registry API unavailable",
@@ -362,6 +367,42 @@ pub(crate) async fn delegated_get(
         }
     };
     Ok(DelegatedGet { outcome, rotation })
+}
+
+/// The class of a `reqwest` transport failure, as a fixed slug.
+///
+/// Every reqwest failure in this module is stripped with `without_url()`,
+/// because `reqwest::Error`'s `Display` appends ` for url (<the full request
+/// URL>)` and the delegated read's URL is a private package coordinate
+/// assembled from request path segments. That stripping has a cost:
+/// `without_url()` renders as the bare string "error sending request" for
+/// every send failure, since `Display` covers only the top error and never its
+/// source chain. A refused connection, an unresolvable host and a timeout then
+/// read identically, which is exactly the distinction an operator needs.
+///
+/// Each slug below is a literal chosen here and returned as `&'static str`,
+/// derived only from reqwest's own predicates, so none of them can carry a
+/// piece of the request. Recording one restores the distinction without
+/// putting anything caller-supplied back into the record.
+///
+/// `is_timeout` and `is_connect` are tested before `is_request` because a
+/// connect failure also answers true to `is_request`.
+fn upstream_failure_kind(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_redirect() {
+        "redirect"
+    } else if error.is_decode() {
+        "decode"
+    } else if error.is_body() {
+        "body"
+    } else if error.is_request() {
+        "request"
+    } else {
+        "other"
+    }
 }
 
 /// Why a delegated destination was refused, as a fixed slug.
@@ -486,7 +527,12 @@ pub async fn callback(
             Err(response) => return response,
         },
         Err(error) => {
-            tracing::warn!(error = %error.without_url(), "Shared Auth handoff redemption failed");
+            let kind = upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                "Shared Auth handoff redemption failed"
+            );
             return error_json(
                 StatusCode::BAD_GATEWAY,
                 "authentication upstream unavailable",
@@ -506,7 +552,12 @@ pub async fn callback(
             Err(response) => return response,
         },
         Err(error) => {
-            tracing::warn!(error = %error.without_url(), "Shared Auth exchange failed");
+            let kind = upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                "Shared Auth exchange failed"
+            );
             return error_json(
                 StatusCode::BAD_GATEWAY,
                 "authentication upstream unavailable",
@@ -540,7 +591,12 @@ pub async fn callback(
             );
         }
         Err(error) => {
-            tracing::warn!(error = %error.without_url(), "registry API unavailable during login");
+            let kind = upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                "registry API unavailable during login"
+            );
             return error_json(StatusCode::BAD_GATEWAY, "registry API unavailable");
         }
     }
@@ -583,7 +639,12 @@ pub async fn logout(State(state): State<Arc<WebState>>, headers: HeaderMap) -> R
             .send()
             .await;
         if let Err(error) = result {
-            tracing::warn!(error = %error.without_url(), "Shared Auth logout request failed");
+            let kind = upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                "Shared Auth logout request failed"
+            );
         }
     }
     let mut response = Redirect::to("/").into_response();
@@ -875,7 +936,12 @@ async fn mutate_outcome(
             BrowserMutation::Failed(downstream)
         }
         Err(error) => {
-            tracing::warn!(error = %error.without_url(), "registry API mutation failed");
+            let kind = upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                "registry API mutation failed"
+            );
             let mut response = error_json(StatusCode::BAD_GATEWAY, "registry API unavailable");
             rotation.apply(&mut response);
             BrowserMutation::Failed(response)
@@ -913,7 +979,12 @@ async fn refresh(
         .send()
         .await
         .map_err(|error| {
-            tracing::warn!(error = %error.without_url(), "Shared Auth refresh failed");
+            let kind = upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                "Shared Auth refresh failed"
+            );
             error_json(
                 StatusCode::BAD_GATEWAY,
                 "authentication upstream unavailable",
@@ -947,7 +1018,12 @@ async fn delegate(
         .send()
         .await
         .map_err(|error| {
-            tracing::warn!(error = %error.without_url(), "Shared Auth delegation failed");
+            let kind = upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                "Shared Auth delegation failed"
+            );
             error_json(
                 StatusCode::BAD_GATEWAY,
                 "authentication upstream unavailable",
@@ -1997,21 +2073,114 @@ mod tests {
                 !SRC.contains(&format!("%error, \"{message}\"")),
                 "`{message}` interpolates a reqwest error with its URL"
             );
-            assert!(
-                SRC.contains(&format!(
-                    "error = %error.without_url(), \"{message}\""
-                )),
-                "`{message}` no longer strips the URL"
-            );
         }
         // Count in the implementation only; this test module names the same
-        // fragment in its own assertions.
+        // fragments in its own assertions.
         let implementation = &SRC[..SRC.find("\nmod tests {").expect("tests module")];
         assert_eq!(
             implementation.matches("error.without_url()").count(),
             REQWEST_MESSAGES.len(),
             "a reqwest log site was added or removed without updating this list"
         );
+        // Stripping the URL leaves reqwest's Display as the bare "error sending
+        // request" for every send failure, so each site must also record the
+        // fixed class slug or the record says nothing an operator can act on.
+        assert_eq!(
+            implementation
+                .matches("let kind = upstream_failure_kind(&error);")
+                .count(),
+            REQWEST_MESSAGES.len(),
+            "a reqwest log site no longer records its failure class, so the \
+             record cannot tell a timeout from a refused connection"
+        );
+    }
+
+    /// The delegated read's upstream failure is the sharpest reqwest site in
+    /// this module: its URL is the private package coordinate the refusal
+    /// check deliberately keeps out of the record. Drive a real transport
+    /// failure through the whole function -- stub Shared Auth so the refresh
+    /// and delegation succeed, then point the registry API at a closed port --
+    /// and assert on the line that is actually emitted. The class must be
+    /// there, and no part of the destination may be.
+    #[tokio::test]
+    async fn a_delegated_upstream_failure_records_its_class_and_not_the_destination() {
+        let auth = Router::new()
+            .route(
+                "/auth/refresh",
+                post(|| async {
+                    axum::Json(json!({
+                        "access_token": "base-access",
+                        "refresh_token": "next-opaque-refresh",
+                        "shared_user_id": Uuid::nil(),
+                    }))
+                }),
+            )
+            .route(
+                "/auth/delegate",
+                post(|| async { axum::Json(json!({ "access_token": "delegated" })) }),
+            );
+
+        // Bind then drop so the registry origin is known-closed while still
+        // being the configured API, which is what the refusal check compares.
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let registry = closed.local_addr().unwrap();
+        drop(closed);
+
+        let mut config = config();
+        config.shared_auth_url = spawn_auth_stub(auth).await;
+        config.api_url = format!("http://{registry}");
+        let headers = session_headers(&config, 10);
+        let state = continuity_state(config);
+
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
+
+        // Every segment here is caller-assembled from the request path.
+        let target: reqwest::Url = format!(
+            "http://{registry}/v1/packages/acme-secret/http-secret/versions/9.9.9-secret?view=declared"
+        )
+        .parse()
+        .unwrap();
+        let outcome = delegated_get(&state, &headers, Method::GET, target, "application/json")
+            .await
+            .expect("the destination is on the configured API");
+        assert!(
+            matches!(outcome.outcome, DelegatedGetOutcome::Failed(_)),
+            "the closed registry port must surface as a failed read"
+        );
+        drop(guard);
+
+        let captured = logs.contents();
+        assert!(
+            captured.contains("delegated registry API read failed"),
+            "the upstream failure was not logged: {captured:?}"
+        );
+        // Stripping the URL leaves reqwest's Display as the bare "error sending
+        // request", so the class is the only thing left to act on.
+        assert!(
+            captured.contains("kind=\"connect\""),
+            "the failure class is missing, so the record says nothing an \
+             operator can act on: {captured:?}"
+        );
+        for leaked in [
+            "acme-secret",
+            "http-secret",
+            "9.9.9-secret",
+            "view=declared",
+            "for url",
+            &registry.to_string(),
+        ] {
+            assert!(
+                !captured.contains(leaked),
+                "the record carries {leaked:?}: {captured:?}"
+            );
+        }
     }
 
     #[test]
