@@ -154,6 +154,18 @@ mod tests {
     use std::sync::Mutex;
     use tower::util::ServiceExt;
 
+    /// `tracing` caches callsite interest process-wide, and a callsite first
+    /// reached while no subscriber exists is cached as uninteresting. Every
+    /// test that reaches the upstream-failure warning takes this lock, so the
+    /// log-capturing one never races another for that first reach.
+    static UPSTREAM_FAILURE_LOG: Mutex<()> = Mutex::new(());
+
+    fn serialize_upstream_failures() -> std::sync::MutexGuard<'static, ()> {
+        UPSTREAM_FAILURE_LOG
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// In-memory sink for `tracing` output, so a test can assert on the exact
     /// fields a log line records.
     #[derive(Clone, Default)]
@@ -354,6 +366,7 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_upstream_yields_502() {
+        let _serialized = serialize_upstream_failures();
         // Bind then drop so the port is known-closed.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -375,6 +388,7 @@ mod tests {
     /// including the copy reqwest keeps inside its own error.
     #[tokio::test]
     async fn upstream_failure_logs_the_path_without_the_query() {
+        let _serialized = serialize_upstream_failures();
         // Bind then drop so the port is known-closed.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -388,8 +402,11 @@ mod tests {
             .finish();
 
         // `#[tokio::test]` drives this future on the current thread, so the
-        // thread-local default subscriber covers the whole request.
+        // thread-local default subscriber covers the whole request. Rebuild
+        // the interest cache so a callsite cached before it existed is
+        // re-evaluated against it.
         let guard = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
         let response = send(
             app(Some(format!("http://{addr}"))),
             get_request("/shared-auth/auth/exchange?code=abc123&state=xyz"),
