@@ -123,8 +123,10 @@ pub async fn forward(State(state): State<Arc<WebState>>, req: Request) -> Respon
             // Operational logs record the proxied path and nothing else: the
             // target string carries the caller's verbatim query, and reqwest's
             // own Display appends the URL unless it is dropped first.
+            let kind = upstream_failure_kind(&error);
             tracing::warn!(
                 error = %error.without_url(),
+                kind,
                 path = %upstream_path,
                 "shared-auth upstream request failed"
             );
@@ -143,6 +145,32 @@ pub async fn forward(State(state): State<Arc<WebState>>, req: Request) -> Respon
     *response.status_mut() = status;
     *response.headers_mut() = headers;
     response
+}
+
+/// The class of an upstream transport failure, as a fixed slug.
+///
+/// `error.without_url()` renders as the bare string "error sending request" for
+/// every transport failure -- `%` formats only the top error, not its source
+/// chain -- so stripping the URL costs the operator the one thing the message
+/// used to tell them apart. Each slug below is a literal chosen here, never a
+/// piece of the request, so recording it restores that distinction without
+/// putting anything caller-supplied back in the log.
+fn upstream_failure_kind(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_redirect() {
+        "redirect"
+    } else if error.is_decode() {
+        "decode"
+    } else if error.is_body() {
+        "body"
+    } else if error.is_request() {
+        "request"
+    } else {
+        "other"
+    }
 }
 
 #[cfg(test)]
@@ -422,6 +450,13 @@ mod tests {
         assert!(
             captured.contains("/auth/exchange"),
             "the proxied path is missing: {captured:?}"
+        );
+        // Stripping the URL leaves `error` as the bare "error sending request",
+        // so the record must still say what class of failure it was.
+        assert!(
+            captured.contains("kind=\"connect\""),
+            "the failure class is missing, so the log says nothing an \
+             operator can act on: {captured:?}"
         );
         for leaked in ["abc123", "xyz", "?"] {
             assert!(

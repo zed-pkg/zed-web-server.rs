@@ -527,7 +527,7 @@ async fn relay(
             .await
         }
         Err(error) => {
-            tracing::warn!(%error, "dependency graph API request failed");
+            tracing::warn!(error = %error.without_url(), "dependency graph API request failed");
             problem(
                 StatusCode::BAD_GATEWAY,
                 "graph_upstream_unavailable",
@@ -715,7 +715,7 @@ async fn relay_response(
             Ok(Some(_)) => return graph_too_large(),
             Ok(None) => break,
             Err(error) => {
-                tracing::warn!(%error, "reading dependency graph API response failed");
+                tracing::warn!(error = %error.without_url(), "reading dependency graph API response failed");
                 return problem(
                     StatusCode::BAD_GATEWAY,
                     "graph_upstream_unavailable",
@@ -1439,5 +1439,31 @@ mod tests {
         let mut downstream = HeaderMap::new();
         copy_header(&upstream, &mut downstream, header::CONTENT_LENGTH);
         assert_eq!(downstream[header::CONTENT_LENGTH], "1234");
+    }
+
+    /// The dependency graph URL is assembled from the caller's org, package
+    /// and version, and `reqwest::Error`'s `Display` appends
+    /// ` for url (<the full request URL>)`. Both upstream failures in this
+    /// module must strip it. The closures are inline and cannot be called
+    /// directly, so this asserts against the source.
+    #[test]
+    fn graph_upstream_failures_are_logged_without_the_assembled_url() {
+        const SRC: &str = include_str!("dependency_graph.rs");
+        const MESSAGES: &[&str] = &[
+            "dependency graph API request failed",
+            "reading dependency graph API response failed",
+        ];
+        for message in MESSAGES {
+            assert!(
+                !SRC.contains(&format!("%error, \"{message}\"")),
+                "`{message}` interpolates a reqwest error with its URL"
+            );
+        }
+        let implementation = &SRC[..SRC.find("\nmod tests {").expect("tests module")];
+        assert_eq!(
+            implementation.matches("error.without_url()").count(),
+            MESSAGES.len(),
+            "a reqwest log site was added or removed without updating this list"
+        );
     }
 }
