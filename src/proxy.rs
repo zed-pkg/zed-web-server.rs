@@ -158,12 +158,11 @@ mod tests {
     /// reached while no subscriber exists is cached as uninteresting. Every
     /// test that reaches the upstream-failure warning takes this lock, so the
     /// log-capturing one never races another for that first reach.
-    static UPSTREAM_FAILURE_LOG: Mutex<()> = Mutex::new(());
+    static UPSTREAM_FAILURE_LOG: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-    fn serialize_upstream_failures() -> std::sync::MutexGuard<'static, ()> {
-        UPSTREAM_FAILURE_LOG
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    /// Async-aware so the guard can be held across the request's await points.
+    async fn serialize_upstream_failures() -> tokio::sync::MutexGuard<'static, ()> {
+        UPSTREAM_FAILURE_LOG.lock().await
     }
 
     /// In-memory sink for `tracing` output, so a test can assert on the exact
@@ -366,7 +365,7 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_upstream_yields_502() {
-        let _serialized = serialize_upstream_failures();
+        let _serialized = serialize_upstream_failures().await;
         // Bind then drop so the port is known-closed.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -388,7 +387,7 @@ mod tests {
     /// including the copy reqwest keeps inside its own error.
     #[tokio::test]
     async fn upstream_failure_logs_the_path_without_the_query() {
-        let _serialized = serialize_upstream_failures();
+        let _serialized = serialize_upstream_failures().await;
         // Bind then drop so the port is known-closed.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
