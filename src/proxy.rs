@@ -88,6 +88,9 @@ pub async fn forward(State(state): State<Arc<WebState>>, req: Request) -> Respon
     if rest.is_empty() {
         rest = "/";
     }
+    // Owned here, while `req` is still alive, so the failure log below can name
+    // the proxied path on its own instead of falling back to the full target.
+    let upstream_path = rest.to_owned();
     let target = match req.uri().query() {
         Some(query) => format!("{base}{rest}?{query}"),
         None => format!("{base}{rest}"),
@@ -117,7 +120,14 @@ pub async fn forward(State(state): State<Arc<WebState>>, req: Request) -> Respon
     {
         Ok(response) => response,
         Err(error) => {
-            tracing::warn!(%error, target, "shared-auth upstream request failed");
+            // Operational logs record the proxied path and nothing else: the
+            // target string carries the caller's verbatim query, and reqwest's
+            // own Display appends the URL unless it is dropped first.
+            tracing::warn!(
+                error = %error.without_url(),
+                path = %upstream_path,
+                "shared-auth upstream request failed"
+            );
             return error_json(StatusCode::BAD_GATEWAY, "shared-auth upstream unreachable");
         }
     };
