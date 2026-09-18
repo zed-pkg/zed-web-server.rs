@@ -312,8 +312,14 @@ pub(crate) async fn delegated_get(
             "delegated browser reads permit only GET and HEAD",
         ));
     }
-    if !delegated_url_allowed(config, &url) {
-        tracing::error!(%url, "refused to send delegated credentials outside the configured API");
+    if let Some(refusal) = delegated_url_refusal(config, &url) {
+        // The destination is assembled from request path segments and is only
+        // taken for a private package, so the record carries the fixed refusal
+        // reason rather than the assembled URL.
+        tracing::error!(
+            refusal,
+            "refused to send delegated credentials outside the configured API"
+        );
         return Err(error_json(
             StatusCode::SERVICE_UNAVAILABLE,
             "invalid delegated API destination",
@@ -358,25 +364,39 @@ pub(crate) async fn delegated_get(
     Ok(DelegatedGet { outcome, rotation })
 }
 
-fn delegated_url_allowed(config: &BrowserAuthConfig, candidate: &reqwest::Url) -> bool {
+/// Why a delegated destination was refused, as a fixed slug.
+///
+/// The slugs below are the whole vocabulary: each one is a literal chosen here,
+/// never a piece of the candidate URL. That is what makes the refusal safe to
+/// record. A delegated read is assembled from request path segments (the
+/// package org, name and version) and is only ever taken for a private
+/// package, so the assembled URL is caller-supplied and names a private
+/// coordinate; the reason says what was wrong without reproducing it.
+fn delegated_url_refusal(
+    config: &BrowserAuthConfig,
+    candidate: &reqwest::Url,
+) -> Option<&'static str> {
     let Ok(base) = reqwest::Url::parse(&format!("{}/", config.api_url.trim_end_matches('/')))
     else {
-        return false;
+        return Some("api_base_unparseable");
     };
-    if candidate.origin() != base.origin()
-        || !candidate.username().is_empty()
-        || candidate.password().is_some()
-        || candidate.fragment().is_some()
-    {
-        return false;
+    if candidate.origin() != base.origin() {
+        return Some("origin_mismatch");
+    }
+    if !candidate.username().is_empty() || candidate.password().is_some() {
+        return Some("url_userinfo_present");
+    }
+    if candidate.fragment().is_some() {
+        return Some("url_fragment_present");
     }
     let base_path = base.path().trim_end_matches('/');
-    base_path.is_empty()
+    let on_base_path = base_path.is_empty()
         || candidate.path() == base_path
         || candidate
             .path()
             .strip_prefix(base_path)
-            .is_some_and(|suffix| suffix.starts_with('/'))
+            .is_some_and(|suffix| suffix.starts_with('/'));
+    (!on_base_path).then_some("outside_api_base_path")
 }
 
 pub async fn sign_in(
@@ -1781,26 +1801,89 @@ mod tests {
     fn delegated_reads_stay_on_the_configured_api_origin_and_base_path() {
         let mut config = config();
         config.api_url = "https://api.internal/base".into();
-        assert!(delegated_url_allowed(
-            &config,
-            &"https://api.internal/base/v1/packages/acme/http"
-                .parse()
-                .unwrap()
-        ));
-        assert!(!delegated_url_allowed(
-            &config,
-            &"https://api.internal/baseball/v1/packages/acme/http"
-                .parse()
-                .unwrap()
-        ));
-        assert!(!delegated_url_allowed(
-            &config,
-            &"https://evil.internal/base/v1/packages/acme/http"
-                .parse()
-                .unwrap()
-        ));
+        assert!(
+            delegated_url_refusal(
+                &config,
+                &"https://api.internal/base/v1/packages/acme/http"
+                    .parse()
+                    .unwrap()
+            )
+            .is_none()
+        );
+        assert_eq!(
+            delegated_url_refusal(
+                &config,
+                &"https://api.internal/baseball/v1/packages/acme/http"
+                    .parse()
+                    .unwrap()
+            ),
+            Some("outside_api_base_path")
+        );
+        assert_eq!(
+            delegated_url_refusal(
+                &config,
+                &"https://evil.internal/base/v1/packages/acme/http"
+                    .parse()
+                    .unwrap()
+            ),
+            Some("origin_mismatch")
+        );
     }
 
+    #[test]
+    fn a_delegated_refusal_reason_never_reproduces_the_candidate_url() {
+        let mut config = config();
+        config.api_url = "https://api.internal/base".into();
+        // Everything a caller controls about the destination: the package
+        // coordinate path segments, the query, userinfo, the fragment, and the
+        // origin itself.
+        let cases = [
+            (
+                "https://api.internal/baseball/v1/packages/acme-secret/http-secret/versions/9.9.9-secret/dependency-graph?view=declared&format=json-secret",
+                "outside_api_base_path",
+            ),
+            (
+                "https://evil.internal/base/v1/packages/acme-secret/http-secret",
+                "origin_mismatch",
+            ),
+            (
+                "https://api.internal/base/v1/packages/acme-secret#frag-secret",
+                "url_fragment_present",
+            ),
+        ];
+        for (candidate, expected) in cases {
+            let candidate: reqwest::Url = candidate.parse().unwrap();
+            let refusal = delegated_url_refusal(&config, &candidate)
+                .unwrap_or_else(|| panic!("{candidate} must be refused"));
+            assert_eq!(refusal, expected);
+            // The reason is one of a fixed set chosen in this module, so no
+            // part of the caller's URL can travel with it into a record.
+            assert!(
+                !refusal.contains("secret"),
+                "the refusal reason reproduced the candidate URL: {refusal}"
+            );
+            assert!(
+                [
+                    "api_base_unparseable",
+                    "origin_mismatch",
+                    "url_userinfo_present",
+                    "url_fragment_present",
+                    "outside_api_base_path",
+                ]
+                .contains(&refusal),
+                "unknown refusal reason: {refusal}"
+            );
+        }
+        assert!(
+            delegated_url_refusal(
+                &config,
+                &"https://api.internal/base/v1/packages/acme/http"
+                    .parse()
+                    .unwrap()
+            )
+            .is_none()
+        );
+    }
     #[test]
     fn rotated_private_read_session_is_applied_to_every_downstream_status() {
         let mut response = StatusCode::BAD_GATEWAY.into_response();
