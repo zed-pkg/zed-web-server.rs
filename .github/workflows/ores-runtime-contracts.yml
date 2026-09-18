@@ -1,0 +1,107 @@
+name: ORES runtime contracts
+
+on:
+  pull_request:
+    paths:
+      - '.zpkg.toml'
+      - '.zpkg.lock'
+      - '.cli-flags.toml'
+      - '.ores-*.toml'
+      - '.shared-auth.toml'
+      - '.auth-shared.toml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/ores-runtime-contracts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ores-runtime-contracts-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  ZED_CLI_REV: a1c5b7a3c72b957944b76911fcbc723dd9c16541
+  FLAGS2ENV_REV: 333c2ace93c362d274171ab0e0edf613d96a8e59
+  ORES_CLI_PACKAGE: oresoftware/ores-cli@=0.1.0
+  EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact repository head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ env.EXPECTED_HEAD }}
+          persist-credentials: false
+
+      - name: Verify exact head and authored contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -f .zpkg.toml
+          test -f .cli-flags.toml
+
+      - name: Build pinned zed CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/zed-pkg/zed-cli.git "$RUNNER_TEMP/zed-cli"
+          git -C "$RUNNER_TEMP/zed-cli" checkout --detach "$ZED_CLI_REV"
+          cargo build --manifest-path "$RUNNER_TEMP/zed-cli/Cargo.toml" --locked --release --bin zed
+
+      - name: Build pinned flags2env
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/flags-2-env/flags-2-env.git "$RUNNER_TEMP/flags2env"
+          git -C "$RUNNER_TEMP/flags2env" checkout --detach "$FLAGS2ENV_REV"
+          make -C "$RUNNER_TEMP/flags2env" all
+
+      - name: Install ores-cli through zed-pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ores-tool"
+          cd "$RUNNER_TEMP/ores-tool"
+          "$RUNNER_TEMP/zed-cli/target/release/zed" install "$ORES_CLI_PACKAGE"
+          "$RUNNER_TEMP/zed-cli/target/release/zed" run oresc --no-json doctor >/dev/null
+          "$RUNNER_TEMP/zed-cli/target/release/zed" run ores-cli --no-json doctor >/dev/null
+
+      - name: Validate Zed and flags2env authorities
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/zed-cli/target/release/zed" validate --manifest .zpkg.toml
+          "$RUNNER_TEMP/flags2env/build/flags2env" audit .cli-flags.toml
+
+          if test -f .shared-auth.toml && test -f .auth-shared.toml; then
+            echo 'keep only canonical .shared-auth.toml; .auth-shared.toml is compatibility-only' >&2
+            exit 1
+          fi
+
+          if grep -R --line-number --fixed-strings 'github.com/ORESoftware/flags-2-env' Cargo.toml Cargo.lock .zpkg.toml 2>/dev/null; then
+            echo 'flags-2-env consumers must use the canonical flags-2-env/flags-2-env source' >&2
+            exit 1
+          fi
+
+      - name: Smoke repository through both ores-cli entrypoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/ores-tool"
+          "$RUNNER_TEMP/zed-cli/target/release/zed" run oresc --no-json audit repo --path "$GITHUB_WORKSPACE" --profile baseline
+          "$RUNNER_TEMP/zed-cli/target/release/zed" run ores-cli --no-json audit repo --path "$GITHUB_WORKSPACE" --profile baseline
+          "$RUNNER_TEMP/zed-cli/target/release/zed" run oresc --no-json audit repo --path "$GITHUB_WORKSPACE" --profile source
+
+      - name: Prove smoke checks are read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code HEAD
+          git -C "$RUNNER_TEMP/zed-cli" diff --exit-code HEAD
+          git -C "$RUNNER_TEMP/flags2env" diff --exit-code HEAD -- . ':(exclude)build/**'
