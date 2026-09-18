@@ -84,10 +84,7 @@ pub(crate) enum StartupIntent {
 
 impl RuntimeConfig {
     pub(crate) fn startup_intent(&self) -> Result<StartupIntent> {
-        startup_intent(
-            self.public.help_requested,
-            self.public.version_requested,
-        )
+        startup_intent(self.public.help_requested, self.public.version_requested)
     }
 }
 
