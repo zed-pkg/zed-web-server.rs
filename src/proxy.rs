@@ -88,6 +88,9 @@ pub async fn forward(State(state): State<Arc<WebState>>, req: Request) -> Respon
     if rest.is_empty() {
         rest = "/";
     }
+    // Owned here, while `req` is still alive, so the failure log below can name
+    // the proxied path on its own instead of falling back to the full target.
+    let upstream_path = rest.to_owned();
     let target = match req.uri().query() {
         Some(query) => format!("{base}{rest}?{query}"),
         None => format!("{base}{rest}"),
@@ -117,7 +120,16 @@ pub async fn forward(State(state): State<Arc<WebState>>, req: Request) -> Respon
     {
         Ok(response) => response,
         Err(error) => {
-            tracing::warn!(%error, target, "shared-auth upstream request failed");
+            // Operational logs record the proxied path and nothing else: the
+            // target string carries the caller's verbatim query, and reqwest's
+            // own Display appends the URL unless it is dropped first.
+            let kind = upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                path = %upstream_path,
+                "shared-auth upstream request failed"
+            );
             return error_json(StatusCode::BAD_GATEWAY, "shared-auth upstream unreachable");
         }
     };
@@ -135,12 +147,81 @@ pub async fn forward(State(state): State<Arc<WebState>>, req: Request) -> Respon
     response
 }
 
+/// The class of an upstream transport failure, as a fixed slug.
+///
+/// `error.without_url()` renders as the bare string "error sending request" for
+/// every transport failure -- `%` formats only the top error, not its source
+/// chain -- so stripping the URL costs the operator the one thing the message
+/// used to tell them apart. Each slug below is a literal chosen here, never a
+/// piece of the request, so recording it restores that distinction without
+/// putting anything caller-supplied back in the log.
+pub(crate) fn upstream_failure_kind(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_redirect() {
+        "redirect"
+    } else if error.is_decode() {
+        "decode"
+    } else if error.is_body() {
+        "body"
+    } else if error.is_request() {
+        "request"
+    } else {
+        "other"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::Router;
     use axum::routing::{any, get};
+    use std::io::Write;
+    use std::sync::Mutex;
     use tower::util::ServiceExt;
+
+    /// `tracing` caches callsite interest process-wide, and a callsite first
+    /// reached while no subscriber exists is cached as uninteresting. Every
+    /// test that reaches the upstream-failure warning takes this lock, so the
+    /// log-capturing one never races another for that first reach.
+    static UPSTREAM_FAILURE_LOG: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Async-aware so the guard can be held across the request's await points.
+    async fn serialize_upstream_failures() -> tokio::sync::MutexGuard<'static, ()> {
+        UPSTREAM_FAILURE_LOG.lock().await
+    }
+
+    /// In-memory sink for `tracing` output, so a test can assert on the exact
+    /// fields a log line records.
+    #[derive(Clone, Default)]
+    struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
+
+    impl CapturedLogs {
+        fn contents(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+    }
+
+    impl Write for CapturedLogs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
 
     /// Stub upstream: echoes the request line it saw, plus fixed endpoints for
     /// header-passthrough cases.
@@ -312,6 +393,7 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_upstream_yields_502() {
+        let _serialized = serialize_upstream_failures().await;
         // Bind then drop so the port is known-closed.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -326,5 +408,61 @@ mod tests {
             body_of(response).await,
             "{\"error\":\"shared-auth upstream unreachable\"}"
         );
+    }
+
+    /// The upstream-failure warning names the proxied path and nothing more.
+    /// A request's query string is caller-supplied and stays out of the log,
+    /// including the copy reqwest keeps inside its own error.
+    #[tokio::test]
+    async fn upstream_failure_logs_the_path_without_the_query() {
+        let _serialized = serialize_upstream_failures().await;
+        // Bind then drop so the port is known-closed.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+
+        // `#[tokio::test]` drives this future on the current thread, so the
+        // thread-local default subscriber covers the whole request. Rebuild
+        // the interest cache so a callsite cached before it existed is
+        // re-evaluated against it.
+        let guard = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
+        let response = send(
+            app(Some(format!("http://{addr}"))),
+            get_request("/shared-auth/auth/exchange?code=abc123&state=xyz"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        drop(guard);
+
+        let captured = logs.contents();
+        assert!(
+            captured.contains("shared-auth upstream request failed"),
+            "the upstream failure was not logged: {captured:?}"
+        );
+        assert!(
+            captured.contains("/auth/exchange"),
+            "the proxied path is missing: {captured:?}"
+        );
+        // Stripping the URL leaves `error` as the bare "error sending request",
+        // so the record must still say what class of failure it was.
+        assert!(
+            captured.contains("kind=\"connect\""),
+            "the failure class is missing, so the log says nothing an \
+             operator can act on: {captured:?}"
+        );
+        for leaked in ["abc123", "xyz", "?"] {
+            assert!(
+                !captured.contains(leaked),
+                "the log carries {leaked:?}: {captured:?}"
+            );
+        }
     }
 }
