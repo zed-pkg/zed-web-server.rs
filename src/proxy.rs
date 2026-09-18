@@ -150,7 +150,39 @@ mod tests {
     use super::*;
     use axum::Router;
     use axum::routing::{any, get};
+    use std::io::Write;
+    use std::sync::Mutex;
     use tower::util::ServiceExt;
+
+    /// In-memory sink for `tracing` output, so a test can assert on the exact
+    /// fields a log line records.
+    #[derive(Clone, Default)]
+    struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
+
+    impl CapturedLogs {
+        fn contents(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+    }
+
+    impl Write for CapturedLogs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
 
     /// Stub upstream: echoes the request line it saw, plus fixed endpoints for
     /// header-passthrough cases.
@@ -336,5 +368,50 @@ mod tests {
             body_of(response).await,
             "{\"error\":\"shared-auth upstream unreachable\"}"
         );
+    }
+
+    /// The upstream-failure warning names the proxied path and nothing more.
+    /// A request's query string is caller-supplied and stays out of the log,
+    /// including the copy reqwest keeps inside its own error.
+    #[tokio::test]
+    async fn upstream_failure_logs_the_path_without_the_query() {
+        // Bind then drop so the port is known-closed.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+
+        // `#[tokio::test]` drives this future on the current thread, so the
+        // thread-local default subscriber covers the whole request.
+        let guard = tracing::subscriber::set_default(subscriber);
+        let response = send(
+            app(Some(format!("http://{addr}"))),
+            get_request("/shared-auth/auth/exchange?code=abc123&state=xyz"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        drop(guard);
+
+        let captured = logs.contents();
+        assert!(
+            captured.contains("shared-auth upstream request failed"),
+            "the upstream failure was not logged: {captured:?}"
+        );
+        assert!(
+            captured.contains("/auth/exchange"),
+            "the proxied path is missing: {captured:?}"
+        );
+        for leaked in ["abc123", "xyz", "?"] {
+            assert!(
+                !captured.contains(leaked),
+                "the log carries {leaked:?}: {captured:?}"
+            );
+        }
     }
 }
