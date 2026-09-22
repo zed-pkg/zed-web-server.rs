@@ -31,6 +31,10 @@ jobs:
   smoke:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    env:
+      # Optional fallback credential for private GitHub package sources. Zed must
+      # still be able to use the registry path when this secret is unavailable.
+      ZED_PKG_GITHUB_TOKEN: ${{ secrets.SYNC_FLEET_TOKEN }}
     steps:
       - name: Checkout exact repository head
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -44,6 +48,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           test -f .zpkg.toml
+          test -f .zpkg.lock
           test -f .cli-flags.toml
 
       - name: Build pinned zed CLI
