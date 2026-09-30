@@ -26,6 +26,7 @@ env:
   FLAGS2ENV_REV: 333c2ace93c362d274171ab0e0edf613d96a8e59
   ORES_CLI_PACKAGE: oresoftware/ores-cli@=0.1.0
   EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+  ZED_PKG_GITHUB_TOKEN: ${{ secrets.FLEET_GITHUB_READ_TOKEN }}
 
 jobs:
   smoke:
@@ -45,6 +46,18 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           test -f .zpkg.toml
           test -f .cli-flags.toml
+
+      - name: Require read-only private ORES package capability
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${ZED_PKG_GITHUB_TOKEN:-}" ]]; then
+            echo 'FLEET_GITHUB_READ_TOKEN is required for the private ORESoftware/ores-cli canary; refusing public-only fallback.' >&2
+            exit 1
+          fi
+          case "$ZED_PKG_GITHUB_TOKEN" in
+            *$'\n'*|*$'\r'*) echo 'private ORES read token contains an invalid newline' >&2; exit 1 ;;
+          esac
 
       - name: Build pinned zed CLI
         shell: bash
