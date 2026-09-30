@@ -274,8 +274,13 @@ mod tests {
         let legacy_loader = concat!("dotenvy", "::dotenv");
         assert!(!source.contains(legacy_loader));
 
+        // `load = false` is the schema-declared spelling of "do not read .env".
+        // flags-2-env's authored contract gives EnvConfig exactly files, ignore
+        // and load under unevaluatedProperties: false; `dotenv` is not a key it
+        // declares, so pinning that spelling pinned a contract violation.
         let contract = include_str!("../.cli-flags.toml");
-        assert!(contract.lines().any(|line| line.trim() == "dotenv = false"));
+        assert!(contract.lines().any(|line| line.trim() == "load = false"));
+        assert!(!contract.lines().any(|line| line.trim_start().starts_with("dotenv")));
         assert!(contract.lines().any(|line| line.trim() == "files = []"));
     }
 
