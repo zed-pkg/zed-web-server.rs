@@ -527,7 +527,15 @@ async fn relay(
             .await
         }
         Err(error) => {
-            tracing::warn!(%error, "dependency graph API request failed");
+            // Stripping the URL leaves reqwest's Display as the bare "error
+            // sending request", so the class is recorded separately. Read it
+            // first: `without_url` consumes the error.
+            let kind = crate::proxy::upstream_failure_kind(&error);
+            tracing::warn!(
+                error = %error.without_url(),
+                kind,
+                "dependency graph API request failed"
+            );
             problem(
                 StatusCode::BAD_GATEWAY,
                 "graph_upstream_unavailable",
@@ -715,7 +723,12 @@ async fn relay_response(
             Ok(Some(_)) => return graph_too_large(),
             Ok(None) => break,
             Err(error) => {
-                tracing::warn!(%error, "reading dependency graph API response failed");
+                let kind = crate::proxy::upstream_failure_kind(&error);
+                tracing::warn!(
+                    error = %error.without_url(),
+                    kind,
+                    "reading dependency graph API response failed"
+                );
                 return problem(
                     StatusCode::BAD_GATEWAY,
                     "graph_upstream_unavailable",
@@ -1439,5 +1452,85 @@ mod tests {
         let mut downstream = HeaderMap::new();
         copy_header(&upstream, &mut downstream, header::CONTENT_LENGTH);
         assert_eq!(downstream[header::CONTENT_LENGTH], "1234");
+    }
+
+    /// The dependency graph URL is assembled from the caller's org, package
+    /// and version, and `reqwest::Error`'s `Display` appends
+    /// ` for url (<the full request URL>)`. Both upstream failures in this
+    /// module must strip it. The closures are inline and cannot be called
+    /// directly, so this asserts against the source.
+    #[test]
+    fn graph_upstream_failures_are_logged_without_the_assembled_url() {
+        const SRC: &str = include_str!("dependency_graph.rs");
+        const MESSAGES: &[&str] = &[
+            "dependency graph API request failed",
+            "reading dependency graph API response failed",
+        ];
+        for message in MESSAGES {
+            assert!(
+                !SRC.contains(&format!("%error, \"{message}\"")),
+                "`{message}` interpolates a reqwest error with its URL"
+            );
+        }
+        let implementation = &SRC[..SRC.find("\nmod tests {").expect("tests module")];
+        assert_eq!(
+            implementation.matches("error.without_url()").count(),
+            MESSAGES.len(),
+            "a reqwest log site was added or removed without updating this list"
+        );
+        // Stripping the URL leaves reqwest's Display as the bare "error sending
+        // request" for every send failure, because Display covers only the top
+        // error and never its source chain. Without the class slug beside it a
+        // refused connection, an unresolvable host and a timeout are one
+        // message, so both sites must record it.
+        assert_eq!(
+            implementation
+                .matches("let kind = crate::proxy::upstream_failure_kind(&error);")
+                .count(),
+            MESSAGES.len(),
+            "a dependency graph upstream failure no longer records its class, \
+             so the log cannot tell a timeout from a refused connection"
+        );
+    }
+
+    /// The class slugs are a fixed vocabulary chosen in `proxy`, never a piece
+    /// of the request, and they are what makes the stripped message actionable.
+    /// Assert against errors reqwest really produced.
+    #[tokio::test]
+    async fn the_recorded_failure_class_distinguishes_real_transport_failures() {
+        use std::time::Duration;
+
+        // Reserved by RFC 6761 to never resolve.
+        let error = reqwest::Client::new()
+            .get("http://graph-api.invalid/v1/packages/acme/http")
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .expect_err("an unresolvable host cannot answer");
+        let kind = crate::proxy::upstream_failure_kind(&error);
+        assert_eq!(kind, "connect");
+        // The premise: without the class, every send failure reads the same.
+        assert_eq!(error.without_url().to_string(), "error sending request");
+
+        // A listener that accepts and then stays silent.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _accepting = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+        let error = reqwest::Client::new()
+            .get(format!("http://{addr}/v1/packages/acme/http"))
+            .timeout(Duration::from_millis(250))
+            .send()
+            .await
+            .expect_err("a silent upstream cannot answer");
+        assert_eq!(
+            crate::proxy::upstream_failure_kind(&error),
+            "timeout",
+            "a timeout was misreported as another class: {error}"
+        );
     }
 }
